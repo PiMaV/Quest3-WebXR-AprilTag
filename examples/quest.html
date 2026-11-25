@@ -499,29 +499,26 @@
 
       <div class="no-ar-card" id="noArCard">
         <h2>Start this in AR</h2>
-        <p>Immersive AR is not available in this browser. Open this page in the <strong>Meta Quest Browser</strong> on a Quest 3 to start. You can already get your L-angle here:</p>
+        <p>Immersive AR is not available in this browser. Without a Quest 3 there is no point in continuing here – open this page in the <strong>Meta Quest Browser</strong> to start. If you just want a look at the targets first, pick the one that fits your display:</p>
         <div class="angle-options">
-          <a class="angle-opt" href="../print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf" target="_blank" rel="noopener">
-            <img src="../print/sheet_A4_eb_mess_icu_en_full_pieces_preview.png" alt="">
-            <strong>Print A4</strong><span>PDF · IDs 350–352</span>
-          </a>
           <a class="angle-opt" href="./target.html" target="_blank" rel="noopener">
             <img src="../print/sheet_A4_eb_mess_icu_en_full_pieces_preview.png" alt="">
-            <strong>Screen</strong><span>1:1 on monitor · IDs 350–352</span>
+            <strong>Screen</strong><span>Monitor wider than a DIN A4 sheet · IDs 350–352</span>
           </a>
           <a class="angle-opt" href="./target.html?mode=tablet" target="_blank" rel="noopener">
             <img src="../print/tablet_200x150mm_370_371_372_preview.png" alt="">
-            <strong>Tablet</strong><span>1:1 on tablet / e-ink · IDs 370–372</span>
+            <strong>Tablet</strong><span>Display smaller than a DIN A4 sheet · IDs 370–372</span>
           </a>
         </div>
+        <p>Both open at true 1:1 size. Like what you see? You can print it from there.</p>
       </div>
 
       <div class="angle-gate" id="angleGate">
         <h2>⚠ You need the L-angle first</h2>
         <p>AR needs the printed AprilTag <strong>L-angle</strong> as its reference. Have one of these ready on the table before you start:</p>
         <ul>
-          <li><strong>Printed</strong> DIN A4 angle (IDs 350–352) · <a href="../print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf" target="_blank" rel="noopener">A4 print PDF</a></li>
-          <li><strong>Tablet / e-ink / screen</strong> (IDs 370–372, 1:1 scale) · <a href="./target.html?mode=tablet" target="_blank" rel="noopener">open on tablet</a> · <a href="./target.html" target="_blank" rel="noopener">screen version</a></li>
+          <li><strong>Screen</strong> (monitor wider than a DIN A4 sheet, IDs 350–352) · <a href="./target.html" target="_blank" rel="noopener">open 1:1</a> – you can print it from there</li>
+          <li><strong>Tablet</strong> (display smaller than a DIN A4 sheet, IDs 370–372) · <a href="./target.html?mode=tablet" target="_blank" rel="noopener">open 1:1</a></li>
         </ul>
         <p>The right angle is detected automatically.</p>
         <button type="button" id="angleAck" class="btn-secondary">✓ I have the angle · Enter AR →</button>
@@ -532,7 +529,7 @@
         <button id="end" class="btn-secondary" disabled hidden>Exit AR</button>
       </div>
 
-      <p class="angle-note">Need the L-angle? <a href="../print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf" target="_blank" rel="noopener">A4 print</a> · <a href="./target.html?mode=tablet" target="_blank" rel="noopener">tablet</a> · <a href="./target.html" target="_blank" rel="noopener">screen</a></p>
+      <p class="angle-note">Need the L-angle? <a href="./target.html" target="_blank" rel="noopener">Screen (larger than A4)</a> · <a href="./target.html?mode=tablet" target="_blank" rel="noopener">Tablet (smaller)</a></p>
       <p id="status" role="status">Loading local AprilTag detector…</p>
       <p class="exit-hint">Exit AR anytime: Right-hand Meta gesture (palm toward you + pinch), or hold Left Thumbstick / <code>B</code> / <code>Y</code> for 1.4 s.</p>
 
