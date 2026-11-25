@@ -6259,7 +6259,7 @@ try{
     // • Left Index+Thumb stays 100% free for the Meta Quest OS menu everywhere.
     // • Direct 1-Handed Switch (SCAN <-> MEASURE): Hardened Frontal Left Fist Hold (0.85 s, strict curl + thumb tuck + centered view,
     //   suppressed near tags/menus). While SCAN is active, the left hand is tinted green (MEASURE = reddish).
-    // • Wrist Menus (Left: SCAN / ✕ PINS / ↺ CLEAR ALL; Right: Q: AUTO/FLUID/CRISP / HUD / ↺ RECALIBRATE) are active ONLY in MEASURE mode
+    // • Wrist Menus (Left: HUD / ✕ PINS / ↺ CLEAR ALL; Right: Q: AUTO/FLUID/CRISP / ↺ RECALIBRATE) are active ONLY in MEASURE mode
     //   and completely hidden/disabled in SCAN mode so nothing gets in the way while scanning or recording.
     let ringShown=false,labelsShown=false,gazeShown=false,leftFistActiveForCursor=false;
     fingerBadgeIdx.sprite.visible=false;
@@ -6509,11 +6509,10 @@ try{
         }
 
         if(leftMenuOpen){
-          const fenceActive=Boolean(perimeterFence?.isActive());
-          const pFence=perimeterFence?placePill(fingerBadgeIdx,ji,canScan,fenceActive?'◈ FENCE ON':'◈ FENCE OFF',fenceActive?'#22d3ee':'#94a3b8',wristPillPokeId==='l-fence'):null;
+          const pHudL=placePill(fingerBadgeIdx,ji,canScan,hudPanelsVisible?'HUD OFF':'HUD ON','#c084fc',wristPillPokeId==='l-hud');
           const pRing=placePill(fingerBadgeRing,jr,canScan,'✕ PINS','#e879f9',activeFinger==='ring'||wristPillPokeId==='l-ring');
           const pPinky=placePill(fingerBadgePinky,jp,canScan,'↺ CLEAR ALL','#fbbf24',activeFinger==='pinky'||wristPillPokeId==='l-pinky');
-          if(pFence)openPills.push({id:'l-fence',probeId:'hand:right',pos:pFence,poker:rightIdxPos,color:0x22d3ee,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;togglePerimeterFence(now);}});
+          if(pHudL)openPills.push({id:'l-hud',probeId:'hand:right',pos:pHudL,poker:rightIdxPos,color:0xc084fc,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;hudPanelsVisible=!hudPanelsVisible;if(hudPanelsVisible)resetHudCache();else hudDragState=null;playModeTick('pin');showHudToast(hudPanelsVisible?'HUD SHOWN':'HUD HIDDEN','#c084fc',1400);}});
           if(pRing)openPills.push({id:'l-ring',probeId:'hand:right',pos:pRing,poker:rightIdxPos,color:0xe879f9,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;const hadPins=pinnedPoints.size>0;clearPins();playModeTick('unpin');showHudToast(hadPins?'✕ PINNED BOXES CLEARED':'NO PINNED BOXES','#e879f9',1600);}});
           if(pPinky)openPills.push({id:'l-pinky',probeId:'hand:right',pos:pPinky,poker:rightIdxPos,color:0xf59e0b,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;playModeTick('unpin');clearMovableTrails();}});
         }
@@ -6571,7 +6570,7 @@ try{
         const indexOpen=jDist(jt,ji)>0.035;
         const intentional=rightMenuOpen&&inView&&indexOpen&&now>=rightHandCooldownUntil;
         const dRightMid=intentional?jDist(jt,jm):Infinity;
-        const dRightRing=intentional?jDist(jt,jr):Infinity;
+        const dRightRing=Infinity;
         const dRightPinky=intentional?jDist(jt,jp):Infinity;
         let rightActive=null;
         if(dRightMid<PINCH_DIST&&dRightMid<=dRightRing&&dRightMid<=dRightPinky){
@@ -6582,18 +6581,6 @@ try{
           if(p>=1){
             rightMidPinchSince=null;rightHandCooldownUntil=now+1000;
             cycleAdaptiveQualityMode();
-          }
-        }else if(dRightRing<PINCH_DIST&&dRightRing<=dRightPinky){
-          rightMidPinchSince=null;rightPinkyPinchSince=null;rightActive='ring';
-          if(rightRingPinchSince==null)rightRingPinchSince=now;
-          const p=Math.min(1,(now-rightRingPinchSince)/HOLD_MS);
-          showRingAt(jt,jr,0xc084fc,p);
-          if(p>=1){
-            rightRingPinchSince=null;rightHandCooldownUntil=now+1200;
-            hudPanelsVisible=!hudPanelsVisible;
-            if(hudPanelsVisible)resetHudCache();else hudDragState=null;
-            playModeTick('pin');
-            showHudToast(hudPanelsVisible?'HUD SHOWN':'HUD HIDDEN','#c084fc',1400);
           }
         }else if(dRightPinky<PINCH_DIST){
           rightMidPinchSince=null;rightRingPinchSince=null;rightActive='pinky';
@@ -6610,10 +6597,8 @@ try{
         if(rightMenuOpen){
           const qText=`Q: ${adaptiveQuality.getMode().toUpperCase()}`;
           const pQual=placePill(fingerBadgeRightMid,jm,true,qText,'#38bdf8',rightActive==='mid'||wristPillPokeId==='r-qual');
-          const pHud=placePill(fingerBadgeRightRing,jr,true,hudPanelsVisible?'HUD OFF':'HUD ON','#c084fc',rightActive==='ring'||wristPillPokeId==='r-hud');
           const pRecal=placePill(fingerBadgeRightPinky,jp,true,'↺ RECALIBRATE','#fbbf24',rightActive==='pinky'||wristPillPokeId==='r-recal');
           if(pQual)openPills.push({id:'r-qual',probeId:'hand:left',pos:pQual,poker:leftIdxPos,color:0x38bdf8,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;cycleAdaptiveQualityMode();}});
-          if(pHud)openPills.push({id:'r-hud',probeId:'hand:left',pos:pHud,poker:leftIdxPos,color:0xc084fc,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;hudPanelsVisible=!hudPanelsVisible;if(hudPanelsVisible)resetHudCache();else hudDragState=null;playModeTick('pin');showHudToast(hudPanelsVisible?'HUD SHOWN':'HUD HIDDEN','#c084fc',1400);}});
           if(pRecal)openPills.push({id:'r-recal',probeId:'hand:left',pos:pRecal,poker:leftIdxPos,color:0xf59e0b,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+1400;triggerRecalibrate();}});
         }
       }else{
