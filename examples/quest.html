@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AprilTag WebXR · Quest 3 Demo</title>
+<style>
+  body{font:17px/1.5 system-ui,sans-serif;background:#101722;color:#f4f7fb;margin:28px;max-width:860px}
+  h1{margin:0 0 8px;font-size:1.5rem}
+  ol{margin:10px 0 18px;padding-left:22px;color:#cfd9e6}
+  .controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+  button{font:inherit;padding:11px 16px;border:1px solid #355070;border-radius:8px;background:#1b2a3d;color:#f4f7fb;cursor:pointer}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  #status{padding:10px 14px;border-radius:8px;background:#162231;border:1px solid #273c55}
+  .hint{font-size:.9rem;color:#9fb2c9}
+  video{position:fixed;width:1px;height:1px;opacity:.01}
+  canvas{position:fixed;inset:0;z-index:-1}
+</style>
+<h1>AprilTag → Native WebXR Anchor</h1>
+<ol>
+  <li><strong>Prepare camera</strong> and <strong>Enter AR</strong> (keep the printed <code>350 / 351 / 352</code> L-angle flat and stationary at actual size).</li>
+  <li><strong>Calibrate / verify:</strong> Follow the center reticle orbital guide (move left/right, up/down, closer/farther, and tilt/orbit; optional debug HUD panels start OFF by default and can be toggled via Right Wrist Menu <code>HUD ON</code> or Controller <code>A/X</code>).</li>
+  <li><strong>Lock L-angle → SCAN:</strong> Hold all three reference tags steady for 5 frames to create a native WebXR anchor. Once locked, the demo enters <strong>SCAN</strong> directly.</li>
+  <li><strong>Two Main Modes — SCAN vs. MEASURE:</strong>
+    <ul>
+      <li><strong>SCAN (active right after L-lock · camera ON · Wrist Menus hidden):</strong> Focused purely on tag scanning, <strong>Time-Copies (0.55 s long-press)</strong>, and <strong>[● REC]</strong> path recording. Wrist Menus stay hidden here so nothing gets in your way; use the floating <strong>[■ MEASURE]</strong> button on the L-angle, a deliberate frontal <strong>Left Fist Hold (0.85 s)</strong>, or Controller Grip to switch to <em>MEASURE</em>.</li>
+      <li><strong>MEASURE (camera OFF · 90 FPS):</strong> Native WebXR anchor tracking only — hover any locked tag, Time-Copy, or path point and pin via <strong>Index+Thumb Pinch (left or right hand)</strong> or the hover card's <strong>[📌]</strong> orb. Wrist Menus (gated by steady palm gaze or tapping the inner Wrist-Dot) are active here for <code>● SCAN</code>, <code>✕ PINS</code>, <code>↺ CLEAR ALL</code>, <code>Q: AUTO/FLUID/CRISP</code>, <code>HUD ON/OFF</code> (default OFF), and <code>↺ RECALIBRATE</code>.</li>
+    </ul>
+  </li>
+</ol>
+<div class="controls">
+  <button id="prepare" disabled>1 · Prepare camera</button>
+  <button id="enter" disabled>2 · Enter AR</button>
+  <button id="end" disabled>Exit AR</button>
+  <button id="download" disabled>Download diagnostics JSON</button>
+</div>
+<div class="controls" style="align-items:center;gap:14px">
+  <label class="hint" style="display:inline-flex;align-items:center;gap:8px">
+    Target L-Angle:
+    <select id="rigSelect" style="font:inherit;padding:6px 10px;border:1px solid #355070;border-radius:6px;background:#1b2a3d;color:#f4f7fb">
+      <option value="a4">A4 Print / Monitor · IDs 350 / 351 / 352 (230 × 170 mm)</option>
+      <option value="tablet">Tablet / e-Ink 20 × 15 cm · IDs 370 / 371 / 372 (150 × 110 mm)</option>
+    </select>
+  </label>
+  <label class="hint" style="display:inline-flex;align-items:center;gap:8px">
+    Quality Mode:
+    <select id="qualityMode" style="font:inherit;padding:6px 10px;border:1px solid #355070;border-radius:6px;background:#1b2a3d;color:#f4f7fb">
+      <option value="auto" selected>Auto (Fluid moving → Crisp still)</option>
+      <option value="fluid">Fluid (max FPS)</option>
+      <option value="crisp">Crisp (max sharpness)</option>
+    </select>
+  </label>
+</div>
+<div class="controls" style="align-items:center;gap:16px;margin-top:4px">
+  <label class="hint" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+    <input type="checkbox" id="fastScan" checked>
+    Adaptive / Fast live Tag Scan (<code>decimate 2</code> · 2-stage ROI ready, 6–12 Hz)
+  </label>
+  <label class="hint" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+    <input type="checkbox" id="aaToggle" checked>
+    Antialias / MSAA (uncheck before Enter AR to A/B test Quest 3 stutter)
+  </label>
+</div>
+<p id="status" role="status">Loading local AprilTag detector…</p>
+<p class="hint">Exit AR anytime: hold left thumbstick or B/Y for 1.4 seconds. No printer handy? Open the <a href="./target.html" style="color:#38bdf8">A4 on-screen target</a> or the <a href="./target.html?mode=tablet" style="color:#38bdf8">Tablet / e-Ink 20 × 15 cm target (370 / 371 / 372)</a>.</p>
+<video muted playsinline id="video"></video>
+<canvas id="canvas"></canvas>
+<script type="module" src="./quest.mjs"></script>
+</html>

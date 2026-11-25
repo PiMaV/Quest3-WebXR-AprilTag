@@ -1,0 +1,8 @@
+debug_jsons/
+docs/backlog.md
+node_modules/
+.DS_Store
+*.log
+.claude/
+.cursor/
+scripts/lab-*

@@ -1,0 +1,101 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  pointInTagFrame,
+  tagSurfaceMetrics,
+  isPinchHandEligible,
+  classifyCursorProximity,
+  INDEX_TIP_HOVER_OFFSET_M,
+  projectIndexSelectorPos,
+} from '../src/tag-tap.mjs';
+
+// Column-major identity (flat on L-plane Z=0, outward normal +Z) placed at (tx, ty, tz).
+function flatTagMatrix(tx = 0.2, ty = 0.1, tz = 0) {
+  return [
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    tx, ty, tz, 1,
+  ];
+}
+
+// Column-major vertical wall tag whose outward normal (+Z_tag) points along +X_L,
+// local X_tag along +Y_L, local Y_tag along +Z_L.
+function wallTagMatrix(tx = 0.5, ty = 0.0, tz = 0.3) {
+  return [
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    1, 0, 0, 0,
+    tx, ty, tz, 1,
+  ];
+}
+
+test('tagSurfaceMetrics measures distance to the full tag square on large static and vertical tags', () => {
+  const flat80 = flatTagMatrix(0.2, 0.1, 0);
+  // Approaching near the corner (u=+34 mm, v=-32 mm) of an 80 mm tag (half=40 mm) at 10 mm height:
+  const m = tagSurfaceMetrics(flat80, 80, [0.234, 0.068, 0.010]);
+  assert.ok(Math.abs(m.u - 0.034) < 1e-9);
+  assert.ok(Math.abs(m.v - (-0.032)) < 1e-9);
+  assert.ok(Math.abs(m.n - 0.010) < 1e-9);
+  assert.equal(m.lateralOverflow, 0);
+  assert.ok(Math.abs(m.surfaceDist - 0.010) < 1e-9);
+  assert.ok(m.centerDist > 0.045);
+
+  const wall = wallTagMatrix(0.5, 0.0, 0.3);
+  const mw = pointInTagFrame(wall, [0.515, 0.02, 0.31]);
+  assert.ok(Math.abs(mw.n - 0.015) < 1e-9);
+  assert.ok(Math.abs(mw.u - 0.020) < 1e-9);
+  assert.ok(Math.abs(mw.v - 0.010) < 1e-9);
+});
+
+test('isPinchHandEligible supports both left and right hands while guarding palm-facing OS menu and active pinch lock', () => {
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: 'right' }), true);
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: 'left' }), true);
+  assert.equal(isPinchHandEligible({ kind: 'ctrl', handedness: 'right' }), false);
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: null }), false);
+
+  // Left-hand pinch is suppressed only when looking directly at the left palm or wrist menu is open.
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: 'left', leftPalmFacingViewer: true }), false);
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: 'left', leftMenuOpen: true }), false);
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: 'right', leftPalmFacingViewer: true, leftMenuOpen: true }), true);
+
+  // Active pinch hold locks onto the initiating hand so the opposite hand cannot hijack it.
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: 'left', pinHoldHand: 'left' }), true);
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: 'right', pinHoldHand: 'left' }), false);
+  assert.equal(isPinchHandEligible({ kind: 'hand', handedness: 'left', pinHoldHand: 'right' }), false);
+});
+
+test('classifyCursorProximity classifies independent per-probe hot, near, and idle distances', () => {
+  assert.equal(classifyCursorProximity(0.02), 'hot');
+  assert.equal(classifyCursorProximity(0.048), 'hot');
+  assert.equal(classifyCursorProximity(0.08), 'near');
+  assert.equal(classifyCursorProximity(0.14), 'near');
+  assert.equal(classifyCursorProximity(0.20), 'idle');
+  assert.equal(classifyCursorProximity(Infinity), 'idle');
+  assert.equal(classifyCursorProximity(NaN), 'idle');
+});
+
+test('projectIndexSelectorPos hovers 18 mm ahead of tip along distal axis and falls back safely', () => {
+  assert.equal(INDEX_TIP_HOVER_OFFSET_M, 0.018);
+
+  // Unit -Z pointing finger: distal at z=-0.02, tip at z=-0.04 -> selector at z=-0.058
+  const forward = projectIndexSelectorPos([0.1, 0.2, -0.04], [0.1, 0.2, -0.02]);
+  assert.ok(Math.abs(forward[0] - 0.1) < 1e-9);
+  assert.ok(Math.abs(forward[1] - 0.2) < 1e-9);
+  assert.ok(Math.abs(forward[2] - (-0.058)) < 1e-9);
+
+  // Diagonal 3D vector (1, 2, 2), length = 3 -> unit = (1/3, 2/3, 2/3)
+  const diag = projectIndexSelectorPos([1.0, 2.0, 2.0], [0.0, 0.0, 0.0], 0.018);
+  assert.ok(Math.abs(diag[0] - (1.0 + 0.006)) < 1e-9);
+  assert.ok(Math.abs(diag[1] - (2.0 + 0.012)) < 1e-9);
+  assert.ok(Math.abs(diag[2] - (2.0 + 0.012)) < 1e-9);
+  assert.ok(Math.abs(Math.hypot(diag[0] - 1.0, diag[1] - 2.0, diag[2] - 2.0) - 0.018) < 1e-9);
+
+  // Missing or coincident reference joint falls back cleanly to raw tip position without NaN
+  assert.deepEqual(projectIndexSelectorPos([0.1, 0.2, 0.3], null), [0.1, 0.2, 0.3]);
+  assert.deepEqual(projectIndexSelectorPos([0.1, 0.2, 0.3], [0.1, 0.2, 0.3]), [0.1, 0.2, 0.3]);
+
+  // Invalid tip returns null
+  assert.equal(projectIndexSelectorPos(null, [0, 0, 0]), null);
+  assert.equal(projectIndexSelectorPos([0, NaN, 1], [0, 0, 0]), null);
+});

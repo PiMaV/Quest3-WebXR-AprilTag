@@ -1,0 +1,41 @@
+{
+  "name": "@pimav/quest3-webxr-apriltag",
+  "version": "1.0.0",
+  "description": "Browser-native AprilTag to native WebXR Spatial Anchor registration for Meta Quest 3",
+  "type": "module",
+  "private": false,
+  "license": "Apache-2.0",
+  "homepage": "https://pimav.github.io/Quest3-WebXR-AprilTag/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PiMaV/Quest3-WebXR-AprilTag.git"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./solver": "./src/solver.mjs",
+    "./rigs/ms-qr-main-l.json": "./rigs/ms-qr-main-l.json",
+    "./rigs/ms-qr-tablet-l.json": "./rigs/ms-qr-tablet-l.json",
+    "./scan": "./src/tool-scan.mjs",
+    "./audit": "./src/anchor-audit.mjs",
+    "./xr-exit": "./src/xr-exit.mjs",
+    "./rigs/ms-qr-independent-tools.json": "./rigs/ms-qr-independent-tools.json"
+  },
+  "files": [
+    "index.html",
+    "src",
+    "vendor",
+    "rigs",
+    "print",
+    "examples",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "test": "node --test --experimental-test-isolation=none tests/*.test.mjs",
+    "serve": "node scripts/serve.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

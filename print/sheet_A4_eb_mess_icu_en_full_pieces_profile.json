@@ -1,0 +1,605 @@
+{
+  "schemaVersion": 2,
+  "source": "ms-qr.json",
+  "sourceConfigSha256": "3d44fb0c6618149f8ccac13cf9cd4d808bd73e95ad758cb94bd018011b5336d3",
+  "units": "mm",
+  "family": "apriltag-36h11",
+  "tagMm": 20,
+  "originId": 350,
+  "sheetVariant": "full",
+  "anchor": "tool-profile",
+  "pieces": [
+    {
+      "id": "origin-l",
+      "role": "scene-origin",
+      "markers": [
+        {
+          "id": 350,
+          "role": "ORIGIN",
+          "referenceMm": [
+            0,
+            0
+          ],
+          "paperLowerLeftMm": [
+            8.0,
+            5.0
+          ],
+          "tagCornersMm": [
+            [
+              7.5,
+              5
+            ],
+            [
+              27.5,
+              5
+            ],
+            [
+              27.5,
+              25
+            ],
+            [
+              7.5,
+              25
+            ]
+          ]
+        },
+        {
+          "id": 351,
+          "role": "+X",
+          "referenceMm": [
+            230,
+            0
+          ],
+          "paperLowerLeftMm": [
+            238.0,
+            5.0
+          ],
+          "tagCornersMm": [
+            [
+              237.5,
+              5
+            ],
+            [
+              257.5,
+              5
+            ],
+            [
+              257.5,
+              25
+            ],
+            [
+              237.5,
+              25
+            ]
+          ]
+        },
+        {
+          "id": 352,
+          "role": "+Y",
+          "referenceMm": [
+            0,
+            170
+          ],
+          "paperLowerLeftMm": [
+            8.0,
+            175.0
+          ],
+          "tagCornersMm": [
+            [
+              7.5,
+              175
+            ],
+            [
+              27.5,
+              175
+            ],
+            [
+              27.5,
+              195
+            ],
+            [
+              7.5,
+              195
+            ]
+          ]
+        }
+      ],
+      "checkerBoards": [
+        {
+          "name": "X75",
+          "centerMm": [
+            72.5,
+            15
+          ],
+          "columns": 7,
+          "rows": 4,
+          "squareMm": 5,
+          "whiteBorderMm": 1,
+          "identityMarkMm": [
+            90,
+            15,
+            5,
+            5
+          ]
+        },
+        {
+          "name": "X175",
+          "centerMm": [
+            172.5,
+            15
+          ],
+          "columns": 7,
+          "rows": 4,
+          "squareMm": 5,
+          "whiteBorderMm": 1,
+          "identityMarkMm": [
+            190,
+            5,
+            5,
+            5
+          ]
+        },
+        {
+          "name": "Y125",
+          "centerMm": [
+            25,
+            125
+          ],
+          "columns": 7,
+          "rows": 8,
+          "squareMm": 5,
+          "whiteBorderMm": 1
+        }
+      ]
+    },
+    {
+      "id": "mini-tl",
+      "role": "roi-corner",
+      "tagId": 353,
+      "markerRole": "TL",
+      "tagCornersPlateMm": [
+        [
+          5.0,
+          50.0
+        ],
+        [
+          25.0,
+          50.0
+        ],
+        [
+          25.0,
+          70.0
+        ],
+        [
+          5.0,
+          70.0
+        ]
+      ],
+      "roiVertexPlateMm": [
+        0,
+        75
+      ],
+      "checkerPointsPlateMm": [],
+      "outlinePlateMm": [
+        [
+          0,
+          0
+        ],
+        [
+          20,
+          0
+        ],
+        [
+          20,
+          45
+        ],
+        [
+          30,
+          45
+        ],
+        [
+          30,
+          55
+        ],
+        [
+          75,
+          55
+        ],
+        [
+          75,
+          75
+        ],
+        [
+          0,
+          75
+        ]
+      ],
+      "scenePose": null
+    },
+    {
+      "id": "mini-tr",
+      "role": "roi-corner",
+      "tagId": 354,
+      "markerRole": "TR",
+      "tagCornersPlateMm": [
+        [
+          50.0,
+          50.0
+        ],
+        [
+          70.0,
+          50.0
+        ],
+        [
+          70.0,
+          70.0
+        ],
+        [
+          50.0,
+          70.0
+        ]
+      ],
+      "roiVertexPlateMm": [
+        75,
+        75
+      ],
+      "checkerPointsPlateMm": [],
+      "outlinePlateMm": [
+        [
+          75,
+          0
+        ],
+        [
+          55,
+          0
+        ],
+        [
+          55,
+          45
+        ],
+        [
+          45,
+          45
+        ],
+        [
+          45,
+          55
+        ],
+        [
+          0,
+          55
+        ],
+        [
+          0,
+          75
+        ],
+        [
+          75,
+          75
+        ]
+      ],
+      "scenePose": null
+    },
+    {
+      "id": "mini-br",
+      "role": "roi-corner",
+      "tagId": 355,
+      "markerRole": "BR",
+      "tagCornersPlateMm": [
+        [
+          51.0,
+          5.0
+        ],
+        [
+          71.0,
+          5.0
+        ],
+        [
+          71.0,
+          25.0
+        ],
+        [
+          51.0,
+          25.0
+        ]
+      ],
+      "roiVertexPlateMm": [
+        76,
+        0
+      ],
+      "checkerPointsPlateMm": [],
+      "outlinePlateMm": [
+        [
+          76,
+          75
+        ],
+        [
+          56,
+          75
+        ],
+        [
+          56,
+          30
+        ],
+        [
+          46,
+          30
+        ],
+        [
+          46,
+          20
+        ],
+        [
+          1,
+          20
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          76,
+          0
+        ]
+      ],
+      "scenePose": null
+    },
+    {
+      "id": "edge-xb",
+      "role": "edge-mid",
+      "tagId": 356,
+      "markerRole": "XB",
+      "tagCornersPlateMm": [
+        [
+          35.0,
+          5.0
+        ],
+        [
+          55.0,
+          5.0
+        ],
+        [
+          55.0,
+          25.0
+        ],
+        [
+          35.0,
+          25.0
+        ]
+      ],
+      "checkerPointsPlateMm": [],
+      "outlinePlateMm": [
+        [
+          0,
+          0
+        ],
+        [
+          90,
+          0
+        ],
+        [
+          90,
+          20
+        ],
+        [
+          60,
+          20
+        ],
+        [
+          60,
+          30
+        ],
+        [
+          30,
+          30
+        ],
+        [
+          30,
+          20
+        ],
+        [
+          0,
+          20
+        ]
+      ],
+      "scenePose": null
+    },
+    {
+      "id": "edge-xt",
+      "role": "edge-mid",
+      "tagId": 357,
+      "markerRole": "XT",
+      "tagCornersPlateMm": [
+        [
+          37.0,
+          5.0
+        ],
+        [
+          57.0,
+          5.0
+        ],
+        [
+          57.0,
+          25.0
+        ],
+        [
+          37.0,
+          25.0
+        ]
+      ],
+      "checkerPointsPlateMm": [],
+      "outlinePlateMm": [
+        [
+          92,
+          0
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          20
+        ],
+        [
+          32,
+          20
+        ],
+        [
+          32,
+          30
+        ],
+        [
+          62,
+          30
+        ],
+        [
+          62,
+          20
+        ],
+        [
+          92,
+          20
+        ]
+      ],
+      "scenePose": null
+    },
+    {
+      "id": "edge-yl",
+      "role": "edge-mid",
+      "tagId": 358,
+      "markerRole": "YL",
+      "tagCornersPlateMm": [
+        [
+          35.0,
+          5.0
+        ],
+        [
+          55.0,
+          5.0
+        ],
+        [
+          55.0,
+          25.0
+        ],
+        [
+          35.0,
+          25.0
+        ]
+      ],
+      "checkerPointsPlateMm": [],
+      "outlinePlateMm": [
+        [
+          0,
+          0
+        ],
+        [
+          90,
+          0
+        ],
+        [
+          90,
+          20
+        ],
+        [
+          60,
+          20
+        ],
+        [
+          60,
+          30
+        ],
+        [
+          30,
+          30
+        ],
+        [
+          30,
+          20
+        ],
+        [
+          0,
+          20
+        ]
+      ],
+      "scenePose": null
+    },
+    {
+      "id": "edge-yr",
+      "role": "edge-mid",
+      "tagId": 359,
+      "markerRole": "YR",
+      "tagCornersPlateMm": [
+        [
+          37.0,
+          10.8
+        ],
+        [
+          57.0,
+          10.8
+        ],
+        [
+          57.0,
+          30.8
+        ],
+        [
+          37.0,
+          30.8
+        ]
+      ],
+      "checkerPointsPlateMm": [],
+      "outlinePlateMm": [
+        [
+          92,
+          5.8
+        ],
+        [
+          2,
+          5.8
+        ],
+        [
+          2,
+          25.8
+        ],
+        [
+          32,
+          25.8
+        ],
+        [
+          32,
+          35.8
+        ],
+        [
+          62,
+          35.8
+        ],
+        [
+          62,
+          25.8
+        ],
+        [
+          92,
+          25.8
+        ]
+      ],
+      "scenePose": null
+    }
+  ],
+  "setupIdentity": {
+    "labelBoxOriginMm": [
+      105,
+      2.5,
+      40,
+      25
+    ],
+    "handwritingBoxOriginMm": [
+      7,
+      33,
+      36,
+      11
+    ],
+    "digits": 6,
+    "value": null,
+    "policy": "Blank on the common print. Place a 30 x 25 mm setup label in the 40 x 25 mm X-arm sticker slot or write six digits at Y 40; identify within a project namespace. Empty or uncertain readings remain unassigned."
+  }
+}

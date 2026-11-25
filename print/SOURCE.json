@@ -1,0 +1,79 @@
+{
+  "authoredBy": "PiMaV / Mattern Engineering & Software Solutions (mess.engineering)",
+  "license": "Apache-2.0",
+  "printSeriesVersion": "3.0",
+  "versionNote": "Current M.E.S.S. L-angle print sheet series (v3.0); print sheet revisions may increment independently while exact file checksums and calibrated rig geometries remain pinned here.",
+  "copiedWithoutModification": true,
+  "paperMm": [
+    297,
+    210
+  ],
+  "assemblyTagIds": [
+    350,
+    351,
+    352
+  ],
+  "tabletPaperMm": [
+    200,
+    150
+  ],
+  "tabletAssemblyTagIds": [
+    370,
+    371,
+    372
+  ],
+  "stationaryPieceTagIds": [
+    353,
+    354,
+    355,
+    356,
+    357,
+    358,
+    359
+  ],
+  "movableTagIds": [
+    300,
+    301
+  ],
+  "microTagIds": [
+    200,
+    201
+  ],
+  "assets": [
+    {
+      "file": "print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf",
+      "role": "Primary A4 1:1 printable target sheet (L-angle 350/351/352 + perimeter/movable/micro pieces)",
+      "sha256": "fb3d6355136fb3b775acb6a6171cfb359480587ff8db0cca23832a5e4484b74a"
+    },
+    {
+      "file": "print/sheet_A4_eb_mess_icu_en_full_pieces_profile.json",
+      "role": "Exact millimeter geometry and cut-piece layout profile matching the A4 sheet",
+      "sha256": "06d5b81efd5e20b748328d330c260874befd2e98a84f4e8d0adf994879d34e9c"
+    },
+    {
+      "file": "print/sheet_A4_eb_mess_icu_en_full_pieces_preview.png",
+      "role": "Rasterized A4 sheet for 1:1 desktop screen calibration target",
+      "sha256": "ba1fd6484f28292cbf97a0d6da5681bbd371efc6e3829ecc0b59448370ae5445"
+    },
+    {
+      "file": "print/tablet_200x150mm_370_371_372.pdf",
+      "role": "Compact 200 x 150 mm tablet / e-Ink printable target (L-angle 370/371/372)",
+      "sha256": "e2b3057afc5ca2e1867be0f16a508cfce1bef74862b0e20360a984d516a51bd8"
+    },
+    {
+      "file": "examples/assets/qr_eb_mess_icu.png",
+      "role": "Embedded M.E.S.S. QR asset (eb.mess.icu) rendered inside the tablet/e-Ink SVG target and PNG export",
+      "sha256": "e26f681c875c35a3f0187f46b8a00f189af059fd7d15bdb8092d04441071c3fa"
+    },
+    {
+      "file": "examples/assets/mess_icu.webp",
+      "role": "Embedded M.E.S.S. homepage preview card for the in-XR showcase panel",
+      "sha256": "f03485008062e663dd14ff68da501b0f4cab1f3e93e4da169eda24a60cd3f293"
+    },
+    {
+      "file": "examples/assets/wetter_mess_icu.webp",
+      "role": "Embedded WETTER framework preview card for the in-XR showcase panel",
+      "sha256": "63ebaf010926241696e0b05fca5f1c84c25f97bac3767acebcbdbdb897e2e204"
+    }
+  ]
+}

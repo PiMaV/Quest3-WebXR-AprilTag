@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AprilTag WebXR · 1:1 Screen Target (A4 350–352 &amp; Tablet/e-Ink 370–372)</title>
+<style>
+  *{box-sizing:border-box}
+  body{
+    font:14px/1.45 system-ui,-apple-system,sans-serif;
+    background:#0f1722;
+    color:#f1f5f9;
+    margin:0;
+    padding:12px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    min-height:100vh;
+  }
+  body.clean{background:#ffffff;padding:6px}
+  .bar{
+    max-width:1120px;
+    width:100%;
+    background:#162231;
+    border:1px solid #273c55;
+    border-radius:10px;
+    padding:10px 14px;
+    margin-bottom:12px;
+  }
+  body.clean .bar{display:none}
+  .head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px}
+  .tabs{display:inline-flex;gap:6px;flex-wrap:wrap}
+  .tab{padding:5px 11px;border-radius:6px;border:1px solid #355070;background:#101a28;color:#cbd5e1;cursor:pointer;font-weight:600}
+  .tab.active{background:#0284c7;border-color:#38bdf8;color:#ffffff}
+  .note{color:#cbd5e1;font-size:.86rem;margin:6px 0 0}
+  .row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-top:8px}
+  .slider-wrap{display:flex;align-items:center;gap:6px;flex:1 1 320px;min-width:260px}
+  input[type=range]{flex:1;min-width:160px;accent-color:#38bdf8;cursor:pointer}
+  code{background:#0b121c;padding:2px 6px;border-radius:4px;font-size:.85rem;color:#7dd3fc}
+  .badge{font-size:.78rem;padding:2px 7px;border-radius:999px;background:#1e3a5f;color:#bae6fd;white-space:nowrap}
+  .badge.saved{background:#14532d;color:#bbf7d0}
+  .badge.warn{background:#713f12;color:#fef08a}
+  a{color:#38bdf8;text-decoration:none}
+  a:hover{text-decoration:underline}
+  button{
+    font:inherit;
+    padding:5px 10px;
+    border:1px solid #355070;
+    border-radius:6px;
+    background:#1b2a3d;
+    color:#f8fafc;
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  button:hover{background:#233852}
+  button.primary{background:#0284c7;border-color:#0369a1;color:#fff;font-weight:600}
+  button.primary:hover{background:#0369a1}
+  button.step{padding:4px 9px;font-weight:700;min-width:30px}
+  .floating{
+    display:none;
+    position:fixed;
+    top:10px;
+    right:10px;
+    z-index:30;
+    gap:6px;
+  }
+  body.clean .floating{display:flex}
+  .floating button{background:rgba(15,23,34,0.88);border-color:#334155}
+  .stage{
+    width:100%;
+    flex:1;
+    overflow:auto;
+    display:flex;
+    align-items:flex-start;
+    padding:4px 0 18px;
+  }
+  .sheet{
+    position:relative;
+    margin:0 auto;
+    flex:0 0 auto;
+    background:#ffffff;
+    box-shadow:0 10px 34px rgba(0,0,0,.5);
+    line-height:0;
+    user-select:none;
+    touch-action:pan-x pan-y;
+  }
+  body.clean .sheet{box-shadow:none}
+  .sheet img,.sheet svg{
+    display:block;
+    width:100%;
+    height:100%;
+    pointer-events:none;
+  }
+  .sheet svg{shape-rendering:crispEdges}
+  .hidden{display:none!important}
+  /*
+   * White quiet-zone plate + ISO/IEC 7810 ID-1 bank/ID card overlay (85.6 x 54.0 mm).
+   * Positions & percentages are updated per active sheet (A4 297x210 mm vs Tablet 200x150 mm)
+   * so the card is always locked 1:1 to physical mm and leaves all L-angle tags unobstructed.
+   */
+  .card-qz{
+    position:absolute;
+    transform:translate(-50%, 50%);
+    background:#ffffff;
+    border-radius:1.8% / 2.9%;
+    box-shadow:0 2px 14px rgba(15,23,42,0.18), 0 0 0 1px rgba(148,163,184,0.45);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    pointer-events:none;
+  }
+  .card-overlay{
+    position:relative;
+    width:66.66667%;
+    height:66.66667%;
+    border:2px dashed #0284c7;
+    border-radius:3.7% / 5.9%;
+    background:rgba(2, 132, 199, 0.08);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    padding:6px;
+    line-height:1.25;
+  }
+  .card-chip{
+    position:absolute;
+    left:12%;
+    top:36%;
+    width:15%;
+    height:20%;
+    border:1.5px solid rgba(2, 132, 199, 0.75);
+    border-radius:3px;
+    background:rgba(241, 245, 249, 0.85);
+  }
+  .card-label{
+    background:rgba(15, 23, 34, 0.88);
+    color:#f8fafc;
+    padding:4px 8px;
+    border-radius:6px;
+    font-size:clamp(10px, 1.15vw, 13px);
+    box-shadow:0 2px 8px rgba(0,0,0,0.2);
+  }
+  .card-label strong{display:block;color:#7dd3fc}
+  .card-label span{display:block;font-family:ui-monospace,monospace;font-size:.86em;color:#e2e8f0}
+  @media print{
+    body{background:#fff;padding:0}
+    .bar,.floating,.card-qz{display:none!important}
+    .stage{overflow:visible;padding:0}
+    .sheet{box-shadow:none}
+  }
+</style>
+
+<div class="floating">
+  <button id="floatToggleCard">Hide card</button>
+  <button id="showBar">Show controls</button>
+</div>
+
+<div class="bar">
+  <div class="head">
+    <div class="tabs">
+      <button class="tab active" id="tabA4">A4 Full Sheet · 297 × 210 mm (350 / 351 / 352)</button>
+      <button class="tab" id="tabTablet">Tablet / e-Ink · 200 × 150 mm (370 / 371 / 372)</button>
+    </div>
+    <span class="badge" id="statusBadge">Estimated 1:1</span>
+  </div>
+  <p class="note" id="modeNote">
+    Hold any standard <strong>bank / ID card (85.6 × 54.0 mm)</strong> against the blue dashed box at <code>X 50%, Y 75%</code> (white 50% quiet zone) and fine-tune until 1:1. All 14 AprilTags remain completely uncovered.
+  </p>
+  <div class="row">
+    <div class="slider-wrap">
+      <button class="step" id="zoomOutBtn" title="Zoom out (−0.5%, Shift = −2.5%)">−</button>
+      <input id="zoomSlider" type="range" min="1.50" max="8.50" step="0.005" value="4.20" aria-label="Scale in pixels per millimeter">
+      <button class="step" id="zoomInBtn" title="Zoom in (+0.5%, Shift = +2.5%)">+</button>
+      <code id="scaleOut">4.200 px/mm</code>
+    </div>
+    <button id="guessBtn" title="Reset to educated 1:1 display PPI guess">1:1 Guess</button>
+    <button id="fitBtn" title="Fit target into browser window (not 1:1)">Fit Window</button>
+    <button id="toggleCardBtn">Hide Card</button>
+    <button class="primary" id="cleanBtn">Clean Fullscreen</button>
+    <a id="downloadLink" href="../print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf" target="_blank" rel="noopener">Print / Download A4 PDF</a>
+    <button id="downloadPngBtn" class="hidden" title="Save crisp 300-DPI 200×150 mm B&amp;W PNG for e-Ink readers / tablets">Download e-Ink PNG</button>
+    <a id="questLink" href="./quest.html">Quest Demo</a>
+  </div>
+</div>
+
+<div class="stage" id="stage">
+  <div class="sheet" id="sheet">
+    <img id="a4Img" src="../print/sheet_A4_eb_mess_icu_en_full_pieces_preview.png" alt="A4 M.E.S.S. AprilTag Reference Sheet (297 x 210 mm)" draggable="false">
+    <svg id="tabletSvg" class="hidden" viewBox="0 0 200 150" xmlns="http://www.w3.org/2000/svg" aria-label="Compact 200 x 150 mm Tablet / e-Ink AprilTag Target (370 / 371 / 372)"></svg>
+    <div class="card-qz" id="cardOverlay">
+      <div class="card-overlay">
+        <div class="card-chip"></div>
+        <div class="card-label">
+          <strong>ISO Card 1:1 Check</strong>
+          <span>85.6 × 54.0 mm</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function(){
+    var CARD_W_MM=85.6;
+    var CARD_H_MM=54.0;
+    var MIN_PX_MM=1.50;
+    var MAX_PX_MM=8.50;
+    var STORAGE_KEY='webxr_apriltag_target_pxmm_'+(window.screen?window.screen.width+'x'+window.screen.height:'0x0')+'_dpr'+Math.round((window.devicePixelRatio||1)*100);
+
+    var MODES={
+      a4:{
+        wMm:297.0,hMm:210.0,cardX:50,cardY:75,qzScale:1.5,
+        note:'Hold any standard <strong>bank / ID card (85.6 × 54.0 mm)</strong> against the blue dashed box at <code>X 50%, Y 75%</code> (white 50% quiet zone) and fine-tune until 1:1. All 14 AprilTags remain completely uncovered.',
+        pdfHref:'../print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf',
+        pdfLabel:'Print / Download A4 PDF',
+        questHref:'./quest.html',
+      },
+      tablet:{
+        wMm:200.0,hMm:150.0,cardX:59,cardY:62,qzScale:1.25,
+        note:'<strong>20 × 15 cm Digital Target (iPad / e-Ink · IDs 370 / 371 / 372, 150 × 110 mm L-span, 20 mm tags):</strong> Match a bank/ID card to the dashed box for 1:1, or download the crisp B&amp;W PNG/PDF for an e-Ink reader. In Quest Demo select <em>Tablet / e-Ink (370 / 371 / 372)</em>.',
+        pdfHref:'../print/tablet_200x150mm_370_371_372.pdf',
+        pdfLabel:'Download 20×15 cm PDF',
+        questHref:'./quest.html?rig=tablet',
+      },
+    };
+
+    // Exact tag36h11 6x6 row-major bitmaps for IDs 370 / 371 / 372 verified against vendor/apriltag/apriltag_wasm.wasm.
+    // Geometry matches rigs/ms-qr-tablet-l.json (20.0 mm tags; 370=[10,10], 371=[160,10], 372=[10,120] in mm from bottom-left).
+    var TABLET_TAGS=[
+      {id:370,role:'ORIGIN',x0:10,yBottom:10,size:20,bits:'111010101111101101001010111001011001',labelX:36,labelY:142},
+      {id:371,role:'+X 150 mm',x0:160,yBottom:10,size:20,bits:'011111001010011111111110001010111101',labelX:154,labelY:142,anchor:'end'},
+      {id:372,role:'+Y 110 mm',x0:10,yBottom:120,size:20,bits:'000101001001000011001010100011110110',labelX:40,labelY:21},
+    ];
+
+    var sheet=document.getElementById('sheet');
+    var stage=document.getElementById('stage');
+    var a4Img=document.getElementById('a4Img');
+    var tabletSvg=document.getElementById('tabletSvg');
+    var slider=document.getElementById('zoomSlider');
+    var scaleOut=document.getElementById('scaleOut');
+    var statusBadge=document.getElementById('statusBadge');
+    var cardOverlay=document.getElementById('cardOverlay');
+    var toggleCardBtn=document.getElementById('toggleCardBtn');
+    var floatToggleCard=document.getElementById('floatToggleCard');
+    var tabA4=document.getElementById('tabA4');
+    var tabTablet=document.getElementById('tabTablet');
+    var modeNote=document.getElementById('modeNote');
+    var downloadLink=document.getElementById('downloadLink');
+    var downloadPngBtn=document.getElementById('downloadPngBtn');
+    var questLink=document.getElementById('questLink');
+
+    var activeMode='a4';
+    var pxPerMm=4.2;
+    var cardVisible=true;
+
+    function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v));}
+
+    function buildTabletSvg(){
+      var NS='http://www.w3.org/2000/svg';
+      function el(tag,attrs,text){
+        var n=document.createElementNS(NS,tag);
+        for(var k in attrs) n.setAttribute(k,String(attrs[k]));
+        if(text!==undefined) n.textContent=text;
+        return n;
+      }
+      tabletSvg.innerHTML='';
+      // Pure white crisp e-Ink background.
+      tabletSvg.appendChild(el('rect',{x:0,y:0,width:200,height:150,fill:'#ffffff'}));
+      // Subtle outer 200x150 mm boundary + clean L-angle arms (50x30 mm reference tile style, >=5 mm quiet zone around every tag).
+      tabletSvg.appendChild(el('rect',{x:1,y:1,width:198,height:148,fill:'none',stroke:'#94a3b8','stroke-width':0.4,'stroke-dasharray':'3 2'}));
+      tabletSvg.appendChild(el('path',{
+        d:'M 4 146 L 196 146 L 196 114 L 36 114 L 36 4 L 4 4 Z',
+        fill:'none',stroke:'#0f172a','stroke-width':0.6,
+      }));
+      // 100 mm precision ruler ticks along the bottom L-arm (x = 45..145 mm) for quick visual verification.
+      tabletSvg.appendChild(el('line',{x1:45,y1:114,x2:145,y2:114,stroke:'#0f172a','stroke-width':0.8}));
+      for(var mm=0;mm<=100;mm+=10){
+        var len=mm%50===0?4.5:2.5;
+        tabletSvg.appendChild(el('line',{x1:45+mm,y1:114,x2:45+mm,y2:114+len,stroke:'#0f172a','stroke-width':0.45}));
+      }
+      tabletSvg.appendChild(el('text',{x:95,y:122,'text-anchor':'middle',fill:'#0f172a','font-size':3.2,'font-family':'ui-monospace,monospace','font-weight':'bold'},'100 mm · L-SPAN 150 × 110 mm'));
+      // Dedicated SETUP LABEL box on X-arm (physical X=76..114 mm, Y=7.5..25.5 mm, center 95, 16.5 mm).
+      tabletSvg.appendChild(el('rect',{x:76,y:124.5,width:38,height:18,rx:1.2,fill:'#ffffff',stroke:'#64748b','stroke-width':0.45,'stroke-dasharray':'2 1.2'}));
+      tabletSvg.appendChild(el('text',{x:95,y:134.8,'text-anchor':'middle',fill:'#334155','font-size':3.4,'font-family':'system-ui,sans-serif','font-weight':'600','letter-spacing':'0.3'},'SETUP LABEL'));
+      // Stylized M.E.S.S. eb.mess.icu QR code centered on Y-arm (physical X=7..33 mm, Y=61.85..88.15 mm, center 20, 75 mm; >31 mm quiet zone to tags 370 & 372).
+      var qrImage=el('image',{x:7,y:61.85,width:26,height:26.3,preserveAspectRatio:'xMidYMid meet'});
+      qrImage.setAttribute('href','./assets/qr_eb_mess_icu.png');
+      qrImage.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href','./assets/qr_eb_mess_icu.png');
+      tabletSvg.appendChild(qrImage);
+      // Clean top header outside ISO card quiet zone.
+      tabletSvg.appendChild(el('text',{x:118,y:12,'text-anchor':'middle',fill:'#334155','font-size':3.2,'font-family':'system-ui,sans-serif','font-weight':'600'},'M.E.S.S. DIGITAL TARGET · eb.mess.icu · 200 × 150 mm'));
+
+      // Render exact 20.0 mm AprilTags (370 / 371 / 372).
+      for(var i=0;i<TABLET_TAGS.length;i++){
+        var t=TABLET_TAGS[i];
+        var yTop=150-(t.yBottom+t.size);
+        var cell=t.size/8;
+        tabletSvg.appendChild(el('rect',{x:t.x0,y:yTop,width:t.size,height:t.size,fill:'#000000'}));
+        for(var r=0;r<6;r++){
+          for(var c=0;c<6;c++){
+            if(t.bits.charAt(r*6+c)==='1'){
+              tabletSvg.appendChild(el('rect',{x:t.x0+(c+1)*cell,y:yTop+(r+1)*cell,width:cell,height:cell,fill:'#ffffff'}));
+            }
+          }
+        }
+        var labelAttrs={x:t.labelX,y:t.labelY,fill:'#0f172a','font-size':3.6,'font-family':'ui-monospace,monospace','font-weight':'bold'};
+        if(t.anchor) labelAttrs['text-anchor']=t.anchor;
+        tabletSvg.appendChild(el('text',labelAttrs,t.id+' · '+t.role));
+      }
+    }
+
+    // Educated initial 1:1 guess in CSS pixels per mm based on monitor/tablet class & devicePixelRatio.
+    function estimatePxPerMm(){
+      var dpr=window.devicePixelRatio||1;
+      var sw=(window.screen&&window.screen.width)||window.innerWidth||1920;
+      var sh=(window.screen&&window.screen.height)||window.innerHeight||1080;
+      var longCss=Math.max(sw,sh);
+      var ua=navigator.userAgent||'';
+      var isMac=/Macintosh|Mac OS X/i.test(ua);
+      var isIPad=/iPad/i.test(ua)||(isMac&&navigator.maxTouchPoints>1);
+      var cssPpi=96;
+      var reason='96 PPI CSS default';
+
+      if(isIPad){
+        cssPpi=132;
+        reason='iPad ~132 CSS PPI';
+      }else if(isMac&&dpr>=1.9){
+        cssPpi=longCss>=2000?109:114;
+        reason='macOS Retina ~'+cssPpi+' CSS PPI';
+      }else if(dpr>=1.45&&dpr<=1.8){
+        cssPpi=longCss>=2400?109:106;
+        reason='HiDPI '+Math.round(dpr*100)+'% ~'+cssPpi+' CSS PPI';
+      }else if(dpr>=1.15&&dpr<1.45){
+        cssPpi=108;
+        reason='HiDPI '+Math.round(dpr*100)+'% ~108 CSS PPI';
+      }else if(dpr>=1.9){
+        cssPpi=longCss>=1900?109:112;
+        reason='2x HiDPI ~'+cssPpi+' CSS PPI';
+      }else{
+        if(longCss>=2500){
+          cssPpi=109;
+          reason='27" QHD ~109 PPI';
+        }else if(longCss>=1900){
+          cssPpi=92;
+          reason='24" FHD ~92 PPI';
+        }else{
+          cssPpi=102;
+          reason='compact 1x ~102 PPI';
+        }
+      }
+      return {pxPerMm:cssPpi/25.4,cssPpi:cssPpi,reason:reason};
+    }
+
+    function setBadge(text,cls){
+      statusBadge.textContent=text;
+      statusBadge.className='badge'+(cls?' '+cls:'');
+    }
+
+    function updateCardLayout(){
+      var m=MODES[activeMode];
+      var qzW=(CARD_W_MM*m.qzScale/m.wMm)*100;
+      var qzH=(CARD_H_MM*m.qzScale/m.hMm)*100;
+      var innerPct=(100/m.qzScale).toFixed(5)+'%';
+      cardOverlay.style.left=m.cardX+'%';
+      cardOverlay.style.bottom=m.cardY+'%';
+      cardOverlay.style.width=qzW.toFixed(5)+'%';
+      cardOverlay.style.height=qzH.toFixed(5)+'%';
+      var inner=cardOverlay.firstElementChild;
+      if(inner){inner.style.width=innerPct;inner.style.height=innerPct;}
+    }
+
+    function applyZoom(nextPxPerMm,modeLabel,persist){
+      var m=MODES[activeMode];
+      pxPerMm=clamp(Number(nextPxPerMm)||4.0,MIN_PX_MM,MAX_PX_MM);
+      sheet.style.width=(m.wMm*pxPerMm).toFixed(2)+'px';
+      sheet.style.height=(m.hMm*pxPerMm).toFixed(2)+'px';
+      slider.value=pxPerMm.toFixed(3);
+      var cssPpi=Math.round(pxPerMm*25.4);
+      var pct=Math.round((pxPerMm/(96/25.4))*100);
+      scaleOut.textContent=pxPerMm.toFixed(3)+' px/mm ('+cssPpi+' PPI · '+pct+'%)';
+      if(modeLabel==='saved') setBadge('Saved 1:1 calibration','saved');
+      else if(modeLabel==='calibrated') setBadge('Calibrated (saved for this display)','saved');
+      else if(modeLabel==='fit') setBadge('Fitted to window — NOT 1:1 (verify with card)','warn');
+      else if(modeLabel) setBadge(modeLabel,'');
+      if(persist){
+        try{window.localStorage.setItem(STORAGE_KEY,pxPerMm.toFixed(4));}catch(_e){}
+      }
+    }
+
+    function setMode(mode){
+      activeMode=mode==='tablet'?'tablet':'a4';
+      var m=MODES[activeMode];
+      tabA4.classList.toggle('active',activeMode==='a4');
+      tabTablet.classList.toggle('active',activeMode==='tablet');
+      a4Img.classList.toggle('hidden',activeMode!=='a4');
+      tabletSvg.classList.toggle('hidden',activeMode!=='tablet');
+      downloadPngBtn.classList.toggle('hidden',activeMode!=='tablet');
+      modeNote.innerHTML=m.note;
+      downloadLink.href=m.pdfHref;
+      downloadLink.textContent=m.pdfLabel;
+      questLink.href=m.questHref;
+      updateCardLayout();
+      applyZoom(pxPerMm,null,false);
+    }
+
+    function setCardVisible(visible){
+      cardVisible=!!visible;
+      cardOverlay.classList.toggle('hidden',!cardVisible);
+      var label=cardVisible?'Hide Card':'Show Card';
+      toggleCardBtn.textContent=label;
+      floatToggleCard.textContent=label;
+    }
+
+    // Export crisp 300-DPI (2362 x 1772 px) B&W PNG of the 200x150 mm tablet/e-Ink target.
+    downloadPngBtn.addEventListener('click',function(){
+      var clone=tabletSvg.cloneNode(true);
+      var extImgs=clone.querySelectorAll('image');
+      for(var j=0;j<extImgs.length;j++) extImgs[j].remove();
+      var xml=new XMLSerializer().serializeToString(clone);
+      var blob=new Blob([xml],{type:'image/svg+xml;charset=utf-8'});
+      var url=URL.createObjectURL(blob);
+      var svgImg=new Image();
+      svgImg.onload=function(){
+        var c=document.createElement('canvas');
+        c.width=2362;c.height=1772; // Exact 200 x 150 mm at 300 DPI.
+        var ctx=c.getContext('2d');
+        ctx.fillStyle='#ffffff';ctx.fillRect(0,0,c.width,c.height);
+        ctx.drawImage(svgImg,0,0,c.width,c.height);
+        URL.revokeObjectURL(url);
+        var finish=function(){
+          var a=document.createElement('a');
+          a.href=c.toDataURL('image/png');
+          a.download='webxr-apriltag-tablet-200x150mm-370-371-372-300dpi.png';
+          a.click();
+        };
+        var qr=new Image();
+        qr.onload=function(){
+          ctx.drawImage(qr,7/200*c.width,61.85/150*c.height,26/200*c.width,26.3/150*c.height);
+          finish();
+        };
+        qr.onerror=finish;
+        qr.src='./assets/qr_eb_mess_icu.png';
+      };
+      svgImg.src=url;
+    });
+
+    tabA4.addEventListener('click',function(){setMode('a4');});
+    tabTablet.addEventListener('click',function(){setMode('tablet');});
+
+    slider.addEventListener('input',function(){applyZoom(slider.value,'calibrated',true);});
+    document.getElementById('zoomOutBtn').addEventListener('click',function(e){
+      applyZoom(pxPerMm*(e.shiftKey?0.975:0.995),'calibrated',true);
+    });
+    document.getElementById('zoomInBtn').addEventListener('click',function(e){
+      applyZoom(pxPerMm*(e.shiftKey?1.025:1.005),'calibrated',true);
+    });
+    stage.addEventListener('wheel',function(e){
+      if(e.ctrlKey||!e.shiftKey){
+        e.preventDefault();
+        applyZoom(pxPerMm*Math.exp(-e.deltaY*0.0008),'calibrated',true);
+      }
+    },{passive:false});
+    window.addEventListener('keydown',function(e){
+      if(e.target&&e.target.tagName==='INPUT') return;
+      if(e.key==='+'||e.key==='='||e.key==='ArrowUp'){
+        e.preventDefault();
+        applyZoom(pxPerMm*(e.shiftKey?1.02:1.004),'calibrated',true);
+      }else if(e.key==='-'||e.key==='_'||e.key==='ArrowDown'){
+        e.preventDefault();
+        applyZoom(pxPerMm*(e.shiftKey?0.98:0.996),'calibrated',true);
+      }
+    });
+
+    document.getElementById('guessBtn').addEventListener('click',function(){
+      var g=estimatePxPerMm();
+      applyZoom(g.pxPerMm,'Guess: '+g.reason+' (verify with card)',false);
+    });
+    document.getElementById('fitBtn').addEventListener('click',function(){
+      var m=MODES[activeMode];
+      var availW=Math.max(320,window.innerWidth-28);
+      var availH=Math.max(240,window.innerHeight-(document.body.classList.contains('clean')?20:160));
+      applyZoom(Math.min(availW/m.wMm,availH/m.hMm),'fit',false);
+    });
+
+    toggleCardBtn.addEventListener('click',function(){setCardVisible(!cardVisible);});
+    floatToggleCard.addEventListener('click',function(){setCardVisible(!cardVisible);});
+
+    document.getElementById('cleanBtn').addEventListener('click',function(){
+      document.body.classList.add('clean');
+      if(document.documentElement.requestFullscreen){
+        var p=document.documentElement.requestFullscreen();
+        if(p&&p.catch) p.catch(function(){});
+      }
+    });
+    document.getElementById('showBar').addEventListener('click',function(){
+      document.body.classList.remove('clean');
+      if(document.fullscreenElement&&document.exitFullscreen){
+        var p=document.exitFullscreen();
+        if(p&&p.catch) p.catch(function(){});
+      }
+    });
+
+    buildTabletSvg();
+    var params=new URLSearchParams(window.location.search||'');
+    var initialMode=params.get('mode')==='tablet'?'tablet':'a4';
+    var saved=null;
+    try{saved=parseFloat(window.localStorage.getItem(STORAGE_KEY));}catch(_e){}
+    setMode(initialMode);
+    if(saved&&isFinite(saved)&&saved>=MIN_PX_MM&&saved<=MAX_PX_MM){
+      applyZoom(saved,'saved',false);
+    }else{
+      var guess=estimatePxPerMm();
+      applyZoom(guess.pxPerMm,'Guess: '+guess.reason+' (verify with card)',false);
+    }
+  })();
+</script>
+</html>

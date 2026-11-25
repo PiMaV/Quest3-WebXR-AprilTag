@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quest3-WebXR-AprilTag · Browser-Native Spatial Anchors</title>
+<style>
+  *{box-sizing:border-box}
+  body{
+    font:17px/1.55 system-ui,-apple-system,sans-serif;
+    background:#101722;
+    color:#f4f7fb;
+    margin:0;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+  }
+  main{
+    max-width:740px;
+    width:100%;
+    background:#162231;
+    border:1px solid #273c55;
+    border-radius:14px;
+    padding:28px;
+    box-shadow:0 16px 40px rgba(0,0,0,.35);
+  }
+  .badge{
+    display:inline-block;
+    font-size:.82rem;
+    font-weight:600;
+    padding:3px 10px;
+    border-radius:999px;
+    background:#1e3a5f;
+    color:#bae6fd;
+    border:1px solid #355070;
+    margin-bottom:10px;
+  }
+  h1{margin:0 0 8px;font-size:1.7rem;letter-spacing:-.01em}
+  p.lead{margin:0 0 22px;color:#cfd9e6}
+  .cta{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+    gap:12px;
+    margin-bottom:20px;
+  }
+  .btn{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    padding:16px 18px;
+    border-radius:10px;
+    text-decoration:none;
+    border:1px solid #355070;
+    background:#1b2a3d;
+    color:#f4f7fb;
+    transition:background .15s,border-color .15s;
+  }
+  .btn:hover{background:#233852;border-color:#38bdf8}
+  .btn.primary{background:#0284c7;border-color:#38bdf8;color:#ffffff}
+  .btn.primary:hover{background:#0369a1}
+  .btn strong{font-size:1.05rem}
+  .btn span{font-size:.88rem;color:#dbeafe;opacity:.92}
+  .links{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px 18px;
+    padding-top:14px;
+    border-top:1px solid #273c55;
+    font-size:.9rem;
+    color:#9fb2c9;
+  }
+  .links a{color:#38bdf8;text-decoration:none}
+  .links a:hover{text-decoration:underline}
+</style>
+<main>
+  <span class="badge">v1.0.0 · Apache-2.0</span>
+  <h1>Quest3-WebXR-AprilTag</h1>
+  <p class="lead">Browser-native AprilTag → native WebXR Spatial Anchor registration for Meta Quest 3 — zero build step, no native app, and pure 90 FPS native anchor tracking.</p>
+  <div class="cta">
+    <a class="btn primary" href="./examples/quest.html">
+      <strong>Quest 3 AR Demo</strong>
+      <span>Open in Meta Quest Browser (immersive-ar · calibrate, lock &amp; measure)</span>
+    </a>
+    <a class="btn" href="./examples/target.html">
+      <strong>1:1 Screen / Tablet Target</strong>
+      <span>Calibrate an A4 or 20×15 cm display to true physical scale</span>
+    </a>
+  </div>
+  <div class="links">
+    <a href="./examples/target.html?mode=tablet">Tablet / e-Ink Target (370–372)</a>
+    <a href="./print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf" target="_blank" rel="noopener">A4 Print PDF (350–352)</a>
+    <a href="./print/tablet_200x150mm_370_371_372.pdf" target="_blank" rel="noopener">Tablet 20×15 cm PDF</a>
+    <a href="https://github.com/PiMaV/Quest3-WebXR-AprilTag" target="_blank" rel="noopener">GitHub Repository</a>
+  </div>
+</main>
+</html>
