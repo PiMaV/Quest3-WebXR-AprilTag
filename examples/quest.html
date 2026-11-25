@@ -190,7 +190,6 @@
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
-      margin-bottom: 14px;
     }
 
     @media (max-width: 500px) {
@@ -475,24 +474,24 @@
       </div>
 
       <p id="status" role="status">Loading local AprilTag detector…</p>
-
-      <p class="field-label">Target Angle</p>
-      <div class="rig-group" role="group" aria-label="Target Angle">
-        <button type="button" class="rig-btn active" data-rig="a4" aria-pressed="true">
-          <strong>Printed DIN A4 Angle</strong>
-          <span>IDs 350 / 351 / 352 · 230 × 170 mm</span>
-        </button>
-        <button type="button" class="rig-btn" data-rig="tablet" aria-pressed="false">
-          <strong>Smaller Angle</strong>
-          <span>IDs 370 / 371 / 372 · 150 × 110 mm</span>
-        </button>
-      </div>
-
       <p class="exit-hint">Exit AR anytime: Right-hand Meta gesture (palm toward you + pinch), or hold Left Thumbstick / <code>B</code> / <code>Y</code> for 1.4 s.</p>
 
       <details class="advanced">
         <summary>Advanced &amp; Diagnostics</summary>
         <div class="adv-body">
+          <div>
+            <p class="field-label">Target Angle</p>
+            <div class="rig-group" role="group" aria-label="Target Angle">
+              <button type="button" class="rig-btn active" data-rig="a4" aria-pressed="true">
+                <strong>Printed DIN A4 Angle</strong>
+                <span>IDs 350 / 351 / 352 · 230 × 170 mm</span>
+              </button>
+              <button type="button" class="rig-btn" data-rig="tablet" aria-pressed="false">
+                <strong>Smaller Angle</strong>
+                <span>IDs 370 / 371 / 372 · 150 × 110 mm</span>
+              </button>
+            </div>
+          </div>
           <div class="adv-row">
             <label class="adv-label">
               Quality:
