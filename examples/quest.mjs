@@ -1990,6 +1990,45 @@ function hideAllProbeCursors(){
   for(const c of probeCursors.values())c.group.visible=false;
 }
 
+// ---- Left-hand mode tint: MEASURE = reddish, SCAN = pleasant green (permanent mode indicator). ----
+const LEFT_HAND_TINT_MEASURE=0x6fcf97,LEFT_HAND_TINT_SCAN=0xe07a7a;
+const HAND_CHAINS=[
+  ['wrist','thumb-metacarpal','thumb-phalanx-proximal','thumb-phalanx-distal','thumb-tip'],
+  ['wrist','index-finger-metacarpal','index-finger-phalanx-proximal','index-finger-phalanx-intermediate','index-finger-phalanx-distal','index-finger-tip'],
+  ['wrist','middle-finger-metacarpal','middle-finger-phalanx-proximal','middle-finger-phalanx-intermediate','middle-finger-phalanx-distal','middle-finger-tip'],
+  ['wrist','ring-finger-metacarpal','ring-finger-phalanx-proximal','ring-finger-phalanx-intermediate','ring-finger-phalanx-distal','ring-finger-tip'],
+  ['wrist','pinky-finger-metacarpal','pinky-finger-phalanx-proximal','pinky-finger-phalanx-intermediate','pinky-finger-phalanx-distal','pinky-finger-tip'],
+];
+const HAND_TINT_MAX=160;
+const leftHandTintMat=new THREE.MeshBasicMaterial({color:LEFT_HAND_TINT_MEASURE,transparent:true,opacity:0.22,depthTest:false,depthWrite:false});
+const leftHandTint=new THREE.InstancedMesh(new THREE.SphereGeometry(1,10,8),leftHandTintMat,HAND_TINT_MAX);
+leftHandTint.frustumCulled=false;leftHandTint.renderOrder=990;leftHandTint.visible=false;leftHandTint.count=0;scene.add(leftHandTint);
+const _tintM=new THREE.Matrix4(),_tintQ=new THREE.Quaternion(),_tintP=new THREE.Vector3(),_tintS=new THREE.Vector3();
+function updateLeftHandTint(handInput,scanMode,show){
+  if(!show||!handInput){leftHandTint.visible=false;return;}
+  let n=0;
+  const put=(x,y,z,r)=>{if(n>=HAND_TINT_MAX)return;_tintP.set(x,y,z);_tintS.setScalar(r);_tintM.compose(_tintP,_tintQ,_tintS);leftHandTint.setMatrixAt(n++,_tintM);};
+  for(const chain of HAND_CHAINS){
+    let prev=null;
+    for(const name of chain){
+      const j=handInput.getJoint(name);
+      if(!j){prev=null;continue;}
+      const q=j.transform.position;
+      const r=name==='wrist'?0.016:name.endsWith('tip')?0.0085:0.0105;
+      if(prev){
+        const steps=3;
+        for(let k=1;k<steps;k++){const t=k/steps;put(prev.x+(q.x-prev.x)*t,prev.y+(q.y-prev.y)*t,prev.z+(q.z-prev.z)*t,r*0.95);}
+      }
+      put(q.x,q.y,q.z,r);
+      prev={x:q.x,y:q.y,z:q.z};
+    }
+  }
+  if(n===0){leftHandTint.visible=false;return;}
+  leftHandTint.count=n;leftHandTint.instanceMatrix.needsUpdate=true;
+  leftHandTintMat.color.setHex(scanMode?LEFT_HAND_TINT_SCAN:LEFT_HAND_TINT_MEASURE);
+  leftHandTint.visible=true;
+}
+
 function updateFingertipCursors(frameInputs,pose,{hideLeft=false}={}){
   if(!pose||!session||!space){hideAllProbeCursors();return;}
   const activeIds=new Set();
@@ -4444,6 +4483,62 @@ function drawOrbitCue(label,done,total,depthHint,goodFraming,{counterText='',tag
   orbitCueTex.needsUpdate=true;
 }
 
+// ---- First-seen L-angle world hint: rough 3D marker on the table where the tags were first spotted. ----
+let latestViewMat=null,tagHintViewMat=null,tagHintLastObsAt=0,tagHintLastSeenMs=0;
+const tagHintGroup=new THREE.Group();tagHintGroup.visible=false;scene.add(tagHintGroup);
+const tagHintTarget=new THREE.Vector3(),tagHintHasPos={v:false};
+const tagHintRingMat=new THREE.MeshBasicMaterial({color:0x4ade80,transparent:true,opacity:0.9,side:THREE.DoubleSide,depthTest:false,depthWrite:false});
+const tagHintRing=new THREE.Mesh(new THREE.RingGeometry(0.045,0.055,48),tagHintRingMat);
+tagHintRing.rotation.x=-Math.PI/2;tagHintRing.renderOrder=996;tagHintGroup.add(tagHintRing);
+const tagHintRing2=new THREE.Mesh(new THREE.RingGeometry(0.045,0.05,48),tagHintRingMat);
+tagHintRing2.rotation.x=-Math.PI/2;tagHintRing2.renderOrder=996;tagHintGroup.add(tagHintRing2);
+const tagHintArrow=new THREE.Mesh(new THREE.ConeGeometry(0.018,0.04,16),tagHintRingMat);
+tagHintArrow.rotation.x=Math.PI;tagHintArrow.renderOrder=997;tagHintGroup.add(tagHintArrow);
+const tagHintCanvas=document.createElement('canvas');tagHintCanvas.width=256;tagHintCanvas.height=72;
+{const c=tagHintCanvas.getContext('2d');
+ c.fillStyle='rgba(8,24,18,0.9)';c.beginPath();c.roundRect(3,3,250,66,14);c.fill();
+ c.strokeStyle='#4ade80';c.lineWidth=3;c.stroke();
+ c.fillStyle='#bbf7d0';c.font='bold 30px system-ui,sans-serif';c.textAlign='center';c.textBaseline='middle';
+ c.fillText('L-ANGLE HERE',128,37,236);}
+const tagHintSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:makeUiTexture(tagHintCanvas),transparent:true,depthTest:false,depthWrite:false}));
+tagHintSprite.scale.set(0.2,0.056,1);tagHintSprite.position.set(0,0.2,0);tagHintSprite.renderOrder=998;tagHintGroup.add(tagHintSprite);
+function updateTagFirstSeenHint(pose,asPhase,anPhase,now){
+  const calibrating=asPhase!=='ready'||anPhase==='collecting';
+  if(!calibrating||!capture?.isRunning?.()){tagHintGroup.visible=false;tagHintHasPos.v=false;return;}
+  // New fresh observation containing at least one expected L tag -> update rough world target.
+  if(lastObs&&lastObsAtMs>tagHintLastObsAt&&tagHintViewMat){
+    tagHintLastObsAt=lastObsAtMs;
+    const expected=rig?rig.tools[0].tags.map(t=>t.id):[350,351,352];
+    const seen=(lastObs.tags??[]).filter(t=>expected.includes(t.id)&&Array.isArray(t.pixels)&&t.pixels.length>=4);
+    if(seen.length){
+      const [iw,ih]=lastObs.imageSize??[1280,1080];
+      let cx=0,cy=0,n=0;
+      for(const t of seen)for(const q of t.pixels){cx+=q.x;cy+=q.y;n++;}
+      cx/=n;cy/=n;
+      const fx=(iw/2)/Math.tan(65*Math.PI/360);
+      const dir=new THREE.Vector3((cx-iw/2)/fx,-(cy-ih/2)/fx,-1).normalize();
+      const m=new THREE.Matrix4().fromArray(tagHintViewMat);
+      dir.transformDirection(m);
+      const o=new THREE.Vector3().setFromMatrixPosition(m);
+      const fr=analyzeFraming();
+      const dist=Number.isFinite(fr.distCm)?THREE.MathUtils.clamp(fr.distCm/100,0.25,1.4):0.55;
+      const pt=o.clone().addScaledVector(dir,dist);
+      if(!tagHintHasPos.v){tagHintTarget.copy(pt);tagHintGroup.position.copy(pt);tagHintHasPos.v=true;}
+      else tagHintTarget.lerp(pt,0.35);
+      tagHintLastSeenMs=now;
+    }
+  }
+  if(!tagHintHasPos.v||now-tagHintLastSeenMs>4000){tagHintGroup.visible=false;return;}
+  const fresh=now-tagHintLastSeenMs<800;
+  tagHintGroup.position.lerp(tagHintTarget,0.25);
+  tagHintGroup.visible=true;
+  const pulse=0.5+0.5*Math.sin(now*0.006);
+  tagHintRing2.scale.setScalar(1+0.5*pulse);
+  tagHintRingMat.opacity=(fresh?0.9:0.45)*(0.6+0.4*pulse);
+  tagHintArrow.position.set(0,0.07+0.015*pulse,0);
+  tagHintSprite.material.opacity=fresh?1:0.55;
+}
+
 function updateOrbitGuide(pose,asPhase,now,anState=null,asSummary=null){
   const activeMode=asPhase==='scanning'?'scan'
     :asPhase==='solving'?'solving'
@@ -5738,6 +5833,7 @@ try{
       if(!session)return;
       const now=performance.now();
       lastObs=observation;lastObsAtMs=now;
+      if(latestViewMat)tagHintViewMat=latestViewMat.slice();
       const lTool=observation.tools[0];
       if(lTool&&Number.isFinite(lTool.reprojectionRmsPx)){
         rmsHistory.push(lTool.reprojectionRmsPx);
@@ -6110,7 +6206,7 @@ try{
     // Bare-hand Two-Mode Architecture (SCAN <-> MEASURE) + Gated Wrist Menu (MEASURE only, zero Quest-OS conflict):
     // • Left Index+Thumb stays 100% free for the Meta Quest OS menu everywhere.
     // • Direct 1-Handed Switch (SCAN <-> MEASURE): Hardened Frontal Left Fist Hold (0.85 s, strict curl + thumb tuck + centered view,
-    //   suppressed near tags/menus). While SCAN is active, a subtle pulsing red dot sits on the left middle knuckle.
+    //   suppressed near tags/menus). While SCAN is active, the left hand is tinted green (MEASURE = reddish).
     // • Wrist Menus (Left: SCAN / ✕ PINS / ↺ CLEAR ALL; Right: Q: AUTO/FLUID/CRISP / HUD / ↺ RECALIBRATE) are active ONLY in MEASURE mode
     //   and completely hidden/disabled in SCAN mode so nothing gets in the way while scanning or recording.
     let ringShown=false,labelsShown=false,gazeShown=false,leftFistActiveForCursor=false;
@@ -6124,6 +6220,7 @@ try{
     leftWristDot.visible=false;
     rightWristDot.visible=false;
     leftScanRecDot.visible=false;
+    leftHandTint.visible=false;
     fistProgressSprite.visible=false;
     const leftHandInput=frameInputs.hands.left;
     const rightHandInput=frameInputs.hands.right;
@@ -6225,6 +6322,7 @@ try{
       const rightInfo=(!extraScanActive&&rightHandInput)?handViewAndPalm(rightHandInput,true,vm,rightWristPrev,rightWristSpeed):null;
       leftWristPrev=leftInfo?leftInfo.nextPrev:null;leftWristSpeed=leftInfo?leftInfo.speed:0;
       rightWristPrev=rightInfo?rightInfo.nextPrev:null;rightWristSpeed=rightInfo?rightInfo.speed:0;
+      updateLeftHandTint(leftHandInput,extraScanActive,canScan);
       const leftIdxPos=leftHandInput?leftHandInput.getIndexTipWorld():null;
       const rightIdxPos=rightHandInput?rightHandInput.getIndexTipWorld():null;
 
@@ -6284,16 +6382,8 @@ try{
           if(now<leftMenuOpenUntil&&inView&&palmDot>0.45&&!fistPostureActive){
             leftMenuOpenUntil=Math.max(leftMenuOpenUntil,now+MENU_GRACE_MS);
           }
-        }else if(canScan&&jMidProx){
-          // Subtle pulsing red SCAN recording dot on left middle knuckle whenever SCAN is active.
-          const mp=jMidProx.transform.position;
-          const pulse=0.5+0.5*Math.sin(now*0.0075);
-          leftScanRecDot.visible=true;
-          leftScanRecDot.position.set(mp.x+ux*0.55,mp.y+uy*0.55,mp.z+uz*0.55);
-          leftScanRecDot.scale.setScalar(0.88+0.24*pulse);
-          leftScanRecDotMat.color.setHex(0xef4444);
-          leftScanRecDotMat.opacity=0.68+0.32*pulse;
         }
+        // (Left-middle SCAN recording dot removed on purpose.)
 
         const leftMenuOpen=canScan&&!extraScanActive&&now<leftMenuOpenUntil;
         leftPalmFacingViewer=Boolean(inView&&palmDot>0.65);
@@ -6369,11 +6459,9 @@ try{
         if(leftMenuOpen){
           const fenceActive=Boolean(perimeterFence?.isActive());
           const pFence=perimeterFence?placePill(fingerBadgeIdx,ji,canScan,fenceActive?'◈ FENCE ON':'◈ FENCE OFF',fenceActive?'#22d3ee':'#94a3b8',wristPillPokeId==='l-fence'):null;
-          const pMid=placePill(fingerBadgeMid,jm,canScan,'● SCAN','#ef4444',activeFinger==='mid'||wristPillPokeId==='l-mid');
           const pRing=placePill(fingerBadgeRing,jr,canScan,'✕ PINS','#e879f9',activeFinger==='ring'||wristPillPokeId==='l-ring');
           const pPinky=placePill(fingerBadgePinky,jp,canScan,'↺ CLEAR ALL','#fbbf24',activeFinger==='pinky'||wristPillPokeId==='l-pinky');
           if(pFence)openPills.push({id:'l-fence',probeId:'hand:right',pos:pFence,poker:rightIdxPos,color:0x22d3ee,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;togglePerimeterFence(now);}});
-          if(pMid)openPills.push({id:'l-mid',probeId:'hand:right',pos:pMid,poker:rightIdxPos,color:0xef4444,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;toggleExtraScan();}});
           if(pRing)openPills.push({id:'l-ring',probeId:'hand:right',pos:pRing,poker:rightIdxPos,color:0xe879f9,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;const hadPins=pinnedPoints.size>0;clearPins();playModeTick('unpin');showHudToast(hadPins?'✕ PINNED BOXES CLEARED':'NO PINNED BOXES','#e879f9',1600);}});
           if(pPinky)openPills.push({id:'l-pinky',probeId:'hand:right',pos:pPinky,poker:rightIdxPos,color:0xf59e0b,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;playModeTick('unpin');clearMovableTrails();}});
         }
@@ -6529,7 +6617,9 @@ try{
       reticle.visible=Boolean(capture.isRunning?.())&&calibratingOrLocking;
       reticle.material.color.setHex(0x38bdf8);
       reticle.scale.setScalar(1.0);
+      latestViewMat=Array.from(pose.transform.matrix);
       updateOrbitGuide(pose,asPhase,now,anSummary,assistant?.summary?.());
+      updateTagFirstSeenHint(pose,asPhase,anPhase,now);
       if(now-lastStabilitySample>=240){
         lastStabilitySample=now;
         const auditFresh=lastAuditRow&&now-lastAuditAt<2500;
