@@ -15,7 +15,7 @@ import {createPerimeterFence,isPerimeterTag,perimeterRole,FENCE_HEIGHT_M} from '
 import {matToQuat,quatSlerp,composeRigid} from '../src/runtime.mjs';
 
 const $=id=>document.getElementById(id),status=text=>$('status').textContent=text;
-const PERIMETER_ENABLED=false;
+const PERIMETER_ENABLED=true;
 const EXTRA_COLORS=[0x38bdf8,0xf59e0b,0xa78bfa,0x34d399,0xfb7185,0xfacc15];
 const urlParams=new URLSearchParams(location.search);
 const aaToggleEl=$('aaToggle');
@@ -278,6 +278,7 @@ function drawFingerPill(pill,text,accent,hot=false){
   ctx.fillText(text,105,text.length>10?39:41,188);ctx.textAlign='left';
   pill.tex.needsUpdate=true;
 }
+const fingerBadgeIdx=makeFingerPill();
 const fingerBadgeMid=makeFingerPill();
 const fingerBadgeRing=makeFingerPill();
 const fingerBadgePinky=makeFingerPill();
@@ -1196,6 +1197,7 @@ fenceGroup.visible=false;
 root.add(fenceGroup);
 const perimeterTagVisuals=new Map();
 let perimeterFence=null;
+let perimeterOfferSuppressed=false;
 let fenceRiseStartMs=0;
 let perimeterCompleteAnnounced=false;
 
@@ -1300,7 +1302,7 @@ function getOrCreatePerimeterTagVisual(m){
 
 function isPerimeterBadgeVisible(vis){
   const k=waypointIdKey(vis.wp);
-  const tlBlocked=Boolean(perimeterFence?.isOffered()&&vis.id===perimeterFence.triggerTagId);
+  const tlBlocked=Boolean(perimeterFence?.isOffered()&&!perimeterOfferSuppressed&&vis.id===perimeterFence.triggerTagId);
   return !(hoveredWaypoint===vis.wp||hoveredWaypoint2===vis.wp||pinnedPoints.has(k)||tlBlocked);
 }
 
@@ -1529,6 +1531,8 @@ function drawTlOfferCard(probeKind,pressProg=0,hot=false){
 
 async function activatePerimeterFromTL(now=performance.now()){
   if(!perimeterFence?.activate())return;
+  perimeterOfferSuppressed=false;
+  lastModeFenceKey='';
   const tl=perimeterFence.triggerMarker();
   hoveredTlOffer=false;
   tlOfferPressSince=null;
@@ -1558,9 +1562,34 @@ async function activatePerimeterFromTL(now=performance.now()){
   }
 }
 
+function togglePerimeterFence(now=performance.now()){
+  if(!perimeterFence)return;
+  if(perimeterFence.isActive()){
+    perimeterFence.deactivate();
+    perimeterOfferSuppressed=true;
+    hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;
+    lastModeFenceKey='';
+    syncFenceVisuals(now,0,true);
+    playModeTick('unpin');
+    showHudToast('◈ PERIMETER OFF','#94a3b8',1500);
+    status('Perimeter fence OFF');
+  }else{
+    perimeterFence.activate({force:true});
+    perimeterOfferSuppressed=false;
+    hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;
+    fenceRiseStartMs=now;
+    lastModeFenceKey='';
+    syncFenceVisuals(now,0,true);
+    const cnt=perimeterFence.dynamicCount();
+    playModeTick('pin');
+    showHudToast(cnt>0?`◈ PERIMETER ON (${cnt}/7)`:'◈ PERIMETER ON · SCAN 353–359','#22d3ee',1800);
+    status(cnt>0?`Perimeter fence ON (${cnt}/7)`:'Perimeter fence ON · scan 353–359');
+  }
+}
+
 function updateTlPerimeterOffer(frameInputs,world,anPhase,asPhase,now){
   const anchored=Boolean(world)&&asPhase==='ready'&&(anPhase==='tracking'||anPhase==='created');
-  if(!anchored||!perimeterFence?.isOffered()){
+  if(!anchored||!perimeterFence?.isOffered()||perimeterOfferSuppressed){
     tlOfferGroup.visible=false;
     hoveredTlOffer=false;
     tlOfferPressSince=null;
@@ -1626,6 +1655,14 @@ modePillSprite.scale.set(0.086,0.030,1);
 modePillSprite.renderOrder=14;
 modePillGroup.add(modePillSprite);
 
+const modeFenceCanvas=document.createElement('canvas');modeFenceCanvas.width=240;modeFenceCanvas.height=96;
+const modeFenceTex=makeUiTexture(modeFenceCanvas);
+const modeFenceSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeFenceTex,transparent:true,depthTest:false,depthWrite:false}));
+modeFenceSprite.position.set(-0.090,0,0);
+modeFenceSprite.scale.set(0.072,0.030,1);
+modeFenceSprite.renderOrder=14;
+modePillGroup.add(modeFenceSprite);
+
 const modeInfoCanvas=document.createElement('canvas');modeInfoCanvas.width=96;modeInfoCanvas.height=96;
 const modeInfoTex=makeUiTexture(modeInfoCanvas);
 const modeInfoSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeInfoTex,transparent:true,depthTest:false,depthWrite:false}));
@@ -1643,9 +1680,35 @@ modeHelpSprite.visible=false;
 modeHelpSprite.renderOrder=15;
 modePillGroup.add(modeHelpSprite);
 
-let hoveredModePill=false,hoveredModeMain=false,hoveredModeInfo=false;
+let hoveredModePill=false,hoveredModeMain=false,hoveredModeInfo=false,hoveredModeFence=false;
 let modePillPokeSince=null,modePillPokeConsumed=false,modePillCooldownUntil=0,lastModePillKey='';
+let modeFencePokeSince=null,modeFencePokeConsumed=false,modeFenceCooldownUntil=0,lastModeFenceKey='';
 let modeHelpOpen=false,modeInfoPokeSince=null,modeInfoPokeConsumed=false,modeInfoCooldownUntil=0,lastModeInfoKey='',lastModeHelpKey='';
+function drawModeFenceBtn(fStatus,dynCount,hot,prog=0){
+  const eff=(fStatus==='offered'&&perimeterOfferSuppressed)?'idle':fStatus;
+  const key=`${eff}:${dynCount}:${hot?1:0}:${Math.round(prog*20)}`;
+  if(key===lastModeFenceKey)return;
+  lastModeFenceKey=key;
+  const ctx=modeFenceCanvas.getContext('2d');
+  ctx.clearRect(0,0,240,96);
+  const active=eff==='active',offered=eff==='offered';
+  ctx.fillStyle=active?'rgba(8,36,44,0.94)':(offered?'rgba(42,28,8,0.94)':'rgba(15,23,42,0.92)');
+  ctx.beginPath();ctx.roundRect(4,4,232,88,24);ctx.fill();
+  ctx.strokeStyle=hot?'#fde047':(active?'#22d3ee':(offered?'#fbbf24':'#64748b'));
+  ctx.lineWidth=hot?5:3.5;ctx.stroke();
+  if(prog>0.02){
+    ctx.fillStyle=active?'rgba(148,163,184,0.30)':'rgba(34,211,238,0.32)';
+    ctx.beginPath();ctx.roundRect(6,6,Math.max(16,228*Math.min(1,prog)),84,22);ctx.fill();
+  }
+  ctx.fillStyle=hot?'#ffffff':(active?'#22d3ee':(offered?'#fbbf24':'#cbd5e1'));
+  ctx.font='bold 26px system-ui,sans-serif';ctx.textAlign='center';
+  ctx.fillText('◈ FENCE',120,44);
+  ctx.fillStyle=active?'#a5f3fc':(offered?'#fde68a':'#94a3b8');
+  ctx.font='bold 17px ui-monospace,monospace';
+  ctx.fillText(active?`ON · ${dynCount}/7`:(offered?'TL READY':'OFF'),120,74);
+  ctx.textAlign='left';
+  modeFenceTex.needsUpdate=true;
+}
 function drawModePillCard(scanActive,hot,prog=0){
   const qMode=adaptiveQuality.getMode();
   const key=`${scanActive?1:0}:${qMode}:${hot?1:0}:${Math.round(prog*20)}`;
@@ -1738,27 +1801,33 @@ function toggleModeHelp(now=performance.now()){
 function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   const anchored=Boolean(world)&&asPhase==='ready'&&(anPhase==='tracking'||anPhase==='created');
   if(!anchored){
-    modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;
+    modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;
     modePillPokeSince=null;modePillPokeConsumed=false;
+    modeFencePokeSince=null;modeFencePokeConsumed=false;
     modeInfoPokeSince=null;modeInfoPokeConsumed=false;
     modeHelpSprite.visible=false;
     return;
   }
   modePillGroup.visible=true;
   const probes=frameInputs.getProbesL();
-  let bestDist=Infinity,bestInfoDist=Infinity;
+  let bestDist=Infinity,bestInfoDist=Infinity,bestFenceDist=Infinity;
   for(const pr of probes){
     const d=Math.hypot(pr.pos[0]-0.11,pr.pos[1]+0.048,pr.pos[2]-0.032);
     const di=Math.hypot(pr.pos[0]-0.174,pr.pos[1]+0.048,pr.pos[2]-0.032);
-    recordProbeProximity(pr.probeId,Math.min(d,di));
+    const df=Math.hypot(pr.pos[0]-0.020,pr.pos[1]+0.048,pr.pos[2]-0.032);
+    recordProbeProximity(pr.probeId,Math.min(d,di,df));
     if(d<bestDist)bestDist=d;
     if(di<bestInfoDist)bestInfoDist=di;
+    if(df<bestFenceDist)bestFenceDist=df;
   }
   hoveredModeMain=bestDist<0.044;
   hoveredModeInfo=bestInfoDist<0.034;
-  hoveredModePill=hoveredModeMain||hoveredModeInfo;
+  hoveredModeFence=Boolean(perimeterFence)&&bestFenceDist<0.038;
+  hoveredModePill=hoveredModeMain||hoveredModeInfo||hoveredModeFence;
   modePillSprite.scale.set(hoveredModeMain?0.096:0.086,hoveredModeMain?0.034:0.030,1);
   modeInfoSprite.scale.set(hoveredModeInfo?0.035:0.030,hoveredModeInfo?0.035:0.030,1);
+  modeFenceSprite.visible=Boolean(perimeterFence);
+  modeFenceSprite.scale.set(hoveredModeFence?0.080:0.072,hoveredModeFence?0.034:0.030,1);
 
   let prog=0;
   if(bestDist<0.038&&now>=modePillCooldownUntil){
@@ -1773,6 +1842,21 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   }else{
     modePillPokeSince=null;
     if(bestDist>0.055)modePillPokeConsumed=false;
+  }
+
+  let fenceProg=0;
+  if(perimeterFence&&bestFenceDist<0.034&&now>=modeFenceCooldownUntil){
+    if(!modeFencePokeConsumed){
+      if(modeFencePokeSince==null)modeFencePokeSince=now;
+      fenceProg=Math.min(1,(now-modeFencePokeSince)/220);
+      if(fenceProg>=1){
+        modeFencePokeConsumed=true;modeFencePokeSince=null;modeFenceCooldownUntil=now+700;
+        togglePerimeterFence(now);
+      }
+    }
+  }else{
+    modeFencePokeSince=null;
+    if(bestFenceDist>0.050)modeFencePokeConsumed=false;
   }
 
   let infoProg=0;
@@ -1791,6 +1875,9 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   }
 
   drawModePillCard(extraScanActive,hoveredModeMain,prog);
+  if(perimeterFence){
+    drawModeFenceBtn(perimeterFence.status(),perimeterFence.dynamicCount(),hoveredModeFence,fenceProg);
+  }
   drawModeInfoBtn(modeHelpOpen,hoveredModeInfo,infoProg);
   modeHelpSprite.visible=modeHelpOpen;
   if(modeHelpOpen)drawModeHelpCard(extraScanActive);
@@ -2950,7 +3037,7 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     }
     for(const vis of perimeterTagVisuals.values()){
       if(!vis.visible||!vis.wp)continue;
-      if(perimeterFence?.isOffered()&&vis.id===perimeterFence.triggerTagId)continue;
+      if(perimeterFence?.isOffered()&&!perimeterOfferSuppressed&&vis.id===perimeterFence.triggerTagId)continue;
       for(const pr of probes)tryCandidate(vis.wp,pr,Infinity);
     }
   }
@@ -3222,7 +3309,7 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     }
     for(const vis of perimeterTagVisuals.values()){
       if(!vis.visible||!vis.wp)continue;
-      if(perimeterFence?.isOffered()&&vis.id===perimeterFence.triggerTagId)continue;
+      if(perimeterFence?.isOffered()&&!perimeterOfferSuppressed&&vis.id===perimeterFence.triggerTagId)continue;
       for(const pr of otherProbes)tryCandidate2(vis.wp,pr);
     }
   }
@@ -4238,6 +4325,7 @@ function clearExtras(){
   placedExtras=new Map();extraPending=new Map();movableTools=new Map();
   perimeterTagVisuals.clear();
   perimeterFence?.reset();
+  perimeterOfferSuppressed=false;lastModeFenceKey='';
   lastSyncedFenceVer=-1;lastSyncedFenceScan=false;
   fenceRiseStartMs=0;perimeterCompleteAnnounced=false;
   hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;
@@ -4979,7 +5067,8 @@ function renderLeftHud(now,as,an,cs){
       title='STEP 3/4 · CREATING ANCHOR…';accent='#eab308';progress=1;
       copy='Requesting native WebXR spatial anchor from Quest runtime…';
     }else if(an.phase==='tracking'||an.phase==='created'){
-      const fStatus=perimeterFence?.status()??'idle';
+      const rawFStatus=perimeterFence?.status()??'idle';
+      const fStatus=(rawFStatus==='offered'&&perimeterOfferSuppressed)?'idle':rawFStatus;
       const fenceCnt=perimeterFence?perimeterFence.dynamicCount():0;
       const recCount=[...movableTools.values()].filter(e=>e.recording).length;
       const fenceBadge=fStatus==='active'?`Fence:${fenceCnt}/7`:(fStatus==='offered'?'TL READY':'SCAN');
@@ -5059,7 +5148,8 @@ function renderLeftHud(now,as,an,cs){
       c.fillText(`${ok?'✓':'·'}${id}`,px+36,189);c.textAlign='left';
     });
     const exSeen=(lastObs?.unassignedDetections??[]).map(u=>u.id).slice(0,5).join(', ')||'–';
-    const fSnap=perimeterFence?.snapshot();
+    const rawFSnap=perimeterFence?.snapshot();
+    const fSnap=(rawFSnap?.status==='offered'&&perimeterOfferSuppressed)?{...rawFSnap,status:'idle',offered:false}:rawFSnap;
     c.fillStyle='#e2e8f0';c.font='16px ui-monospace,monospace';
     c.fillText(`Extra:  ${exSeen}`,256,222);
     if(fSnap?.status==='active'){
@@ -5353,7 +5443,7 @@ const anchor=createLAnchorController({
     syncFenceVisuals(performance.now(),0,true);
     playModeTick('scan');
     showCenterConfirm('✓ L-ANGLE LOCKED','Now walk around & look at AprilTags to scan','#4ade80',3400);
-    if(perimeterFence?.isOffered()){
+    if(perimeterFence?.isOffered()&&!perimeterOfferSuppressed){
       showHudToast('◈ TL #353 FOUND · PRESS TL FOR PERIMETER','#22d3ee',2800);
     }
     status(`Anchored (seed ±${s.seed?.positionSpreadMm?.toFixed(2)??'?'} mm) · Walk around & look at AprilTags to scan`);
@@ -5422,8 +5512,8 @@ function clean(s){
   finalizeDiagnostics();
   space?.removeEventListener?.('reset',reset);
   assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
-  hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;
-  modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';
+  hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;perimeterOfferSuppressed=false;
+  modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';
   modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
   session=null;space=null;floorSpace=null;profile=null;extraScanActive=false;lastMotionState=null;lastObs=null;lastObsAtMs=0;reanchorConfirmUntil=0;resetAnchorStability();
   hasPrevViewerPose=false;smoothedHeadAngDegS=0;smoothedHeadLinMS=0;appliedFoveation=null;
@@ -5807,8 +5897,8 @@ try{
       adaptiveQuality.setMode(currentQualityMode());
       adaptiveQuality.reset();
       appliedFoveation=null;lastQualityState=adaptiveQuality.state();
-      hasPrevViewerPose=false;smoothedHeadAngDegS=0;smoothedHeadLinMS=0;rightMidPinchSince=null;
-      lastModePillKey='';modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;
+      hasPrevViewerPose=false;smoothedHeadAngDegS=0;smoothedHeadLinMS=0;rightMidPinchSince=null;perimeterOfferSuppressed=false;
+      lastModePillKey='';modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';
       modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
       hudPanelsVisible=false;hudDragState=null;resetHudCache();perfTracker.reset();
       leftFistToggle.reset();leftFistFlashUntil=0;leftFistFlashPos=null;leftFistFlashToScan=false;
@@ -5842,8 +5932,9 @@ try{
           if(showcaseOpen&&showcaseHoverZone){triggerShowcaseAction(showcaseHoverZone,now);return;}
           // Priority 1: Pinch/Trigger on a pinned card's red [×] close orb removes that pin.
           if(hoveredClosePinKey){unpinWaypoint(hoveredClosePinKey);return;}
-          // Priority 1b: Pinch/Trigger while hovering the anchored [■ MEASURE / ● SCAN] button or [ ? ] guide button.
+          // Priority 1b: Pinch/Trigger while hovering the anchored [◈ FENCE] / [■ MEASURE / ● SCAN] / [ ? ] buttons.
           if(hoveredModeInfo){toggleModeHelp(now);return;}
+          if(hoveredModeFence){togglePerimeterFence(now);return;}
           if(hoveredModeMain){toggleExtraScan();return;}
           // Priority 2: Controller Trigger pins/unpins immediately with ✓ confirmation burst; bare-hand pinch uses the 350 ms radial loader.
           if(hoveredWaypoint){
@@ -5855,7 +5946,7 @@ try{
             return;
           }
           // Priority 3: Pinch/Trigger while hovering the TL (#353) perimeter activation prompt.
-          if(hoveredTlOffer&&perimeterFence?.isOffered()){
+          if(hoveredTlOffer&&perimeterFence?.isOffered()&&!perimeterOfferSuppressed){
             activatePerimeterFromTL(now);
             return;
           }
@@ -6023,6 +6114,7 @@ try{
     // • Wrist Menus (Left: SCAN / ✕ PINS / ↺ CLEAR ALL; Right: Q: AUTO/FLUID/CRISP / HUD / ↺ RECALIBRATE) are active ONLY in MEASURE mode
     //   and completely hidden/disabled in SCAN mode so nothing gets in the way while scanning or recording.
     let ringShown=false,labelsShown=false,gazeShown=false,leftFistActiveForCursor=false;
+    fingerBadgeIdx.sprite.visible=false;
     fingerBadgeMid.sprite.visible=false;
     fingerBadgeRing.sprite.visible=false;
     fingerBadgePinky.sprite.visible=false;
@@ -6275,9 +6367,12 @@ try{
         }
 
         if(leftMenuOpen){
+          const fenceActive=Boolean(perimeterFence?.isActive());
+          const pFence=perimeterFence?placePill(fingerBadgeIdx,ji,canScan,fenceActive?'◈ FENCE ON':'◈ FENCE OFF',fenceActive?'#22d3ee':'#94a3b8',wristPillPokeId==='l-fence'):null;
           const pMid=placePill(fingerBadgeMid,jm,canScan,'● SCAN','#ef4444',activeFinger==='mid'||wristPillPokeId==='l-mid');
           const pRing=placePill(fingerBadgeRing,jr,canScan,'✕ PINS','#e879f9',activeFinger==='ring'||wristPillPokeId==='l-ring');
           const pPinky=placePill(fingerBadgePinky,jp,canScan,'↺ CLEAR ALL','#fbbf24',activeFinger==='pinky'||wristPillPokeId==='l-pinky');
+          if(pFence)openPills.push({id:'l-fence',probeId:'hand:right',pos:pFence,poker:rightIdxPos,color:0x22d3ee,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;togglePerimeterFence(now);}});
           if(pMid)openPills.push({id:'l-mid',probeId:'hand:right',pos:pMid,poker:rightIdxPos,color:0xef4444,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;toggleExtraScan();}});
           if(pRing)openPills.push({id:'l-ring',probeId:'hand:right',pos:pRing,poker:rightIdxPos,color:0xe879f9,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;const hadPins=pinnedPoints.size>0;clearPins();playModeTick('unpin');showHudToast(hadPins?'✕ PINNED BOXES CLEARED':'NO PINNED BOXES','#e879f9',1600);}});
           if(pPinky)openPills.push({id:'l-pinky',probeId:'hand:right',pos:pPinky,poker:rightIdxPos,color:0xf59e0b,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;playModeTick('unpin');clearMovableTrails();}});
