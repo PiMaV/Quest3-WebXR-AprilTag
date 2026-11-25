@@ -5,7 +5,7 @@
   "type": "module",
   "private": false,
   "license": "Apache-2.0",
-  "homepage": "https://pimav.github.io/Quest3-WebXR-AprilTag/",
+  "homepage": "https://q3.mess.engineering/",
   "repository": {
     "type": "git",
     "url": "https://github.com/PiMaV/Quest3-WebXR-AprilTag.git"
