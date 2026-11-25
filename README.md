@@ -1,80 +1,98 @@
 # Quest3-WebXR-AprilTag
 
-Browser-native **AprilTag → WebXR Spatial Anchor** registration for **Meta Quest 3** — no Unity, no native app, and no continuous marker tracking after anchoring.
+Physical millimeter `(0, 0, 0)` WebXR anchor for Meta Quest 3 — calibrate once, lock a native `XRAnchor`, and track at 90 FPS with the camera off.
 
-> **Release:** `v1.0.0` · **License:** `Apache-2.0` · Hardware-tested on Meta Quest 3 (`OculusBrowser 157 / Chrome 157`).
-> **Live Soft Launch (GitHub Pages):**
-> - **Landing Page:** https://pimav.github.io/Quest3-WebXR-AprilTag/
-> - **Quest 3 AR Demo:** https://pimav.github.io/Quest3-WebXR-AprilTag/examples/quest.html
-> - **1:1 Screen Target (A4):** https://pimav.github.io/Quest3-WebXR-AprilTag/examples/target.html
-> - **1:1 Tablet / e-Ink Target (`370 / 371 / 372`):** https://pimav.github.io/Quest3-WebXR-AprilTag/examples/target.html?mode=tablet
+**Live:** [q3.mess.engineering](https://q3.mess.engineering/) · `v1.0.0` · `Apache-2.0` · Zero build step
 
-## Core Idea
+[![Launch Quest 3 AR Demo](examples/assets/quest_demo_preview.png)](https://q3.mess.engineering/examples/quest.html)
 
-1. **Calibrate once per device/camera mode:** Capture multi-view observations of a printed planar AprilTag L-angle (`350 / 351 / 352`, `tag36h11`) while moving your head in `immersive-ar`. A background Web Worker solves camera intrinsics (`K`), camera-to-headset hand-eye transform (`viewerFromCameraGL`), and capture-to-XR pose delay (`timeOffsetMs`), then validates on held-out and fresh views and caches the profile in `localStorage`.
-2. **Lock onto the physical frame:** Collect 5 consistent 3-tag views of the stationary L-angle.
-3. **Hand off to native WebXR:** Call `frame.createAnchor(rigid, referenceSpace)` once and **stop the camera**. From that point on, `frame.getPose(anchor.anchorSpace, referenceSpace)` drives the 3D scene natively at 90 FPS with zero optical fallback.
+**[Launch Quest 3 AR Demo →](https://q3.mess.engineering/examples/quest.html)** — Meta Quest Browser (`immersive-ar`: calibrate, lock & measure)
 
-```text
-worldFromL = worldFromViewer(captureTime + timeOffsetMs) × viewerFromCameraGL × cameraFromL(captureTime)
-```
+| **SCREEN** (`A4 · 350–352`) | **TABLET** (`20 × 15 cm · 370–372`) |
+|---|---|
+| [![SCREEN A4 Target Preview](print/sheet_A4_eb_mess_icu_en_full_pieces_preview.png)](https://q3.mess.engineering/examples/target.html) | [![TABLET 20x15 cm Target Preview](print/tablet_200x150mm_370_371_372_preview.png)](https://q3.mess.engineering/examples/target.html?mode=tablet) |
+| [Open 1:1 Screen Target →](https://q3.mess.engineering/examples/target.html) · [A4 Print PDF ↗](print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf) | [Open 1:1 Tablet / e-Ink Target →](https://q3.mess.engineering/examples/target.html?mode=tablet) · [Tablet PDF ↗](print/tablet_200x150mm_370_371_372.pdf) |
 
-## Hardware Measurements (Meta Quest 3)
+Print the A4 sheet at 100% scale (disable "Fit to Page", [`print/SOURCE.json`](print/SOURCE.json)), or size either target 1:1 on a monitor / iPad / e-Ink reader ([`rigs/ms-qr-tablet-l.json`](rigs/ms-qr-tablet-l.json)) using a standard bank/ID card (`85.6 × 54.0 mm`).
+
+---
+
+## Measured on Meta Quest 3
 
 Recorded on real Meta Quest 3 hardware (`OculusBrowser 157.0.0.22.15`, `Chrome 157`, `1280×1080`, `resizeMode: "none"`, `centered-square` zero-distortion model):
 
 | Metric | Measured Result |
 |---|---|
+| Native `XRAnchor` loop & readback | `89–90 FPS`; `0.8–0.9 ms` median main-thread readback (`max 2.4 ms`, `worker-bitmap`) |
+| Anchor creation & tracking stability | `~15 ms` creation; `18,777` / `11,462` / `6,109` consecutive tracked frames (`0` lost) |
 | Intrinsics fit (`fx = fy`) | `866–892 px` (`trainingRmsPx: 0.37–0.48 px`, `heldOutRmsPx: 0.27–0.37 px`) |
 | Capture-to-XR time offset | `-50.2` to `-53.4 ms` (`3/3` seeds converged, spread `< 1 µs`) |
 | Holdout / verification consistency | `3.8–5.3 mm` / `0.63°` holdout; `0.7–5.5 mm` / `0.06–0.3°` fresh verification |
-| Off-thread camera readback (`worker-bitmap`) | `0.8–0.9 ms` median main-thread (`max 2.4 ms`), `89–90 FPS` XR loop |
-| Native `XRAnchor` creation & tracking | Created in `~15 ms`; `18,777` / `11,462` / `6,109` consecutive tracked frames (`0` lost) |
-| Cross-session repeatability (1 m span) | `2–4 mm` on 12 mm (`200`-series) & 20 mm (`300`-series) tags; read-only audit `6–8 mm` median |
+| Cross-session repeatability (`1 m` span) | `2–4 mm` on 12 mm (`200`-series) & 20 mm (`300`-series) tags; read-only audit `6–8 mm` median |
+| Runtime & tests | `0` external runtime dependencies in `src/` · `110` passing unit tests |
 
-*Note: Reprojection and self-consistency metrics are **not** an independent physical metrology certification (`independentlyValidated: false`). Anchors are currently session-scoped (`persistent: false`); calibration profiles persist in `localStorage` across sessions.*
+*Note: Reprojection and self-consistency metrics are not an independent physical metrology certification (`independentlyValidated: false`). Anchors are session-scoped (`persistent: false`); calibrated camera profiles persist in `localStorage` across sessions.*
 
-## Quickstart
+---
 
-### Option A — Direct HTTPS via GitHub Pages (Meta Quest 3 Browser)
-Open **https://pimav.github.io/Quest3-WebXR-AprilTag/** directly in the Meta Quest 3 Browser (choose **Quest 3 AR Demo**), and open **1:1 Screen / Tablet Target** on a monitor/tablet or print the A4 PDF at 100% scale.
+## How It Works
 
-### Option B — Local Standalone (No Build Step)
+WebXR starts `(0, 0, 0)` in an arbitrary room frame, while Quest Browser's `getUserMedia()` passthrough stream exposes no calibrated intrinsics, no camera-to-headset offset, and ~50 ms of capture delay. Calibrating all three once lets native WebXR SLAM take over completely:
+
+1. **Calibrate once:** Orbit your head around a flat, stationary 3-tag L-angle (`350 / 351 / 352`, `tag36h11`, or `370 / 371 / 372` on tablet). A background Web Worker solves camera intrinsics (`K`), `viewerFromCameraGL`, and `timeOffsetMs`, checks held-out and fresh views, and caches the profile in `localStorage`.
+2. **Lock native `XRAnchor`:** Collect 5 consistent 3-tag views, call `frame.createAnchor(rigid, referenceSpace)` once, and **stop the camera**. `frame.getPose(anchor.anchorSpace, referenceSpace)` drives the scene at 90 FPS with zero optical fallback.
+3. **Work in `SCAN` or `MEASURE`:** Stay in camera-off 90 FPS `MEASURE` mode for probing and pinning, or switch to `SCAN` when locating perimeter markers, tracking movable tags, or recording 3D paths.
+
+```text
+worldFromL = worldFromViewer(captureTime + timeOffsetMs) × viewerFromCameraGL × cameraFromL(captureTime)
+```
+
+---
+
+## Controls (`examples/quest.html`)
+
+- **Startup:** **Prepare camera** → **Enter AR** → follow the orbital reticle (calibrate once or verify cached profile) → hold the 3-tag L-angle steady for 5 frames to lock. Optional debug HUD panels start `OFF` (`HUD ON/OFF` in the Wrist Menu or Controller `A/X`).
+- **`SCAN` mode (camera ON · pulsing red dot on left middle knuckle):**
+  - Static tags (`>= 350`, `100–299`) place locked objects scaled by ID class; perimeter markers (`353–359`, activated via `TL #353`) build a 20 cm clockwise table fence.
+  - Movable tags (`300–349`) auto-lock and follow via 90 Hz hand-tracking coupling.
+  - Hold a fingertip `0.55 s` on a locked tag for a **Time-Copy** snapshot; hold **`[● REC]`** (`0.65 s` start / `0.35 s` stop) above a tag to record a 3D path.
+  - Switch to `MEASURE`: floating **`[■ MEASURE]`** button on the L-angle, frontal **Left Fist Hold (`0.85 s`)**, or Controller Grip.
+- **`MEASURE` mode (camera OFF · 90 FPS):**
+  - Pure native WebXR anchor tracking — low power and free of optical stutter.
+  - Hover any locked tag, Time-Copy, or path point with your index fingertip to inspect `X / Y / Z / Floor`.
+  - **Index + Thumb Pinch** (left or right hand) or hover card **`[📌]`** orb pins/unpins points for live pairwise 3D distance rails (`mm`, `ΔZ`, `Δt`).
+  - **Gated Wrist Menu** (`1.2 s` steady frontal palm gaze or tap inner Wrist-Dot, `120 ms`): `● SCAN`, `✕ PINS`, `↺ CLEAR ALL`, `Q: AUTO/FLUID/CRISP`, `HUD ON/OFF`, and `↺ RECALIBRATE`.
+- **Re-anchor & Exit:** `1× Trigger` on tracking loss (`lost` / `failed`), `2× Trigger (≤ 1.5 s)` while `tracking` (controller); hold **Left Thumbstick** or **`B`/`Y`** (`1.4 s`) to exit AR.
+
+---
+
+## Run Locally
+
+Zero build step required (Node `>= 22` for tests and the static server):
 
 ```bash
-# 1. Run automated tests (Node >= 22)
+# 1. Run automated tests
 npm test
 
-# 2. Start the zero-dependency static server (serves root index.html at /)
+# 2. Start the zero-dependency static server (serves index.html at /)
 npm run serve
 
-# Optional: test the exact GitHub Pages subpath locally
+# Optional: serve under a subpath (production serves at the domain root q3.mess.engineering)
 node scripts/serve.mjs --base /Quest3-WebXR-AprilTag
 
-# 3a. Meta Quest 3 over USB (no TLS certificate needed; localhost is a Secure Context):
+# 3a. Meta Quest 3 over USB (localhost is a Secure Context, no TLS cert needed)
 adb reverse tcp:8443 tcp:8443
 # Open in Meta Quest Browser: http://localhost:8443/examples/quest.html
 
-# 3b. Or serve over LAN HTTPS with your own certificate:
+# 3b. Or serve over LAN HTTPS with your own certificate
 node scripts/serve.mjs --cert cert.pem --key key.pem --host 0.0.0.0 --port 8443
 ```
 
-### Target Sheet
-- **Print 1:1 (recommended for true metric scale):** `print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf` (M.E.S.S. A4 landscape print sheet — currently print v3.0, see `print/SOURCE.json`; 20 mm L-angle tags `350 / 351 / 352`, 230 × 170 mm L-span, plus stationary corner/edge pieces `353–359`, movable tags `300–301`, and 12 mm micro-tags `200–201`).
-- **Tablet / e-Ink Reader (20 × 15 cm, `370 / 371 / 372`):** Open [`examples/target.html?mode=tablet`](https://pimav.github.io/Quest3-WebXR-AprilTag/examples/target.html?mode=tablet) (or copy `print/tablet_200x150mm_370_371_372.pdf` directly onto an e-Ink reader / iPad — 20 mm tags, 150 × 110 mm L-span, `rigs/ms-qr-tablet-l.json`).
-- **Desktop Monitor (no printer handy):** Open [`examples/target.html`](https://pimav.github.io/Quest3-WebXR-AprilTag/examples/target.html) — displays the full A4 sheet with an ISO credit/ID card (`85.6 × 54.0 mm`) 1:1 calibration overlay at `X 50%, Y 75%` (white quiet-zone plate), smooth zoom, and display PPI auto-guess.
+---
 
-### Quest 3 Demo Controls & Two-Mode Workflow (`examples/quest.html`)
-- **Step 1–3 (Calibrate → Verify → Lock L-angle):** Guided automatically by the center reticle orbital guide and optional split HUD (`HUD ON/OFF`, default OFF).
-- **Step 4 — Two Main Modes (`SCAN` vs. `MEASURE`):**
-  - **`SCAN` Mode (active right after L-lock · camera ON · pulsing red dot on Left Middle knuckle):** Enables live optical AprilTag detection, **0.55 s Long-Press Time-Copies**, and continuous 3D path recording via **`[● REC]`**. Static tags (`>= 350`, `100–299`) place locked objects scaled by ID class (including perimeter markers `353–359`); movable tags (`300–349`) **auto-lock** and follow smoothly via 90 Hz hand-tracking coupling. Toggle back to `MEASURE` via the floating **`[■ MEASURE]`** button on the L-angle, **Left Fist Hold (`0.85 s`)**, or Controller Grip.
-  - **`MEASURE` Mode (camera OFF · 90 FPS):** Pure native WebXR anchor tracking — rock-solid, low power, and free of optical stutter. Hover any locked tag, Time-Copy, or path point with your index fingertip to inspect its `X / Y / Z / Floor` axes; pin/unpin via **Index+Thumb Pinch (left or right hand)** or the hover card's **`[📌]`** orb to draw live pairwise 3D distance rails (`mm`, `ΔZ`, `Δt`).
-  - **Gated Wrist Menu (active in `MEASURE` mode):** Open via **1.2 s steady frontal palm gaze** or **tapping the inner Wrist-Dot** (`120 ms`) for `● SCAN`, `✕ PINS`, `↺ CLEAR ALL`, `Q: AUTO/FLUID/CRISP`, `HUD ON/OFF`, and `↺ RECALIBRATE`.
-  - **Re-anchor & Exit:** **1× Trigger** on tracking loss (`lost` / `failed`), **2× Trigger (≤ 1.5 s)** while `tracking` (controller), **Left Thumbstick or B/Y (hold 1.4 s)** to Exit AR.
+## Library Modules (`src/`)
 
-## Architecture
-
-Core calibration, pose, anchor, hand-coupling, and runtime modules under `src/` are pure ES modules with **zero Three.js or framework dependencies**. Three.js (`vendor/three`) is only imported by `examples/quest.mjs` and the optional rendering helpers `src/ui-atlas.mjs` and `src/render-batch.mjs`:
+Core calibration, pose, anchor, hand-coupling, and runtime modules under `src/` are pure ES modules with zero Three.js or framework dependencies. Three.js (`vendor/three`) is only imported by [`examples/quest.mjs`](examples/quest.mjs) and the optional rendering helpers [`src/ui-atlas.mjs`](src/ui-atlas.mjs) and [`src/render-batch.mjs`](src/render-batch.mjs). Physical rig and print-sheet definitions live in [`rigs/ms-qr-main-l.json`](rigs/ms-qr-main-l.json), [`rigs/ms-qr-tablet-l.json`](rigs/ms-qr-tablet-l.json), and [`print/SOURCE.json`](print/SOURCE.json).
 
 | Module | Responsibility |
 |---|---|
@@ -90,8 +108,16 @@ Core calibration, pose, anchor, hand-coupling, and runtime modules under `src/` 
 | `src/ui-atlas.mjs` + `src/render-batch.mjs` | Optional Three.js instanced/atlas rendering helpers for `examples/quest.mjs` |
 | `src/xr-exit.mjs` | Quest controller long-press exit helper |
 
-## Known Scope & Limits
+---
 
-- Tested on **Meta Quest 3** (`OculusBrowser 157 / Chrome 157`). Android smartphone AR (`camera-access`) is intentionally deferred to keep the core focused on Quest 3.
-- Single-anchor lever arm: small Quest SLAM corrections can appear as gentle float at `> 1 m` distance from the L-origin; multi-anchor / multi-corner perimeter localization is planned for a later phase.
-- Licensed under **Apache-2.0** (`LICENSE`). See `THIRD_PARTY_NOTICES.md` for vendored AprilTag WASM (BSD-2-Clause / BSD-3-Clause), Three.js (MIT), and print-asset provenance (`print/SOURCE.json`).
+## Scope & Limits
+
+- Tested on **Meta Quest 3** (`OculusBrowser 157 / Chrome 157`). Android smartphone AR (`camera-access`) is deferred to keep the core focused on Quest 3.
+- Single-anchor lever arm: small Quest SLAM corrections show up as gentle drift beyond `~1 m` from the L-origin; multi-tag perimeter localization is tracked in [`docs/backlog.md`](docs/backlog.md).
+
+## Author & License
+
+Philipp Mattern  
+[M.E.S.S. – Mattern Engineering & Software Solutions](https://mess.engineering)
+
+Licensed under **Apache-2.0** ([`LICENSE`](LICENSE)). See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for vendored AprilTag WASM (BSD-2-Clause / BSD-3-Clause) and Three.js (MIT) notices, and [`print/SOURCE.json`](print/SOURCE.json) for print-asset provenance.
