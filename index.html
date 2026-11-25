@@ -84,12 +84,12 @@
     }
 
     .topbar-inner {
-      min-height: 60px;
+      min-height: 48px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 8px 0;
+      padding: 6px 0;
     }
 
     .brand-group {
@@ -154,23 +154,46 @@
     }
 
     .hero {
-      padding: clamp(28px, 4vw, 48px) 0 24px;
+      padding: 14px 0 24px;
     }
 
-    .hero h1 {
-      margin: 0 0 10px;
+    .demo-card {
+      width: min(100%, calc((100vh - 150px) * 16 / 9));
+      width: min(100%, calc((100dvh - 150px) * 16 / 9));
+      max-width: 100%;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid rgba(0, 255, 242, 0.35);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .hero-summary {
+      margin: 18px 0 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px 20px;
+    }
+
+    .hero-title {
+      margin: 0 0 4px;
       font-family: Orbitron, sans-serif;
-      font-size: clamp(1.75rem, 4vw, 2.85rem);
+      font-size: 1rem;
       font-weight: 700;
-      line-height: 1.08;
-      letter-spacing: 0.03em;
-      overflow-wrap: anywhere;
+      letter-spacing: 0.04em;
+      color: var(--text);
     }
 
     .hero-pitch {
-      margin: 0 0 8px;
+      margin: 0;
       max-width: 72ch;
-      font-size: clamp(0.98rem, 1.3vw, 1.08rem);
+      font-size: 0.96rem;
       color: var(--muted);
     }
 
@@ -180,22 +203,12 @@
     }
 
     .hero-meta {
-      margin: 0 0 24px;
+      margin: 0;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       color: var(--muted);
       opacity: 0.8;
-    }
-
-    .demo-card {
-      display: flex;
-      flex-direction: column;
-      border-radius: 16px;
-      overflow: hidden;
-      border: 1px solid rgba(0, 255, 242, 0.35);
-      background: var(--surface);
-      box-shadow: var(--shadow);
-      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      white-space: nowrap;
     }
 
     .demo-card:hover {
@@ -514,12 +527,6 @@
   <main>
     <section class="hero">
       <div class="wrap">
-        <h1>Quest3-WebXR-AprilTag</h1>
-        <p class="hero-pitch">
-          Physical millimeter <strong>(0, 0, 0)</strong> WebXR anchor for Meta Quest 3 — calibrate once, lock a native <strong>XRAnchor</strong>, and track at <strong>90 FPS</strong> with the camera off.
-        </p>
-        <p class="hero-meta">v1.0.0 · Apache-2.0 · Zero build step</p>
-
         <a class="demo-card" href="./examples/quest.html">
           <div class="demo-preview">
             <img src="./examples/assets/quest_demo_preview.png" alt="Quest 3 AR Demo preview">
@@ -529,6 +536,16 @@
             <span class="demo-sub">Meta Quest Browser · immersive-ar · calibrate, lock &amp; measure</span>
           </div>
         </a>
+
+        <div class="hero-summary">
+          <div>
+            <h1 class="hero-title">Quest3-WebXR-AprilTag</h1>
+            <p class="hero-pitch">
+              Physical millimeter <strong>(0, 0, 0)</strong> WebXR anchor for Meta Quest 3 — calibrate once, lock a native <strong>XRAnchor</strong>, and track at <strong>90 FPS</strong> with the camera off.
+            </p>
+          </div>
+          <p class="hero-meta">v1.0.0 · Apache-2.0 · Zero build step</p>
+        </div>
 
         <div class="targets-row" aria-label="1:1 calibration targets">
           <article class="target-card">

@@ -1,68 +1,531 @@
 <!doctype html>
 <html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AprilTag WebXR · Quest 3 Demo</title>
-<style>
-  body{font:17px/1.5 system-ui,sans-serif;background:#101722;color:#f4f7fb;margin:28px;max-width:860px}
-  h1{margin:0 0 8px;font-size:1.5rem}
-  ol{margin:10px 0 18px;padding-left:22px;color:#cfd9e6}
-  .controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
-  button{font:inherit;padding:11px 16px;border:1px solid #355070;border-radius:8px;background:#1b2a3d;color:#f4f7fb;cursor:pointer}
-  button:disabled{opacity:.45;cursor:not-allowed}
-  #status{padding:10px 14px;border-radius:8px;background:#162231;border:1px solid #273c55}
-  .hint{font-size:.9rem;color:#9fb2c9}
-  video{position:fixed;width:1px;height:1px;opacity:.01}
-  canvas{position:fixed;inset:0;z-index:-1}
-</style>
-<h1>AprilTag → Native WebXR Anchor</h1>
-<ol>
-  <li><strong>Prepare camera</strong> and <strong>Enter AR</strong> (keep the printed <code>350 / 351 / 352</code> L-angle flat and stationary at actual size).</li>
-  <li><strong>Calibrate / verify:</strong> Follow the center reticle orbital guide (move left/right, up/down, closer/farther, and tilt/orbit; optional debug HUD panels start OFF by default and can be toggled via Right Wrist Menu <code>HUD ON</code> or Controller <code>A/X</code>).</li>
-  <li><strong>Lock L-angle → SCAN:</strong> Hold all three reference tags steady for 5 frames to create a native WebXR anchor. Once locked, the demo enters <strong>SCAN</strong> directly.</li>
-  <li><strong>Two Main Modes — SCAN vs. MEASURE:</strong>
-    <ul>
-      <li><strong>SCAN (active right after L-lock · camera ON · Wrist Menus hidden):</strong> Focused purely on tag scanning, <strong>Time-Copies (0.55 s long-press)</strong>, and <strong>[● REC]</strong> path recording. Wrist Menus stay hidden here so nothing gets in your way; use the floating <strong>[■ MEASURE]</strong> button on the L-angle, a deliberate frontal <strong>Left Fist Hold (0.85 s)</strong>, or Controller Grip to switch to <em>MEASURE</em>.</li>
-      <li><strong>MEASURE (camera OFF · 90 FPS):</strong> Native WebXR anchor tracking only — hover any locked tag, Time-Copy, or path point and pin via <strong>Index+Thumb Pinch (left or right hand)</strong> or the hover card's <strong>[📌]</strong> orb. Wrist Menus (gated by steady palm gaze or tapping the inner Wrist-Dot) are active here for <code>● SCAN</code>, <code>✕ PINS</code>, <code>↺ CLEAR ALL</code>, <code>Q: AUTO/FLUID/CRISP</code>, <code>HUD ON/OFF</code> (default OFF), and <code>↺ RECALIBRATE</code>.</li>
-    </ul>
-  </li>
-</ol>
-<div class="controls">
-  <button id="prepare" disabled>1 · Prepare camera</button>
-  <button id="enter" disabled>2 · Enter AR</button>
-  <button id="end" disabled>Exit AR</button>
-  <button id="download" disabled>Download diagnostics JSON</button>
-</div>
-<div class="controls" style="align-items:center;gap:14px">
-  <label class="hint" style="display:inline-flex;align-items:center;gap:8px">
-    Target L-Angle:
-    <select id="rigSelect" style="font:inherit;padding:6px 10px;border:1px solid #355070;border-radius:6px;background:#1b2a3d;color:#f4f7fb">
-      <option value="a4">A4 Print / Monitor · IDs 350 / 351 / 352 (230 × 170 mm)</option>
-      <option value="tablet">Tablet / e-Ink 20 × 15 cm · IDs 370 / 371 / 372 (150 × 110 mm)</option>
-    </select>
-  </label>
-  <label class="hint" style="display:inline-flex;align-items:center;gap:8px">
-    Quality Mode:
-    <select id="qualityMode" style="font:inherit;padding:6px 10px;border:1px solid #355070;border-radius:6px;background:#1b2a3d;color:#f4f7fb">
-      <option value="auto" selected>Auto (Fluid moving → Crisp still)</option>
-      <option value="fluid">Fluid (max FPS)</option>
-      <option value="crisp">Crisp (max sharpness)</option>
-    </select>
-  </label>
-</div>
-<div class="controls" style="align-items:center;gap:16px;margin-top:4px">
-  <label class="hint" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
-    <input type="checkbox" id="fastScan" checked>
-    Adaptive / Fast live Tag Scan (<code>decimate 2</code> · 2-stage ROI ready, 6–12 Hz)
-  </label>
-  <label class="hint" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
-    <input type="checkbox" id="aaToggle" checked>
-    Antialias / MSAA (uncheck before Enter AR to A/B test Quest 3 stutter)
-  </label>
-</div>
-<p id="status" role="status">Loading local AprilTag detector…</p>
-<p class="hint">Exit AR anytime: hold left thumbstick or B/Y for 1.4 seconds. No printer handy? Open the <a href="./target.html" style="color:#38bdf8">A4 on-screen target</a> or the <a href="./target.html?mode=tablet" style="color:#38bdf8">Tablet / e-Ink 20 × 15 cm target (370 / 371 / 372)</a>.</p>
-<video muted playsinline id="video"></video>
-<canvas id="canvas"></canvas>
-<script type="module" src="./quest.mjs"></script>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#05070a">
+  <title>Quest 3 AR · M.E.S.S.</title>
+  <link rel="icon" type="image/png" sizes="96x96" href="https://mess.engineering/favicon/favicon-96x96.png">
+  <link rel="icon" type="image/svg+xml" href="https://mess.engineering/favicon/favicon.svg">
+  <link rel="shortcut icon" href="https://mess.engineering/favicon/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="https://mess.engineering/favicon/apple-touch-icon.png">
+
+  <!-- Offline fallback matching https://mess.engineering/brand/tokens/brand.json -->
+  <style>
+    :root {
+      --bg: #05070a;
+      --bg-soft: #0b0f14;
+      --surface: #11161d;
+      --text: #f3f7fa;
+      --muted: #aab6c3;
+      --line: rgba(255, 255, 255, 0.10);
+      --line-strong: rgba(255, 255, 255, 0.16);
+      --panel: rgba(255, 255, 255, 0.035);
+      --panel-strong: rgba(255, 255, 255, 0.07);
+      --dampf: #00fff2;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      color: var(--text);
+      background: linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 100%);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+  </style>
+
+  <!-- Canonical M.E.S.S. Brand SSoT -->
+  <link rel="stylesheet" href="https://mess.engineering/brand/css/brand.css">
+
+  <style>
+    body {
+      background: linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 100%);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      background: rgba(5, 7, 10, 0.84);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .topbar-inner {
+      width: min(calc(100% - 32px), 980px);
+      margin: 0 auto;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 6px 0;
+    }
+
+    .top-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      font-family: Orbitron, sans-serif;
+      font-size: 0.74rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 5px 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      white-space: nowrap;
+      transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
+    }
+
+    .back-btn:hover {
+      background: var(--panel-strong);
+      border-color: var(--dampf);
+      color: var(--dampf);
+    }
+
+    .brand-mark {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: Orbitron, sans-serif;
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+    }
+
+    .brand-icon {
+      display: block;
+      width: 24px;
+      height: 24px;
+      border-radius: 5px;
+      background: #ffffff;
+      flex-shrink: 0;
+    }
+
+    .brand-sep {
+      color: var(--muted);
+      opacity: 0.45;
+    }
+
+    .brand-sub {
+      font-family: Orbitron, sans-serif;
+      font-size: 0.8rem;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+
+    .top-link {
+      font-family: Orbitron, sans-serif;
+      font-size: 0.76rem;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .top-link:hover {
+      color: var(--dampf);
+    }
+
+    main {
+      flex: 1;
+      width: min(calc(100% - 32px), 640px);
+      margin: 0 auto;
+      padding: 20px 0 32px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .launch-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 22px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+    }
+
+    .launch-card h1 {
+      margin: 0 0 6px;
+      font-family: Orbitron, sans-serif;
+      font-size: clamp(1.2rem, 2.8vw, 1.55rem);
+      letter-spacing: 0.04em;
+    }
+
+    .lead {
+      margin: 0 0 18px;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    .field-label {
+      margin: 0 0 8px;
+      font-family: Orbitron, sans-serif;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .rig-group {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    @media (max-width: 500px) {
+      .rig-group {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .rig-btn {
+      appearance: none;
+      text-align: left;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--line-strong);
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      transition: border-color 0.16s ease, background 0.16s ease;
+    }
+
+    .rig-btn:hover:not(:disabled) {
+      background: var(--panel-strong);
+      border-color: rgba(255, 255, 255, 0.28);
+    }
+
+    .rig-btn.active {
+      border-color: rgba(0, 255, 242, 0.55);
+      background: rgba(0, 255, 242, 0.08);
+    }
+
+    .rig-btn strong {
+      font-family: Orbitron, sans-serif;
+      font-size: 0.84rem;
+      letter-spacing: 0.03em;
+      color: var(--text);
+    }
+
+    .rig-btn.active strong {
+      color: var(--dampf);
+    }
+
+    .rig-btn span {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+
+    .rig-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    button.btn-primary {
+      flex: 1 1 220px;
+      appearance: none;
+      min-height: 52px;
+      padding: 12px 20px;
+      border-radius: 10px;
+      border: 1px solid rgba(0, 255, 242, 0.65);
+      background: rgba(0, 255, 242, 0.12);
+      color: var(--dampf);
+      font-family: Orbitron, sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      transition: background 0.16s ease, border-color 0.16s ease, transform 0.14s ease;
+    }
+
+    button.btn-primary:hover:not(:disabled) {
+      background: rgba(0, 255, 242, 0.20);
+      border-color: var(--dampf);
+      transform: translateY(-1px);
+    }
+
+    button.btn-primary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    button.btn-secondary {
+      appearance: none;
+      min-height: 52px;
+      padding: 10px 16px;
+      border-radius: 10px;
+      border: 1px solid var(--line-strong);
+      background: var(--panel);
+      color: var(--text);
+      font-family: Orbitron, sans-serif;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+    }
+
+    button.btn-secondary:hover:not(:disabled) {
+      background: var(--panel-strong);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    button.btn-secondary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    button.btn-small {
+      appearance: none;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--line-strong);
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.84rem;
+      cursor: pointer;
+    }
+
+    button.btn-small:hover:not(:disabled) {
+      background: var(--panel-strong);
+      border-color: var(--dampf);
+      color: var(--dampf);
+    }
+
+    button.btn-small:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    #status {
+      margin: 0 0 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg-soft);
+      font-size: 0.88rem;
+      color: var(--text);
+    }
+
+    .exit-hint {
+      margin: 0 0 14px;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    details.advanced {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
+
+    details.advanced summary {
+      cursor: pointer;
+      font-family: Orbitron, sans-serif;
+      font-size: 0.76rem;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      user-select: none;
+      list-style: none;
+    }
+
+    details.advanced summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details.advanced summary::before {
+      content: "▸ ";
+      color: var(--dampf);
+    }
+
+    details.advanced[open] summary::before {
+      content: "▾ ";
+    }
+
+    details.advanced summary:hover {
+      color: var(--dampf);
+    }
+
+    .adv-body {
+      margin-top: 14px;
+      display: grid;
+      gap: 12px;
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+
+    .adv-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 16px;
+    }
+
+    .adv-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    select {
+      font: inherit;
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line-strong);
+      background: var(--bg-soft);
+      color: var(--text);
+    }
+
+    input[type="checkbox"] {
+      accent-color: var(--dampf);
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.86em;
+      color: var(--dampf);
+      background: rgba(0, 255, 242, 0.07);
+      padding: 1px 5px;
+      border-radius: 5px;
+    }
+
+    .adv-note {
+      margin: 0;
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    video {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      opacity: 0.01;
+      pointer-events: none;
+    }
+
+    canvas {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="top-left">
+        <a class="back-btn" href="../index.html">← Back</a>
+        <a class="brand-mark" href="https://mess.engineering/" target="_blank" rel="noopener">
+          <img class="brand-icon" src="https://mess.engineering/favicon/apple-touch-icon.png" alt="M.E.S.S." width="24" height="24">
+          <span>M.E.S.S.</span>
+        </a>
+        <span class="brand-sep" aria-hidden="true">/</span>
+        <span class="brand-sub">Quest 3 AR</span>
+      </div>
+
+      <a class="top-link" href="./target.html">1:1 Targets</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="launch-card">
+      <h1>AprilTag → WebXR Anchor</h1>
+      <p class="lead">Keep the flat AprilTag L-angle stationary at 1:1 scale, tap <strong>Enter AR</strong>, and follow the orbital reticle.</p>
+
+      <p class="field-label">Target Angle</p>
+      <div class="rig-group" role="group" aria-label="Target Angle">
+        <button type="button" class="rig-btn active" data-rig="a4" aria-pressed="true">
+          <strong>Printed DIN A4 Angle</strong>
+          <span>IDs 350 / 351 / 352 · 230 × 170 mm</span>
+        </button>
+        <button type="button" class="rig-btn" data-rig="tablet" aria-pressed="false">
+          <strong>Smaller Angle</strong>
+          <span>IDs 370 / 371 / 372 · 150 × 110 mm</span>
+        </button>
+      </div>
+
+      <div class="actions">
+        <button id="enter" class="btn-primary" disabled>Enter AR →</button>
+        <button id="end" class="btn-secondary" disabled hidden>Exit AR</button>
+      </div>
+
+      <p id="status" role="status">Loading local AprilTag detector…</p>
+      <p class="exit-hint">Exit AR anytime: hold Left Thumbstick or <code>B</code> / <code>Y</code> for 1.4 s.</p>
+
+      <details class="advanced">
+        <summary>Advanced &amp; Diagnostics</summary>
+        <div class="adv-body">
+          <div class="adv-row">
+            <label class="adv-label">
+              Quality:
+              <select id="qualityMode">
+                <option value="auto" selected>Auto (Fluid moving → Crisp still)</option>
+                <option value="fluid">Fluid (max FPS)</option>
+                <option value="crisp">Crisp (max sharpness)</option>
+              </select>
+            </label>
+          </div>
+          <div class="adv-row">
+            <label class="adv-label">
+              <input type="checkbox" id="fastScan" checked>
+              Fast live scan (<code>decimate 2</code> · ROI, 6–12 Hz)
+            </label>
+            <label class="adv-label">
+              <input type="checkbox" id="aaToggle" checked>
+              Antialias / MSAA
+            </label>
+          </div>
+          <div class="adv-row">
+            <button type="button" id="download" class="btn-small" disabled>Download diagnostics JSON</button>
+          </div>
+          <p class="adv-note">
+            <strong>Flow:</strong> Calibrate orbit → hold 5 L-angle frames to lock → starts in <code>SCAN</code>
+            (camera on; <code>0.55 s</code> Time-Copies, <code>[● REC]</code> paths, 90 Hz hand coupling) →
+            switch to camera-off <code>MEASURE</code> (90 FPS hover &amp; pinch rails) via <code>[■ MEASURE]</code>,
+            Left Fist Hold (<code>0.85 s</code>), or Wrist Menu.
+          </p>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <video muted playsinline id="video"></video>
+  <canvas id="canvas"></canvas>
+  <script type="module" src="./quest.mjs"></script>
+</body>
 </html>

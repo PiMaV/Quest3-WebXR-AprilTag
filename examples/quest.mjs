@@ -15,6 +15,7 @@ import {createPerimeterFence,isPerimeterTag,perimeterRole,FENCE_HEIGHT_M} from '
 import {matToQuat,quatSlerp,composeRigid} from '../src/runtime.mjs';
 
 const $=id=>document.getElementById(id),status=text=>$('status').textContent=text;
+const PERIMETER_ENABLED=false;
 const EXTRA_COLORS=[0x38bdf8,0xf59e0b,0xa78bfa,0x34d399,0xfb7185,0xfacc15];
 const urlParams=new URLSearchParams(location.search);
 const aaToggleEl=$('aaToggle');
@@ -5069,12 +5070,15 @@ function renderLeftHud(now,as,an,cs){
       c.fillText('Fence:  TL #353 · PRESS TL!',256,246);
     }else{
       c.fillStyle='#94a3b8';
-      c.fillText('Fence:  show TL #353',256,246);
+      c.fillText(perimeterFence?'Fence:  show TL #353':'Fence:  off',256,246);
     }
     c.fillStyle='#e2e8f0';
     c.fillText(`Tools:  ${movableTools.size} · Pins: ${pinnedPoints.size}/${MAX_PINNED_POINTS}`,256,270);
     c.fillStyle='#94a3b8';c.font='15px system-ui';
-    wrapText(c,fSnap?.status==='offered'?'Press TL #353 to raise 20 cm perimeter & walk table.':(fSnap?.status==='active'?'SCAN updates 353–359 fence & locks tags; switch to MEASURE for 90 FPS.':'Show TL #353 in SCAN to offer perimeter; hover + Pinch to pin.'),256,296,240,20,3);
+    const fenceHint=perimeterFence
+      ?(fSnap?.status==='offered'?'Press TL #353 to raise 20 cm perimeter & walk table.':(fSnap?.status==='active'?'SCAN updates 353–359 fence & locks tags; switch to MEASURE for 90 FPS.':'Show TL #353 in SCAN to offer perimeter; hover + Pinch to pin.'))
+      :'SCAN locks tags & records paths; switch to MEASURE for 90 FPS hover + Pinch.';
+    wrapText(c,fenceHint,256,296,240,20,3);
   }
 
   // Footer control bar.
@@ -5362,7 +5366,12 @@ const anchor=createLAnchorController({
   },
 });
 
-let capture,rig;
+let capture,rig,arSupported=false,cameraPermState='unknown',selectedRigKey='a4';
+const rigButtons=Array.from(document.querySelectorAll('.rig-btn[data-rig]'));
+function setRigControlsDisabled(disabled){
+  if($('rigSelect'))$('rigSelect').disabled=disabled;
+  for(const b of rigButtons)b.disabled=disabled;
+}
 async function end(){await session?.end();}
 
 function finalizeDiagnostics(){
@@ -5412,7 +5421,7 @@ function clean(s){
   if(session!==s)return;
   finalizeDiagnostics();
   space?.removeEventListener?.('reset',reset);
-  assistant?.dispose();capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
+  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
   hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;
   modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';
   modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
@@ -5429,10 +5438,12 @@ function clean(s){
   pinFlashUntilMs=0;pinFlashPos=null;lastInspectorTimeMs=null;lastViewerBasis=null;
   handGestureRing.visible=false;handLabelsGroup.visible=false;leftWristDot.visible=false;rightWristDot.visible=false;wristGazeSprite.visible=false;leftScanRecDot.visible=false;fistProgressSprite.visible=false;
   pinLoadSprite.visible=false;toastSprite.visible=false;toastUntilMs=0;
-  root.visible=hudRig.visible=false;$('prepare').disabled=false;$('enter').disabled=true;$('end').disabled=true;
-  if($('rigSelect'))$('rigSelect').disabled=false;
+  root.visible=hudRig.visible=false;
+  if($('enter'))$('enter').disabled=!arSupported;
+  if($('end')){$('end').disabled=true;$('end').hidden=true;}
+  setRigControlsDisabled(false);
   if(aaToggleEl)aaToggleEl.disabled=false;
-  status('AR ended. You can download the diagnostics JSON.');
+  status('AR ended. Tap Enter AR to start again.');
 }
 
 function reset(){
@@ -5588,10 +5599,19 @@ try{
     fetch(new URL('../rigs/ms-qr-tablet-l.json',import.meta.url)).then(r=>r.json()),
   ]);
   const rigSelect=$('rigSelect');
-  if(rigSelect&&new URLSearchParams(location.search).get('rig')==='tablet')rigSelect.value='tablet';
-  rig=rigSelect?.value==='tablet'?rigTablet:rigA4;
+  selectedRigKey=urlParams.get('rig')==='tablet'?'tablet':'a4';
+  function syncRigUi(){
+    if(rigSelect)rigSelect.value=selectedRigKey;
+    for(const b of rigButtons){
+      const active=b.dataset.rig===selectedRigKey;
+      b.classList.toggle('active',active);
+      b.setAttribute('aria-pressed',active?'true':'false');
+    }
+  }
+  syncRigUi();
+  rig=selectedRigKey==='tablet'?rigTablet:rigA4;
   buildReferenceMesh(rig);
-  perimeterFence=createPerimeterFence(rig,{heightM:FENCE_HEIGHT_M});
+  perimeterFence=PERIMETER_ENABLED?createPerimeterFence(rig,{heightM:FENCE_HEIGHT_M}):null;
   syncFenceVisuals(performance.now(),0,true);
   anchor.setTagIds(rig.tools[0].tags.map(t=>t.id));
   capture=createReferenceCamera({
@@ -5667,22 +5687,66 @@ try{
     },
   });
 
+  function applyRigSelection(nextKey){
+    selectedRigKey=nextKey==='tablet'?'tablet':'a4';
+    syncRigUi();
+    if(capture.isRunning?.())capture.stop();
+    if(assistant){assistant.dispose();assistant=null;}
+    profile=null;
+    rig=selectedRigKey==='tablet'?rigTablet:rigA4;
+    buildReferenceMesh(rig);
+    perimeterFence?.setRig(rig);
+    syncFenceVisuals(performance.now(),0,true);
+    anchor.setTagIds(rig.tools[0].tags.map(t=>t.id));
+    capture.setGeometry(rig);
+    const ids=rig.tools[0].tags.map(t=>t.id).join(' / ');
+    const label=selectedRigKey==='tablet'?'Smaller Angle':'Printed DIN A4 Angle';
+    status(`Target angle: ${label} (IDs ${ids}). Tap Enter AR.`);
+  }
+  for(const b of rigButtons){
+    b.onclick=()=>{if(!session&&!pending)applyRigSelection(b.dataset.rig);};
+  }
   if(rigSelect){
-    rigSelect.onchange=()=>{
-      rig=rigSelect.value==='tablet'?rigTablet:rigA4;
-      buildReferenceMesh(rig);
-      perimeterFence.setRig(rig);
-      syncFenceVisuals(performance.now(),0,true);
-      anchor.setTagIds(rig.tools[0].tags.map(t=>t.id));
-      capture.setGeometry(rig);
-      const ids=rig.tools[0].tags.map(t=>t.id).join(' / ');
-      status(`Target rig switched to ${rig.id} (IDs ${ids}). Click 1 · Prepare camera.`);
-    };
+    rigSelect.onchange=()=>{if(!session&&!pending)applyRigSelection(rigSelect.value);};
+  }
+
+  async function queryCameraPermission(){
+    try{
+      if(!navigator.permissions?.query)return 'unknown';
+      const perm=await navigator.permissions.query({name:'camera'});
+      cameraPermState=perm.state;
+      perm.onchange=()=>{cameraPermState=perm.state;};
+      return perm.state;
+    }catch{return 'unknown';}
+  }
+
+  async function ensureCameraAndAssistant(){
+    if(capture.isRunning?.()&&assistant)return true;
+    profile=null;
+    if(!await capture.start())return false;
+    const device=await deviceIdentity(capture.state(),rig),[w,h]=capture.state().sourceSize,scale=Math.min(1,1280/Math.max(w,h));
+    assistant?.dispose();
+    assistant=createCalibrationAssistant({
+      rig,device,imageSize:[Math.round(w*scale),Math.round(h*scale)],
+      onChange:s=>status(`${s.phase} · ${s.count}/${s.required} · ${s.message}`),
+      onProfile:p=>{profile=p;if(p)clearTrail();},
+    });
+    return true;
   }
 
   await capture.prepare();
-  $('prepare').disabled=false;
-  status('Ready. 1 · Prepare camera, then 2 · Enter AR.');
+  arSupported=Boolean(navigator.xr)&&await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
+  cameraPermState=await queryCameraPermission();
+  if($('enter'))$('enter').disabled=!arSupported;
+  if(!arSupported){
+    status('Immersive AR is unavailable in this browser. Open in Meta Quest Browser.');
+  }else if(cameraPermState==='denied'){
+    status('Camera access is blocked. Allow camera permission in browser settings and reload.');
+  }else if(cameraPermState==='granted'){
+    status('Ready. Tap Enter AR.');
+  }else{
+    status('Ready. Tap Enter AR (browser will ask for camera permission on first launch).');
+  }
 
   $('download').onclick=()=>{
     if(!lastDiagnostics)return;
@@ -5693,29 +5757,51 @@ try{
     a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   };
 
-  $('prepare').onclick=async()=>{
-    try{
-      if(rigSelect)rigSelect.disabled=true;
-      profile=null;if(!await capture.start()){if(rigSelect)rigSelect.disabled=false;return;}
-      const device=await deviceIdentity(capture.state(),rig),[w,h]=capture.state().sourceSize,scale=Math.min(1,1280/Math.max(w,h));
-      assistant?.dispose();
-      assistant=createCalibrationAssistant({
-        rig,device,imageSize:[Math.round(w*scale),Math.round(h*scale)],
-        onChange:s=>status(`${s.phase} · ${s.count}/${s.required} · ${s.message}`),
-        onProfile:p=>{profile=p;if(p)clearTrail();},
-      });
-      $('enter').disabled=!navigator.xr||!await navigator.xr.isSessionSupported('immersive-ar');
-      $('prepare').disabled=true;
-      status($('enter').disabled?'Immersive AR is unavailable in this browser.':'Camera ready. Now click 2 · Enter AR.');
-    }catch(e){if(rigSelect)rigSelect.disabled=false;status(e.message);}
-  };
-
   $('enter').onclick=async()=>{
-    if(session||pending||!assistant)return;pending=true;let acquired;
+    if(session||pending||!arSupported)return;pending=true;let acquired=null,earlyEnded=false;
+    if($('enter'))$('enter').disabled=true;
+    setRigControlsDisabled(true);
+    if(aaToggleEl)aaToggleEl.disabled=true;
     try{
       ensureRenderer();
-      if(aaToggleEl)aaToggleEl.disabled=true;
-      acquired=await navigator.xr.requestSession('immersive-ar',{optionalFeatures:['anchors','layers','hand-tracking','local-floor']});
+      const canEnterSync=cameraPermState==='granted'||Boolean(capture.isRunning?.()&&assistant);
+      if(canEnterSync){
+        acquired=await navigator.xr.requestSession('immersive-ar',{optionalFeatures:['anchors','layers','hand-tracking','local-floor']});
+        acquired.addEventListener('end',()=>{earlyEnded=true;queueMicrotask(()=>clean(acquired));},{once:true});
+        status('Starting camera…');
+        if(!await ensureCameraAndAssistant()||earlyEnded){
+          capture.stop();assistant?.dispose();assistant=null;
+          await acquired.end().catch(()=>{});
+          if($('enter'))$('enter').disabled=!arSupported;
+          setRigControlsDisabled(false);
+          if(aaToggleEl)aaToggleEl.disabled=false;
+          if(earlyEnded)status('AR session ended before camera started.');
+          return;
+        }
+      }else{
+        status('Allow camera access to continue…');
+        if(!await ensureCameraAndAssistant()){
+          if($('enter'))$('enter').disabled=!arSupported;
+          setRigControlsDisabled(false);
+          if(aaToggleEl)aaToggleEl.disabled=false;
+          return;
+        }
+        cameraPermState='granted';
+        try{
+          acquired=await navigator.xr.requestSession('immersive-ar',{optionalFeatures:['anchors','layers','hand-tracking','local-floor']});
+          acquired.addEventListener('end',()=>{earlyEnded=true;queueMicrotask(()=>clean(acquired));},{once:true});
+        }catch(xrErr){
+          if(xrErr?.name==='SecurityError'||xrErr?.name==='NotAllowedError'){
+            if($('enter'))$('enter').disabled=false;
+            setRigControlsDisabled(false);
+            if(aaToggleEl)aaToggleEl.disabled=false;
+            status('Camera ready — tap Enter AR.');
+            return;
+          }
+          throw xrErr;
+        }
+      }
+
       session=acquired;sessionId=`quest-${++sessionCount}`;epoch=0;history=[];obsBuffer.clear();clearExtras();clearTrail();resetSpatialPortals();audit.reset();
       hold={sinceMs:null,progress:0,fire:false};extraScanActive=false;reanchorConfirmUntil=0;scanPulseCounter=0;
       adaptiveQuality.setMode(currentQualityMode());
@@ -5731,7 +5817,6 @@ try{
       rvfcWindowStart=performance.now();rvfcWindowCount=capture.presentedCallbacks?.()??capture.state().presentedCallbacks;rvfcHz=0;
       diagnostics={startedAt:new Date().toISOString(),userAgent:navigator.userAgent,sessionId,rigId:rig.id,samples:[],events:[],errors:[]};
 
-      acquired.addEventListener('end',()=>queueMicrotask(()=>clean(acquired)),{once:true});
       await renderer.xr.setSession(acquired);
       if(session!==acquired)return;
       warmupSceneShaders(renderer,scene,camera3d);
@@ -5740,7 +5825,8 @@ try{
       floorSpace=await acquired.requestReferenceSpace('local-floor').catch(()=>null);
       anchor.begin(acquired,space,context(),performance.now());
       await assistant.begin();
-      $('enter').disabled=true;$('end').disabled=false;
+      if($('enter'))$('enter').disabled=true;
+      if($('end')){$('end').hidden=false;$('end').disabled=false;}
 
       acquired.addEventListener('select',(ev)=>{
         const asPhase=assistant.phase(),anPhase=anchor.phase(),now=performance.now();
@@ -5793,8 +5879,17 @@ try{
         if(asPhase==='ready'&&(anPhase==='tracking'||anPhase==='created'))toggleExtraScan();
       });
     }catch(e){
-      if(aaToggleEl)aaToggleEl.disabled=false;
-      if(acquired)await acquired.end().catch(()=>{});
+      if(acquired){
+        await acquired.end().catch(()=>{});
+        clean(acquired);
+      }
+      if(!session){
+        capture.stop();assistant?.dispose();assistant=null;
+        if($('enter'))$('enter').disabled=!arSupported;
+        if($('end')){$('end').disabled=true;$('end').hidden=true;}
+        setRigControlsDisabled(false);
+        if(aaToggleEl)aaToggleEl.disabled=false;
+      }
       status(e.message);
     }finally{pending=false;}
   };
