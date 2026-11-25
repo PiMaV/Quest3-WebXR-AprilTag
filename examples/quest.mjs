@@ -1992,40 +1992,35 @@ function hideAllProbeCursors(){
 
 // ---- Left-hand mode tint: MEASURE = reddish, SCAN = pleasant green (permanent mode indicator). ----
 const LEFT_HAND_TINT_MEASURE=0x6fcf97,LEFT_HAND_TINT_SCAN=0xe07a7a;
-const HAND_CHAINS=[
-  ['wrist','thumb-metacarpal','thumb-phalanx-proximal','thumb-phalanx-distal','thumb-tip'],
-  ['wrist','index-finger-metacarpal','index-finger-phalanx-proximal','index-finger-phalanx-intermediate','index-finger-phalanx-distal','index-finger-tip'],
-  ['wrist','middle-finger-metacarpal','middle-finger-phalanx-proximal','middle-finger-phalanx-intermediate','middle-finger-phalanx-distal','middle-finger-tip'],
-  ['wrist','ring-finger-metacarpal','ring-finger-phalanx-proximal','ring-finger-phalanx-intermediate','ring-finger-phalanx-distal','ring-finger-tip'],
-  ['wrist','pinky-finger-metacarpal','pinky-finger-phalanx-proximal','pinky-finger-phalanx-intermediate','pinky-finger-phalanx-distal','pinky-finger-tip'],
-];
-const HAND_TINT_MAX=160;
+// Joint order of XRHand (WebXR spec): wrist, thumb(4), index(5), middle(5), ring(5), pinky(5) = 25.
+const HAND_TINT_CHAINS=[[0,1,2,3,4],[0,5,6,7,8,9],[0,10,11,12,13,14],[0,15,16,17,18,19],[0,20,21,22,23,24]];
+const HAND_TINT_MAX=64;
+const _tintMats=new Float32Array(25*16);
 const leftHandTintMat=new THREE.MeshBasicMaterial({color:LEFT_HAND_TINT_MEASURE,transparent:true,opacity:0.22,depthTest:false,depthWrite:false});
-const leftHandTint=new THREE.InstancedMesh(new THREE.SphereGeometry(1,10,8),leftHandTintMat,HAND_TINT_MAX);
+const leftHandTint=new THREE.InstancedMesh(new THREE.SphereGeometry(1,8,6),leftHandTintMat,HAND_TINT_MAX);
 leftHandTint.frustumCulled=false;leftHandTint.renderOrder=990;leftHandTint.visible=false;leftHandTint.count=0;scene.add(leftHandTint);
 const _tintM=new THREE.Matrix4(),_tintQ=new THREE.Quaternion(),_tintP=new THREE.Vector3(),_tintS=new THREE.Vector3();
+let _lastTintHex=-1;
 function updateLeftHandTint(handInput,scanMode,show){
-  if(!show||!handInput){leftHandTint.visible=false;return;}
+  // One bulk native call (fillPoses) + <=64 instances in a single draw call: negligible CPU/GPU cost.
+  if(!show||!handInput?.fillJointMatrices||!handInput.fillJointMatrices(_tintMats)){leftHandTint.visible=false;return;}
   let n=0;
   const put=(x,y,z,r)=>{if(n>=HAND_TINT_MAX)return;_tintP.set(x,y,z);_tintS.setScalar(r);_tintM.compose(_tintP,_tintQ,_tintS);leftHandTint.setMatrixAt(n++,_tintM);};
-  for(const chain of HAND_CHAINS){
-    let prev=null;
-    for(const name of chain){
-      const j=handInput.getJoint(name);
-      if(!j){prev=null;continue;}
-      const q=j.transform.position;
-      const r=name==='wrist'?0.016:name.endsWith('tip')?0.0085:0.0105;
-      if(prev){
-        const steps=3;
-        for(let k=1;k<steps;k++){const t=k/steps;put(prev.x+(q.x-prev.x)*t,prev.y+(q.y-prev.y)*t,prev.z+(q.z-prev.z)*t,r*0.95);}
-      }
-      put(q.x,q.y,q.z,r);
-      prev={x:q.x,y:q.y,z:q.z};
+  for(const chain of HAND_TINT_CHAINS){
+    let px=0,py=0,pz=0,has=false;
+    for(const idx of chain){
+      const o=idx*16,x=_tintMats[o+12],y=_tintMats[o+13],z=_tintMats[o+14];
+      if(!Number.isFinite(x)){has=false;continue;}
+      const r=idx===0?0.016:(idx%5===4)?0.0085:0.0105;
+      if(has)put((px+x)/2,(py+y)/2,(pz+z)/2,r*0.95);
+      if(!(idx===0&&n>0))put(x,y,z,r);
+      px=x;py=y;pz=z;has=true;
     }
   }
   if(n===0){leftHandTint.visible=false;return;}
   leftHandTint.count=n;leftHandTint.instanceMatrix.needsUpdate=true;
-  leftHandTintMat.color.setHex(scanMode?LEFT_HAND_TINT_SCAN:LEFT_HAND_TINT_MEASURE);
+  const hex=scanMode?LEFT_HAND_TINT_SCAN:LEFT_HAND_TINT_MEASURE;
+  if(hex!==_lastTintHex){leftHandTintMat.color.setHex(hex);_lastTintHex=hex;}
   leftHandTint.visible=true;
 }
 
@@ -2586,6 +2581,7 @@ function collectFrameInputs(frame,world,pose){
         const item={
           src,kind:'hand',handedness,probeId:`hand:${src.handedness||'unknown'}`,
           hand:src.hand,getJoint,getIndexTipWorld,getTargetRayPose,
+          fillJointMatrices:out=>{try{return Boolean(frame.fillPoses?.(src.hand.values(),space,out));}catch{return false;}},
           getCtrlPose:()=>null,getCtrlTipWorld:()=>null,
         };
         inputs.push(item);
@@ -4484,6 +4480,7 @@ function drawOrbitCue(label,done,total,depthHint,goodFraming,{counterText='',tag
 }
 
 // ---- First-seen L-angle world hint: rough 3D marker on the table where the tags were first spotted. ----
+let rigIdsByKey={a4:[],tablet:[]};
 let latestViewMat=null,tagHintViewMat=null,tagHintLastObsAt=0,tagHintLastSeenMs=0;
 const tagHintGroup=new THREE.Group();tagHintGroup.visible=false;scene.add(tagHintGroup);
 const tagHintTarget=new THREE.Vector3(),tagHintHasPos={v:false};
@@ -4508,8 +4505,12 @@ function updateTagFirstSeenHint(pose,asPhase,anPhase,now){
   // New fresh observation containing at least one expected L tag -> update rough world target.
   if(lastObs&&lastObsAtMs>tagHintLastObsAt&&tagHintViewMat){
     tagHintLastObsAt=lastObsAtMs;
-    const expected=rig?rig.tools[0].tags.map(t=>t.id):[350,351,352];
-    const seen=(lastObs.tags??[]).filter(t=>expected.includes(t.id)&&Array.isArray(t.pixels)&&t.pixels.length>=4);
+    // Any known angle counts (IDs identify the angle uniquely) – selected rig first, other rig via unassigned detections.
+    const allIds=new Set([...rigIdsByKey.a4,...rigIdsByKey.tablet]);
+    const seen=[
+      ...(lastObs.tags??[]).filter(t=>allIds.has(t.id)&&Array.isArray(t.pixels)&&t.pixels.length>=4),
+      ...(lastObs.unassignedDetections??[]).filter(t=>allIds.has(t.id)&&Array.isArray(t.corners)&&t.corners.length>=4).map(t=>({id:t.id,pixels:t.corners})),
+    ];
     if(seen.length){
       const [iw,ih]=lastObs.imageSize??[1280,1080];
       let cx=0,cy=0,n=0;
@@ -5783,6 +5784,7 @@ try{
     fetch(new URL('../rigs/ms-qr-main-l.json',import.meta.url)).then(r=>r.json()),
     fetch(new URL('../rigs/ms-qr-tablet-l.json',import.meta.url)).then(r=>r.json()),
   ]);
+  rigIdsByKey={a4:rigA4.tools[0].tags.map(t=>t.id),tablet:rigTablet.tools[0].tags.map(t=>t.id)};
   const rigSelect=$('rigSelect');
   selectedRigKey=urlParams.get('rig')==='tablet'?'tablet':'a4';
   function syncRigUi(){
@@ -5833,6 +5835,8 @@ try{
       if(!session)return;
       const now=performance.now();
       lastObs=observation;lastObsAtMs=now;
+      if(rigSwitching)return;
+      if(maybeAutoSwitchRig(observation))return;
       if(latestViewMat)tagHintViewMat=latestViewMat.slice();
       const lTool=observation.tools[0];
       if(lTool&&Number.isFinite(lTool.reprojectionRmsPx)){
@@ -5872,6 +5876,54 @@ try{
       obsBuffer.push({observation,sample});
     },
   });
+
+  // Auto rig detection: the tag IDs identify the angle uniquely (A4: 350-352, small: 370-372),
+  // so as soon as the other angle's IDs are seen (and none of the selected one's), switch to it.
+  let rigSwitching=false,autoRigVotes=0,autoRigVoteKey=null;
+  function maybeAutoSwitchRig(observation){
+    if(!session||!assistant||!anchor||anchor.state().created)return false;
+    const sum=assistant.summary?.();
+    if(!sum||sum.count>0||(sum.phase!=='scanning'&&sum.phase!=='checking'))return false;
+    const mine=new Set(rigIdsByKey[selectedRigKey]);
+    if((observation.tags??[]).some(t=>mine.has(t.id))){autoRigVotes=0;autoRigVoteKey=null;return false;}
+    const otherKey=selectedRigKey==='tablet'?'a4':'tablet';
+    const other=new Set(rigIdsByKey[otherKey]);
+    const hit=(observation.unassignedDetections??[]).some(t=>other.has(t.id));
+    if(!hit){autoRigVotes=0;autoRigVoteKey=null;return false;}
+    if(autoRigVoteKey!==otherKey){autoRigVoteKey=otherKey;autoRigVotes=0;}
+    if(++autoRigVotes<3)return false;
+    autoRigVotes=0;autoRigVoteKey=null;
+    switchRigLive(otherKey);
+    return true;
+  }
+  async function switchRigLive(nextKey){
+    if(rigSwitching)return;
+    rigSwitching=true;
+    try{
+      selectedRigKey=nextKey;syncRigUi();
+      rig=nextKey==='tablet'?rigTablet:rigA4;
+      profile=null;
+      buildReferenceMesh(rig);
+      perimeterFence?.setRig(rig);
+      syncFenceVisuals(performance.now(),0,true);
+      anchor.setTagIds(rig.tools[0].tags.map(t=>t.id));
+      capture.setGeometry(rig);
+      const old=assistant;
+      assistant=null;
+      old?.dispose();
+      const device=await deviceIdentity(capture.state(),rig),[w,h]=capture.state().sourceSize,scale=Math.min(1,1280/Math.max(w,h));
+      if(!session)return;
+      assistant=createCalibrationAssistant({
+        rig,device,imageSize:[Math.round(w*scale),Math.round(h*scale)],
+        onChange:s=>status(`${s.phase} · ${s.count}/${s.required} · ${s.message}`),
+        onProfile:p=>{profile=p;if(p)clearTrail();},
+      });
+      resetOrbitGuide();
+      await assistant.begin();
+      const label=nextKey==='tablet'?'Smaller Angle':'DIN A4 Angle';
+      showHudToast(`✓ ${label} erkannt (${rigIdsByKey[nextKey].join('/')})`,'#4ade80',2200);
+    }finally{rigSwitching=false;}
+  }
 
   function applyRigSelection(nextKey){
     selectedRigKey=nextKey==='tablet'?'tablet':'a4';
@@ -6015,7 +6067,7 @@ try{
       if($('end')){$('end').hidden=false;$('end').disabled=false;}
 
       acquired.addEventListener('select',(ev)=>{
-        const asPhase=assistant.phase(),anPhase=anchor.phase(),now=performance.now();
+        const asPhase=assistant?.phase?.()??'idle',anPhase=anchor.phase(),now=performance.now();
         // Priority -1: Explicit 2-step "Leave Demo?" confirmation modal (guards eb.mess.icu & showcase URLs).
         if(leaveConfirmState){
           if(leaveConfirmHover)executeLeaveConfirm(leaveConfirmHover,now);
@@ -6061,7 +6113,7 @@ try{
         if(anPhase==='lost'||anPhase==='failed'){triggerReanchor();return;}
       });
       acquired.addEventListener('squeezestart',()=>{
-        const asPhase=assistant.phase(),anPhase=anchor.phase();
+        const asPhase=assistant?.phase?.()??'idle',anPhase=anchor.phase();
         if(asPhase==='check-failed'){assistant.retry();return;}
         if(asPhase==='ready'&&(anPhase==='tracking'||anPhase==='created'))toggleExtraScan();
       });
