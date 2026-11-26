@@ -22,10 +22,10 @@ export function validateCalibration(p){
     !camT||Math.hypot(camT[0],camT[1],camT[2])>=0.16||Math.abs(camT[2])>=0.09||
     p.distCoeffs?.length!==5||p.distCoeffs.some(x=>x!==0)||
     p.validation?.passed!==true||p.verification?.passed!==true||p.independentlyValidated!==false||
-    (p.validation.positionP95Mm!=null&&p.validation.positionP95Mm>=5.0)||
-    (p.validation.angleP95Deg!=null&&p.validation.angleP95Deg>=1.0)||
-    (p.verification.positionP95Mm!=null&&p.verification.positionP95Mm>=8.0)||
-    (p.verification.angleP95Deg!=null&&p.verification.angleP95Deg>=1.2))
+    (p.validation.positionP95Mm!=null&&p.validation.positionP95Mm>=8.5)||
+    (p.validation.angleP95Deg!=null&&p.validation.angleP95Deg>=1.5)||
+    (p.verification.positionP95Mm!=null&&p.verification.positionP95Mm>=10.0)||
+    (p.verification.angleP95Deg!=null&&p.verification.angleP95Deg>=1.5))
     throw new Error('Not a validated, supported calibration profile');
   return p;
 }

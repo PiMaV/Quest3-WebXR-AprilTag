@@ -242,25 +242,46 @@ const reticle=new THREE.Mesh(
 reticle.position.set(0,0,-1.0);reticle.renderOrder=998;
 hudRig.add(reticle);
 
-// Face-ID-style Orbital Calibration Guide mounted around the centerpoint (z = -1.0 m).
+// Bottom calibration cue strip on HUD + World-Anchored 3D Spatial Halo around the physical L-angle.
 const orbitGuideGroup=new THREE.Group();
 orbitGuideGroup.visible=false;
 hudRig.add(orbitGuideGroup);
-const orbitTargetMat=new THREE.MeshBasicMaterial({color:0xfbbf24,transparent:true,opacity:0.95,side:THREE.DoubleSide,depthTest:false,depthWrite:false});
-const orbitTargetRing=new THREE.Mesh(new THREE.RingGeometry(0.019,0.026,36),orbitTargetMat);
-orbitTargetRing.position.set(0,0,-1.0);orbitTargetRing.renderOrder=997;
-orbitGuideGroup.add(orbitTargetRing);
-const orbitLineGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,-1.0),new THREE.Vector3(0,0,-1.0)]);
-const orbitGuideLine=new THREE.Line(orbitLineGeo,new THREE.LineBasicMaterial({color:0x38bdf8,transparent:true,opacity:0.85,depthTest:false,depthWrite:false}));
-orbitGuideLine.frustumCulled=false;orbitGuideLine.renderOrder=996;
-orbitGuideGroup.add(orbitGuideLine);
 const orbitCueCanvas=document.createElement('canvas');orbitCueCanvas.width=440;orbitCueCanvas.height=124;
 const orbitCueTex=makeUiTexture(orbitCueCanvas);
 const orbitCueSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:orbitCueTex,transparent:true,depthTest:false,depthWrite:false}));
-orbitCueSprite.scale.set(0.31,0.087,1);
-orbitCueSprite.position.set(0,-0.098,-1.0);
+orbitCueSprite.scale.set(0.30,0.084,1);
+orbitCueSprite.position.set(0,-0.115,-1.0);
 orbitCueSprite.renderOrder=998;
 orbitGuideGroup.add(orbitCueSprite);
+
+const HALO_RING_R=0.137;
+const HALO_CW_ORDER=[2,1,0,7,6,5,4,3];
+const spatialHaloGroup=new THREE.Group();
+spatialHaloGroup.visible=false;
+scene.add(spatialHaloGroup);
+const haloInnerMat=new THREE.MeshBasicMaterial({color:0x94a3b8,transparent:true,opacity:0.28,side:THREE.DoubleSide,depthTest:false,depthWrite:false});
+const haloInnerRing=new THREE.Mesh(new THREE.RingGeometry(0.118,0.122,64),haloInnerMat);
+haloInnerRing.renderOrder=990;
+spatialHaloGroup.add(haloInnerRing);
+const haloSectorMats=[];
+for(let i=0;i<8;i++){
+  const mat=new THREE.MeshBasicMaterial({color:0x64748b,transparent:true,opacity:0.45,side:THREE.DoubleSide,depthTest:false,depthWrite:false});
+  const seg=new THREE.Mesh(new THREE.RingGeometry(0.126,0.148,10,1,i*(Math.PI/4)-(Math.PI/8-0.035),Math.PI/4-0.07),mat);
+  seg.renderOrder=991;
+  spatialHaloGroup.add(seg);
+  haloSectorMats.push(mat);
+}
+const haloCursorGroup=new THREE.Group();
+haloCursorGroup.position.set(0,0,0.003);
+spatialHaloGroup.add(haloCursorGroup);
+const haloCursorDotMat=new THREE.MeshBasicMaterial({color:0x38bdf8,transparent:true,opacity:0.95,depthTest:false,depthWrite:false});
+const haloCursorDot=new THREE.Mesh(new THREE.SphereGeometry(0.0105,16,12),haloCursorDotMat);
+haloCursorDot.renderOrder=993;
+haloCursorGroup.add(haloCursorDot);
+const haloCursorRingMat=new THREE.MeshBasicMaterial({color:0xe0f2fe,transparent:true,opacity:0.9,side:THREE.DoubleSide,depthTest:false,depthWrite:false});
+const haloCursorRing=new THREE.Mesh(new THREE.RingGeometry(0.014,0.019,24),haloCursorRingMat);
+haloCursorRing.renderOrder=994;
+haloCursorGroup.add(haloCursorRing);
 
 // Small 3D visual confirmation ring at left fingertips for hand-only Scan / HUD / Clear pinch holds.
 const handGestureMat=new THREE.MeshBasicMaterial({color:0x22d3ee,transparent:true,opacity:0.95,side:THREE.DoubleSide,depthTest:false,depthWrite:false});
@@ -4700,24 +4721,36 @@ function clearExtras(){
   syncFenceVisuals(performance.now(),0,true);
 }
 
-const SCAN_ORBIT_STATIONS=[
-  {off:[-0.17, 0.00, 0.00],label:'MOVE LEFT'},
-  {off:[+0.17, 0.00, 0.00],label:'MOVE RIGHT'},
-  {off:[ 0.00,+0.11,-0.09],label:'UP & CLOSER'},
-  {off:[ 0.00,-0.09,+0.13],label:'DOWN & BACK'},
-  {off:[-0.14,+0.09,-0.05],label:'ORBIT TOP-LEFT'},
-  {off:[+0.14,-0.08,+0.09],label:'ORBIT BOT-RIGHT'},
-];
-const VERIFY_ORBIT_STATIONS=[
-  {off:[-0.10,+0.03,0.00],label:'SHIFT LEFT'},
-  {off:[+0.10,-0.03,0.00],label:'SHIFT RIGHT'},
-];
-let orbitHome=null,orbitStep=0,orbitMode=null,orbitCueKey=null,orbitRingX=0,orbitRingY=0,orbitRingScale=1;
+let orbitMode=null,orbitCueKey=null;
+const _haloAnchor=new THREE.Vector3();
+const _haloHomePos=new THREE.Vector3();
+const _haloRight=new THREE.Vector3();
+const _haloUp=new THREE.Vector3();
+const _haloNormal=new THREE.Vector3();
+const _haloMat4=new THREE.Matrix4();
+const _haloWorldUp=new THREE.Vector3(0,1,0);
+const _haloSectors=new Uint8Array(8);
+let _haloAnchored=false,_haloCursorX=0,_haloCursorY=0,_haloDoneCount=0,_haloVerifyMask=0,_haloMinDz=0,_haloMaxDz=0;
+
+function orientHaloToward(anchor,vx,vy,vz,vm){
+  _haloNormal.set(vx-anchor.x,vy-anchor.y,vz-anchor.z);
+  if(_haloNormal.lengthSq()<1e-5)_haloNormal.set(vm[8],vm[9],vm[10]);
+  _haloNormal.normalize();
+  _haloRight.crossVectors(_haloWorldUp,_haloNormal);
+  if(_haloRight.lengthSq()<1e-4)_haloRight.set(vm[0],vm[1],vm[2]);
+  _haloRight.normalize();
+  _haloUp.crossVectors(_haloNormal,_haloRight).normalize();
+  _haloMat4.makeBasis(_haloRight,_haloUp,_haloNormal);
+  spatialHaloGroup.position.copy(anchor);
+  spatialHaloGroup.quaternion.setFromRotationMatrix(_haloMat4);
+}
 
 function resetOrbitGuide(){
-  orbitHome=null;orbitStep=0;orbitMode=null;orbitCueKey=null;
-  orbitRingX=0;orbitRingY=0;orbitRingScale=1;
+  orbitMode=null;orbitCueKey=null;
+  _haloAnchored=false;_haloCursorX=0;_haloCursorY=0;_haloDoneCount=0;_haloVerifyMask=0;_haloMinDz=0;_haloMaxDz=0;
+  _haloSectors.fill(0);
   orbitGuideGroup.visible=false;
+  spatialHaloGroup.visible=false;
 }
 
 function buildLiveTagBadgeState(now){
@@ -4865,7 +4898,7 @@ function updateTagFirstSeenHint(pose,asPhase,anPhase,now){
   if(!tagHintHasPos.v||now-tagHintLastSeenMs>4000){tagHintGroup.visible=false;return;}
   const fresh=now-tagHintLastSeenMs<800;
   tagHintGroup.position.lerp(tagHintTarget,0.25);
-  tagHintGroup.visible=true;
+  tagHintGroup.visible=!spatialHaloGroup.visible;
   const pulse=0.5+0.5*Math.sin(now*0.006);
   tagHintRing2.scale.setScalar(1+0.5*pulse);
   tagHintRingMat.opacity=(fresh?0.9:0.45)*(0.6+0.4*pulse);
@@ -4880,27 +4913,40 @@ function updateOrbitGuide(pose,asPhase,now,anState=null,asSummary=null){
     :asPhase==='check-failed'?'check-failed'
     :(asPhase==='ready'&&(anState?.phase==='collecting'||anState?.phase==='ready'||anState?.phase==='creating'))?'lock'
     :null;
-  if(!pose||!activeMode){orbitGuideGroup.visible=false;return;}
+  if(!pose||!activeMode){orbitGuideGroup.visible=false;spatialHaloGroup.visible=false;return;}
   const tagState=buildLiveTagBadgeState(now);
+  if(orbitMode!==activeMode){
+    orbitMode=activeMode;orbitCueKey=null;
+    if(activeMode==='scan'||activeMode==='verify'){
+      _haloAnchored=false;_haloCursorX=0;_haloCursorY=0;_haloDoneCount=0;_haloVerifyMask=0;_haloMinDz=0;_haloMaxDz=0;
+      _haloSectors.fill(0);
+    }
+  }
   if(activeMode==='solving'){
-    if(orbitMode!=='solving'){orbitMode='solving';orbitCueKey=null;}
-    orbitGuideGroup.visible=true;orbitTargetRing.visible=false;orbitGuideLine.visible=false;
+    orbitGuideGroup.visible=true;
+    if(_haloAnchored&&tagHintHasPos.v){
+      spatialHaloGroup.visible=true;haloCursorGroup.visible=false;tagHintGroup.visible=false;
+      const sweep=Math.floor((now*0.008)%8);
+      haloInnerMat.color.setHex(0x38bdf8);haloInnerMat.opacity=0.35;
+      for(let i=0;i<8;i++){
+        const d=(i-sweep+8)%8;
+        haloSectorMats[i].color.setHex(d<=2?0x38bdf8:0x475569);
+        haloSectorMats[i].opacity=d===0?0.95:d===1?0.72:d===2?0.50:0.25;
+      }
+    }else{spatialHaloGroup.visible=false;}
     const ck=`solving:${tagState.key}`;
     if(ck!==orbitCueKey){orbitCueKey=ck;drawOrbitCue('SOLVING CALIBRATION…',0,0,'',true,{counterText:'SOLVE',tagState});}
     return;
   }
   if(activeMode==='check-failed'){
-    if(orbitMode!=='check-failed'){orbitMode='check-failed';orbitCueKey=null;}
-    orbitGuideGroup.visible=true;orbitTargetRing.visible=false;orbitGuideLine.visible=false;
+    orbitGuideGroup.visible=true;spatialHaloGroup.visible=false;
     const ck=`check-failed:${tagState.key}`;
     if(ck!==orbitCueKey){orbitCueKey=ck;drawOrbitCue('CHECK FAILED · TRIGGER=RETRY',0,0,'',false,{counterText:'RETRY',tagState});}
     return;
   }
+  const vm=pose.transform.matrix;
   if(activeMode==='lock'){
-    if(orbitMode!=='lock'){orbitMode='lock';orbitCueKey=null;}
     orbitGuideGroup.visible=true;
-    orbitTargetRing.visible=false;
-    orbitGuideLine.visible=false;
     const q=anState?.quality||{};
     const count=q.count||0,req=q.required||5;
     const seen=q.seenTagCount??0;
@@ -4924,88 +4970,125 @@ function updateOrbitGuide(pose,asPhase,now,anState=null,asSummary=null){
     }else if(Number.isFinite(q.spreadDeg)&&Number.isFinite(lim.maxOrientationSpreadDeg)&&q.spreadDeg>lim.maxOrientationSpreadDeg){
       label=`HOLD STILL · ${q.spreadDeg.toFixed(1)}°`;good=false;
     }
+    if(tagHintHasPos.v&&now-tagHintLastSeenMs<=4000){
+      if(!_haloAnchored){_haloAnchor.copy(tagHintTarget);_haloAnchored=true;}
+      else _haloAnchor.lerp(tagHintTarget,0.25);
+      orientHaloToward(_haloAnchor,vm[12],vm[13],vm[14],vm);
+      spatialHaloGroup.visible=true;haloCursorGroup.visible=false;tagHintGroup.visible=false;
+      const filled=creating?8:Math.min(8,Math.floor(lockFrac*8+1e-4));
+      haloInnerMat.color.setHex(creating?0x22c55e:good?0x38bdf8:0xf87171);
+      haloInnerMat.opacity=0.32;
+      for(let k=0;k<8;k++){
+        const mat=haloSectorMats[HALO_CW_ORDER[k]];
+        if(k<filled){mat.color.setHex(creating?0x22c55e:good?0x38bdf8:0xf87171);mat.opacity=0.95;}
+        else{mat.color.setHex(good?0x475569:0x7f1d1d);mat.opacity=0.35;}
+      }
+    }else{
+      spatialHaloGroup.visible=false;
+    }
     const ck=`lock:${creating?1:0}:${shownDone}:${req}:${label}:${hint}:${counterText}:${good?1:0}:${tagState.key}`;
     if(ck!==orbitCueKey){orbitCueKey=ck;drawOrbitCue(label,shownDone,req,hint,good,{counterText,tagState});}
     return;
   }
-  orbitTargetRing.visible=true;
-  if(orbitMode!==activeMode){
-    orbitMode=activeMode;orbitStep=0;orbitHome=null;orbitCueKey=null;
-  }
+
+  const isScan=activeMode==='scan';
   const counterText=asSummary?`${asSummary.count}/${asSummary.required}`:'';
-  const vm=pose.transform.matrix;
   const framing=analyzeFraming();
-  // Anchor horizontal orbit frame on first frame where at least 2 L-tags are seen.
-  if(!orbitHome){
-    if(framing.seenCount<2){
-      orbitGuideGroup.visible=true;
-      orbitTargetRing.position.set(0,0,-1.0);
-      orbitTargetRing.scale.setScalar(1+0.08*Math.sin(now*0.006));
-      orbitTargetMat.color.setHex(0xf87171);
-      orbitGuideLine.visible=false;
+  if(!_haloAnchored){
+    if(framing.seenCount<2||!tagHintHasPos.v){
+      orbitGuideGroup.visible=true;spatialHaloGroup.visible=false;
       const k=`find:${framing.cue}:${counterText}:${tagState.key}`;
-      if(k!==orbitCueKey){orbitCueKey=k;drawOrbitCue(framing.cue,0,activeMode==='scan'?6:2,'',false,{counterText,tagState});}
+      if(k!==orbitCueKey){orbitCueKey=k;drawOrbitCue(framing.cue,0,isScan?8:2,'',false,{counterText,tagState});}
       return;
     }
-    // Build gravity-aligned basis (world up = [0,1,0], forward = horizontal gaze, right = forward x up).
-    let fx=-vm[8],fz=-vm[10];
-    const fl=Math.hypot(fx,fz)||1;fx/=fl;fz/=fl;
-    const rx=-fz,rz=fx; // right in XZ plane
-    orbitHome={pos:[vm[12],vm[13],vm[14]],right:[rx,0,rz],up:[0,1,0],back:[-fx,0,-fz]};
+    _haloAnchor.copy(tagHintTarget);
+    _haloHomePos.set(vm[12],vm[13],vm[14]);
+    orientHaloToward(_haloAnchor,vm[12],vm[13],vm[14],vm);
+    _haloAnchored=true;_haloMinDz=0;_haloMaxDz=0;_haloCursorX=0;_haloCursorY=0;
+  }else if(framing.seenCount>=2&&tagHintHasPos.v){
+    _haloAnchor.lerp(tagHintTarget,0.12);
+    spatialHaloGroup.position.copy(_haloAnchor);
   }
 
-  const stations=activeMode==='scan'?SCAN_ORBIT_STATIONS:VERIFY_ORBIT_STATIONS;
-  let off,label;
-  if(orbitStep<stations.length){
-    off=stations[orbitStep].off;label=stations[orbitStep].label;
+  const wx=vm[12]-_haloHomePos.x,wy=vm[13]-_haloHomePos.y,wz=vm[14]-_haloHomePos.z;
+  const dx=wx*_haloRight.x+wy*_haloRight.y+wz*_haloRight.z;
+  const dy=wx*_haloUp.x+wy*_haloUp.y+wz*_haloUp.z;
+  const dz=wx*_haloNormal.x+wy*_haloNormal.y+wz*_haloNormal.z;
+  if(framing.seenCount>=2){
+    if(dz<_haloMinDz)_haloMinDz=dz;
+    if(dz>_haloMaxDz)_haloMaxDz=dz;
+  }
+  const radial=Math.hypot(dx,dy);
+  const fullR=isScan?0.095:0.065;
+  const rNorm=radial>1e-4?Math.min(1,radial/fullR):0;
+  const targetCx=radial>1e-4?(dx/radial)*rNorm*HALO_RING_R:0;
+  const targetCy=radial>1e-4?(dy/radial)*rNorm*HALO_RING_R:0;
+  _haloCursorX+=(targetCx-_haloCursorX)*0.25;
+  _haloCursorY+=(targetCy-_haloCursorY)*0.25;
+
+  spatialHaloGroup.visible=true;
+  haloCursorGroup.visible=true;
+  tagHintGroup.visible=false;
+  haloCursorGroup.position.set(_haloCursorX,_haloCursorY,0.003);
+  const depthScale=Math.max(0.75,Math.min(1.45,1-dz*1.8));
+  haloCursorRing.scale.setScalar(depthScale);
+  const seenOk=framing.seenCount>=2;
+  haloCursorDotMat.color.setHex(seenOk?0x38bdf8:0xf87171);
+  haloCursorRingMat.color.setHex(seenOk?0xe0f2fe:0xfca5a5);
+  haloInnerMat.color.setHex(seenOk?0x94a3b8:0xf87171);
+  haloInnerMat.opacity=seenOk?0.28:0.42;
+
+  let hoveredSec=-1;
+  if(radial>=0.025){
+    let a=Math.atan2(dy,dx);
+    if(a<0)a+=Math.PI*2;
+    hoveredSec=Math.floor(((a+Math.PI/8)%(Math.PI*2))/(Math.PI/4))&7;
+  }
+
+  let doneCount=0,totalCount=8,cueLabel='',depthHint='';
+  const pulse=0.5+0.5*Math.sin(now*0.006);
+  if(isScan){
+    if(seenOk&&radial>=0.045&&hoveredSec>=0&&!_haloSectors[hoveredSec]){
+      _haloSectors[hoveredSec]=1;
+      _haloDoneCount++;
+    }
+    doneCount=_haloDoneCount;totalCount=8;
+    for(let i=0;i<8;i++){
+      const mat=haloSectorMats[i];
+      if(_haloSectors[i]){mat.color.setHex(0x22c55e);mat.opacity=0.95;}
+      else if(i===hoveredSec&&radial>=0.045){mat.color.setHex(seenOk?0x38bdf8:0xf87171);mat.opacity=0.90;}
+      else{mat.color.setHex(seenOk?0x94a3b8:0xf87171);mat.opacity=(seenOk?0.36:0.28)+0.16*pulse;}
+    }
+    const depthSpan=_haloMaxDz-_haloMinDz;
+    if(doneCount===0)cueLabel='SWEEP HEAD AROUND HALO';
+    else if(doneCount<8)cueLabel=`SWEEP REMAINING ARCS (${doneCount}/8)`;
+    else if(depthSpan<0.05)cueLabel='LEAN CLOSER & BACK';
+    else cueLabel='SMOOTH CIRCLES · ALMOST READY';
+    if(doneCount>=4&&depthSpan<0.05)depthHint=_haloMaxDz<0.03?'CLOSER / BACK':'';
   }else{
-    // Gentle continuous figure-8 orbit if all stations visited and solver still needs a couple more frames.
-    const t=now*0.0014;
-    off=[0.14*Math.sin(t),0.08*Math.sin(2*t),0.08*Math.cos(t)];
-    label='KEEP SMOOTH ORBIT';
-  }
-
-  // Target head position in world space.
-  const tx=orbitHome.pos[0]+orbitHome.right[0]*off[0]+orbitHome.up[0]*off[1]+orbitHome.back[0]*off[2];
-  const ty=orbitHome.pos[1]+orbitHome.right[1]*off[0]+orbitHome.up[1]*off[1]+orbitHome.back[1]*off[2];
-  const tz=orbitHome.pos[2]+orbitHome.right[2]*off[0]+orbitHome.up[2]*off[1]+orbitHome.back[2]*off[2];
-  // Delta from current head to target station expressed in current viewer-local coordinates.
-  const wx=tx-vm[12],wy=ty-vm[13],wz=tz-vm[14];
-  const dx=vm[0]*wx+vm[1]*wy+vm[2]*wz;
-  const dy=vm[4]*wx+vm[5]*wy+vm[6]*wz;
-  const dz=vm[8]*wx+vm[9]*wy+vm[10]*wz; // negative = station is in front (move closer), positive = step back
-  const dist=Math.hypot(wx,wy,wz);
-
-  if(orbitStep<stations.length&&dist<0.075&&framing.seenCount>=2){
-    orbitStep++;
+    if(seenOk){
+      if(dx<-0.032)_haloVerifyMask|=1;
+      if(dx>0.032)_haloVerifyMask|=2;
+    }
+    const leftDone=(_haloVerifyMask&1)!==0,rightDone=(_haloVerifyMask&2)!==0;
+    doneCount=(leftDone?1:0)+(rightDone?1:0);totalCount=2;
+    for(let i=0;i<8;i++){
+      const mat=haloSectorMats[i];
+      const isLeft=(i===3||i===4||i===5),isRight=(i===7||i===0||i===1);
+      if((isLeft&&leftDone)||(isRight&&rightDone)){mat.color.setHex(0x22c55e);mat.opacity=0.95;}
+      else if(isLeft||isRight){mat.color.setHex(seenOk?0x38bdf8:0xf87171);mat.opacity=(seenOk?0.42:0.30)+0.18*pulse;}
+      else{mat.color.setHex(0x475569);mat.opacity=0.16;}
+    }
+    cueLabel=!leftDone?'SWEEP LEFT':!rightDone?'SWEEP RIGHT':'HOLD STEADY';
   }
 
   orbitGuideGroup.visible=true;
-  const targetX=Math.max(-0.20,Math.min(0.20,dx*0.95));
-  const targetY=Math.max(-0.14,Math.min(0.14,dy*0.95));
-  const pulse=1+0.07*Math.sin(now*0.007);
-  // Subtle depth cue: ring expands slightly when user should lean closer, shrinks when stepping back.
-  const depthScale=Math.max(0.72,Math.min(1.38,1-dz*1.4))*pulse;
-  orbitRingX+=(targetX-orbitRingX)*0.18;
-  orbitRingY+=(targetY-orbitRingY)*0.18;
-  orbitRingScale+=(depthScale-orbitRingScale)*0.18;
-
-  orbitTargetRing.position.set(orbitRingX,orbitRingY,-1.0);
-  orbitTargetRing.scale.setScalar(orbitRingScale);
-  orbitTargetMat.color.setHex(framing.seenCount<2?0xf87171:dist<0.09?0x4ade80:0xfbbf24);
-
-  const lAttr=orbitLineGeo.attributes.position;
-  lAttr.setXYZ(0,0,0,-1.0);
-  lAttr.setXYZ(1,orbitRingX,orbitRingY,-1.0);
-  lAttr.needsUpdate=true;
-  orbitGuideLine.visible=Math.hypot(orbitRingX,orbitRingY)>0.015;
-
-  const depthHint=dz<-0.06?'CLOSER':dz>0.06?'STEP BACK':'';
-  const cueText=framing.status!=='good'?framing.cue:label;
-  const ck=`${orbitMode}:${orbitStep}:${cueText}:${depthHint}:${framing.status}:${counterText}:${tagState.key}`;
+  const shownLabel=framing.status!=='good'?framing.cue:cueLabel;
+  const shownHint=framing.status==='good'?depthHint:'';
+  const ck=`${orbitMode}:${doneCount}:${totalCount}:${shownLabel}:${shownHint}:${framing.status}:${counterText}:${tagState.key}`;
   if(ck!==orbitCueKey){
     orbitCueKey=ck;
-    drawOrbitCue(cueText,Math.min(orbitStep,stations.length),stations.length,framing.status==='good'?depthHint:'',framing.status==='good',{counterText,tagState});
+    drawOrbitCue(shownLabel,doneCount,totalCount,shownHint,framing.status==='good',{counterText,tagState});
   }
 }
 
@@ -5015,15 +5098,7 @@ function clearTrail(){
   resetOrbitGuide();
 }
 
-function addTrailDot(viewerMatrix,phase){
-  const m=new THREE.Matrix4().fromArray(viewerMatrix);
-  const pos=new THREE.Vector3(0,-0.04,-0.32).applyMatrix4(m);
-  const dot=new THREE.Mesh(trailGeo,phase==='scanning'?trailMatScan:trailMatVerify);
-  dot.position.copy(pos);
-  trailGroup.add(dot);
-  if(trailGroup.children.length>90)trailGroup.remove(trailGroup.children[0]);
-  trailGroup.visible=true;
-}
+function addTrailDot(){}
 
 function calibrationMotionChecklist(){
   if(calViewerPoses.length<2)return {lr:false,ud:false,io:false,tilt:false,spans:[0,0,0],angleDeg:0};
@@ -7133,12 +7208,12 @@ try{
       updateLeaveConfirm(frameInputs,pose,now);
       updateHudPanelDragging(frameInputs,pose,now);
       const calibratingOrLocking=asPhase!=='ready'||anPhase==='collecting';
-      reticle.visible=Boolean(capture.isRunning?.())&&calibratingOrLocking;
+      latestViewMat=Array.from(pose.transform.matrix);
+      updateTagFirstSeenHint(pose,asPhase,anPhase,now);
+      updateOrbitGuide(pose,asPhase,now,anSummary,assistant?.summary?.());
+      reticle.visible=Boolean(capture.isRunning?.())&&calibratingOrLocking&&!spatialHaloGroup.visible;
       reticle.material.color.setHex(0x38bdf8);
       reticle.scale.setScalar(1.0);
-      latestViewMat=Array.from(pose.transform.matrix);
-      updateOrbitGuide(pose,asPhase,now,anSummary,assistant?.summary?.());
-      updateTagFirstSeenHint(pose,asPhase,anPhase,now);
       if(now-lastStabilitySample>=240){
         lastStabilitySample=now;
         const auditFresh=lastAuditRow&&now-lastAuditAt<2500;

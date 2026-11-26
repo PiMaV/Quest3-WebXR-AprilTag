@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.1.4] - 2026-11-26
+
+### Added
+- **World-Anchored 3D Spatial Calibration Halo:** Replaced the head-locked chasing ring/dashed line and mid-air trail dots with a native Face-ID-style 8-sector 3D halo anchored directly around the physical L-angle in world space ([`examples/quest.mjs`](examples/quest.mjs)). Sweep your head in any order to turn all 8 sectors Emerald Green, then shift left/right during verification and watch the halo lock clockwise on anchor creation.
+- **Diagnostic Calibration Retry Feedback:** Calibration retries now surface the exact failing validation gate (e.g. `pos`, `ang`, `rms`, `reproj`, `camera offset`) instead of a generic diversity message ([`src/assistant.mjs`](src/assistant.mjs)).
+
+### Changed
+- **Quest 3 Real-World Calibration Gates & Solver Speed:** Subsampled `refineJointCalibration` to `<= 48` evenly-spaced training frames at `30` LM iterations (`~4×` faster), relaxed `diversity` translation span to `>= 10 cm`, and calibrated Quest 3 validation/verification gates to `< 8.5 mm / 1.5°` and `jointHeldOutRmsPx < 10.0 px` (`< 10.0 mm / 1.5°` cached session check, `minMotion = 0.04 m`) while preserving `|camT| < 0.16 m` and `|camT_z| < 0.09 m` sanity bounds ([`src/solver.mjs`](src/solver.mjs), [`src/assistant.mjs`](src/assistant.mjs), [`src/profile.mjs`](src/profile.mjs)).
+
+---
+
 ## [1.1.3] - 2026-11-26
 
 ### Added

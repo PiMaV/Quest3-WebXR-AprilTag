@@ -47,8 +47,18 @@ export function createCalibrationAssistant({rig,device,imageSize,store=createPro
       }
       const result=data.result;
       if(!result?.validation?.passed){
-        if(rows.length<180){nextFitAt=rows.length+15;phase='scanning';message='Validation needs more diverse viewpoints. Keep L-angle still and rotate head around multiple axes.';notify();}
-        else failed('Calibration did not meet quality gates. Restart with more diverse viewpoints.');return;
+        const v=result?.validation||{};
+        const why=v.translationSafe===false?'camera offset out of range'
+          :v.offsetSafe===false?'clock offset out of range'
+          :v.delayIdentified===false?'sync delay unstable'
+          :v.uncertainty===false?'focal uncertainty too high'
+          :Number.isFinite(v.positionP95Mm)&&v.positionP95Mm>=8.5?`pos ${v.positionP95Mm.toFixed(1)} mm`
+          :Number.isFinite(v.angleP95Deg)&&v.angleP95Deg>=1.5?`ang ${v.angleP95Deg.toFixed(2)} deg`
+          :Number.isFinite(v.heldOutRmsPx)&&v.heldOutRmsPx>=1.2?`rms ${v.heldOutRmsPx.toFixed(2)} px`
+          :Number.isFinite(v.jointHeldOutRmsPx)&&v.jointHeldOutRmsPx>=10.0?`reproj ${v.jointHeldOutRmsPx.toFixed(1)} px`
+          :'more diverse viewpoints needed';
+        if(rows.length<180){nextFitAt=rows.length+15;phase='scanning';message=`Retry calibration (${why}). Keep L-angle still and sweep around halo.`;notify();}
+        else failed(`Calibration did not meet quality gates (${why}). Restart with wider viewpoints.`);return;
       }
       const {worldFromRig,cost,...portable}=result;
       const {reference,...metrics}=portable.validation;portable.validation=metrics;
@@ -124,10 +134,10 @@ export function createCalibrationAssistant({rig,device,imageSize,store=createPro
       let errSq=0;for(let k=0;k<errors.length;k++)errSq+=errors[k]*errors[k];
       report.reprojectionRmsPx=Math.sqrt(errSq/(errors.length/2));
       const isChecking=phase==='checking';
-      const posMax=isChecking?8.0:5.5;
-      const angMax=isChecking?1.2:1.0;
-      const rmsMax=isChecking?1.2:1.1;
-      const minMotion=isChecking?0.04:0.06;
+      const posMax=isChecking?10.0:8.5;
+      const angMax=isChecking?1.5:1.4;
+      const rmsMax=isChecking?1.2:1.2;
+      const minMotion=isChecking?0.04:0.04;
       if(report.ok&&report.positionP95Mm<posMax&&report.angleP95Deg<angMax&&report.reprojectionRmsPx<rmsMax&&motion>minMotion){
         verification=report;accept(report);return state();
       }

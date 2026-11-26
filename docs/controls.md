@@ -10,7 +10,7 @@ All primary workflows in [`examples/quest.html`](../examples/quest.html) work di
 
 1. **Confirm L-angle:** First-time visitors confirm they have a flat 1:1 L-angle target ready (see [Markers & 1:1 Setup](./markers.md)). A4 (`350–352`) and Tablet (`370–372`) targets are detected automatically.
 2. **Enter AR:** Tap **Enter AR →** in Meta Quest Browser (`immersive-ar`). Non-AR browsers stay on a static info screen without loading the WASM detector.
-3. **Calibrate or Verify:** Follow the orbital reticle around the stationary L-angle to calibrate camera intrinsics, hand-eye offset, and capture delay once, or perform a quick head shift to verify your cached `localStorage` profile.
+3. **Calibrate or Verify:** Sweep your head around the world-anchored **3D Spatial Halo** floating over the stationary L-angle until all 8 arcs turn green to calibrate camera intrinsics, hand-eye offset, and capture delay once, or sweep left/right to verify your cached `localStorage` profile.
 4. **Lock Native `XRAnchor`:** Hold the 3-tag L-angle steady for 5 frames to create the native `XRAnchor` at physical `(0, 0, 0)`. Optional debug HUD panels start `OFF` (`HUD ON/OFF` in the Wrist Menu or Controller `A` / `X`).
 
 ---

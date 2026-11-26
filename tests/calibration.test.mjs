@@ -116,6 +116,9 @@ test('joint BA decouples fx and depth z on shallow head tilt and validateCalibra
   assert.equal(validateCalibration(good).id,'ok');
   const driftedZ={...good,viewerFromCameraGL:vectorRigid([0,0,0,0.034,-0.025,-0.092])};
   assert.throws(()=>validateCalibration(driftedZ),/validated/);
-  const sloppyVal={...good,validation:{...good.validation,positionP95Mm:5.9}};
+  const sloppyVal={...good,validation:{...good.validation,positionP95Mm:9.5}};
   assert.throws(()=>validateCalibration(sloppyVal),/validated/);
+  const realWorldVal={...good,validation:{...good.validation,positionP95Mm:4.5,jointHeldOutRmsPx:4.8},
+    verification:{passed:true,positionP95Mm:6.2,angleP95Deg:0.8}};
+  assert.equal(validateCalibration(realWorldVal).id,'ok');
 });

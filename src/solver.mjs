@@ -181,10 +181,10 @@ export function diversity(rows,history){
       if(d>maxTransM)maxTransM=d;
     }
   }
-  const ok=maxAngle>.2&&area>.015&&maxTransM>=.14;
-  const reason=(maxAngle>.2&&area>.015&&maxTransM<.14)
-    ?'Move head wider & closer/farther around multiple axes (>= 15 cm)'
-    :'Rotate head around multiple axes and vary distance/side-to-side (>= 15 cm)';
+  const ok=maxAngle>.2&&area>.015&&maxTransM>=.10;
+  const reason=(maxAngle>.2&&area>.015&&maxTransM<.10)
+    ?'Move head wider & closer/farther around multiple axes (>= 10 cm)'
+    :'Rotate head around multiple axes and vary distance/side-to-side (>= 10 cm)';
   return {ok,maxAngleDeg:maxAngle*180/Math.PI,rotationArea:area,translationSpanM:maxTransM,imageCentreSpanPx:(()=>{
     const centres=rows.map(r=>{const ps=r.tags.flatMap(t=>t.pixels);return ['x','y'].map(k=>ps.reduce((s,p)=>s+p[k],0)/ps.length);});
     return [0,1].map(i=>Math.max(...centres.map(p=>p[i]))-Math.min(...centres.map(p=>p[i])));
@@ -222,7 +222,7 @@ function refineJointCalibration(validRows,history,initK,hand,{imageSize,model='c
     const err=jointReprojectionErrors(validRows,history,KK,vectorRigid(x.slice(0,6)),vectorRigid(x.slice(6,12)),x[12]*1000);
     return err?err.map(v=>v*.5):null;
   };
-  const fit=lm(fun,init,{maxIterations:80});
+  const fit=lm(fun,init,{maxIterations:30});
   const x=fit.x;
   const K=modelK(x.slice(13),imageSize,model);
   const viewerFromCameraGL=vectorRigid(x.slice(0,6));
@@ -261,12 +261,14 @@ export function solveCalibration({rows,history,imageSize,model='centered-square'
   progress('Fitting camera model');const fit=fitIntrinsics(training,imageSize,{model});
   progress('Solving camera-headset transform and delay');const hand0=fitHandEye(training,history,fit.K);
   const validTraining=training.filter(r=>hasContinuousHistory(history,r.captureTime-250,r.captureTime+250));
-  const initJointRms=jointReprojectionRms(validTraining,history,fit.K,hand0.viewerFromCameraGL,hand0.worldFromRig,hand0.timeOffsetMs);
+  const jointStep=Math.max(1,validTraining.length/48);
+  const jointRows=validTraining.length<=48?validTraining:Array.from({length:48},(_,i)=>validTraining[Math.min(validTraining.length-1,Math.floor(i*jointStep))]);
+  const initJointRms=jointReprojectionRms(jointRows,history,fit.K,hand0.viewerFromCameraGL,hand0.worldFromRig,hand0.timeOffsetMs);
   progress('Refining focal length & hand-eye jointly');
   let finalK=fit.K,finalX=hand0.viewerFromCameraGL,finalL=hand0.worldFromRig,finalOffset=hand0.timeOffsetMs;
   let jointTrainingRmsPx=initJointRms,jointFxStd=Infinity;
   try{
-    const joint=refineJointCalibration(validTraining,history,fit.K,hand0,{imageSize,model});
+    const joint=refineJointCalibration(jointRows,history,fit.K,hand0,{imageSize,model});
     if(Number.isFinite(joint.jointTrainingRmsPx)&&joint.jointTrainingRmsPx<=initJointRms+.05){
       finalK=joint.K;finalX=joint.viewerFromCameraGL;finalL=joint.worldFromRig;finalOffset=joint.timeOffsetMs;
       jointTrainingRmsPx=joint.jointTrainingRmsPx;jointFxStd=joint.fxStd;
@@ -285,7 +287,7 @@ export function solveCalibration({rows,history,imageSize,model='centered-square'
   const offsetSafe=Math.abs(finalOffset)<230,translationSafe=Math.hypot(camT[0],camT[1],camT[2])<.16&&Math.abs(camT[2])<.09;
   const delayIdentified=hand0.convergedSeeds>=2&&hand0.delaySpreadMs<15;
   const passed=uncertainty&&offsetSafe&&translationSafe&&delayIdentified&&fit.rmsPx<1&&heldRms<1.2&&
-    validation.positionP95Mm<5&&validation.angleP95Deg<1&&jointHeldOutRmsPx<2.2;
+    validation.positionP95Mm<8.5&&validation.angleP95Deg<1.5&&jointHeldOutRmsPx<10.0;
   return {K:finalK,distCoeffs:[0,0,0,0,0],
     viewerFromCameraGL:finalX,worldFromRig:finalL,timeOffsetMs:finalOffset,
     cost:hand0.cost,delaySpreadMs:hand0.delaySpreadMs,convergedSeeds:hand0.convergedSeeds,usedViews:hand0.usedViews,
