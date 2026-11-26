@@ -52,16 +52,16 @@ worldFromL = worldFromViewer(captureTime + timeOffsetMs) × viewerFromCameraGL �
 ## Controls (`examples/quest.html`)
 
 - **Startup:** **Prepare camera** → **Enter AR** → follow the orbital reticle (calibrate once or verify cached profile) → hold the 3-tag L-angle steady for 5 frames to lock. Optional debug HUD panels start `OFF` (`HUD ON/OFF` in the Wrist Menu or Controller `A/X`).
-- **`SCAN` mode (camera ON · pulsing red dot on left middle knuckle):**
-  - Static tags (`>= 350`, `100–299`) place locked objects scaled by ID class; perimeter markers (`353–359`, activated via `TL #353`) build a 20 cm clockwise table fence.
-  - Movable tags (`300–349`) auto-lock and follow via 90 Hz hand-tracking coupling.
-  - Hold a fingertip `0.55 s` on a locked tag for a **Time-Copy** snapshot; hold **`[● REC]`** (`0.65 s` start / `0.35 s` stop) above a tag to record a 3D path.
+- **`SCAN` mode (camera ON · red hand tint):**
+  - **M.E.S.S. ID convention (`tag36h11`):** Only the first 50 IDs per 100-block (`x00–x49`) are free user-assignable AprilTags (e.g. `200–249` at 12 mm, `300–349` at 20 mm); IDs from `x50` upward (`x50–x99`, e.g. `250–299` and `350–399`) are reserved M.E.S.S. system/reference ranges (L-angles `350–352` / `370–372`, perimeter pieces `353–359`).
+  - Reserved perimeter markers (`353–359`, activated via `TL`, labeled `YL`, `TL`, `XT`, `TR`, `YR`, `BR`, `XB`) build a 20 cm clockwise table fence; free 20 mm tags (`300–349`) auto-lock and follow via 90 Hz hand-tracking coupling inside thicker shimmering frames; other detected tags with defined edge classes (such as free 12 mm tags `200–249`) place static locked markers scaled by ID class (`requiredTagEdgeMm`) with their ID rendered flat on the tag matrix.
+  - Hold a fingertip `0.55 s` on a locked tag for a **Time-Copy** snapshot (point marker); hold **`[● REC]`** (`0.65 s` start / `0.35 s` stop) above a tag to record a velocity-thickness-modulated 3D pathline with waypoint dots.
   - Switch to `MEASURE`: floating **`[■ MEASURE]`** button on the L-angle, frontal **Left Fist Hold (`0.85 s`)**, or Controller Grip.
-- **`MEASURE` mode (camera OFF · 90 FPS):**
+- **`MEASURE` mode (camera OFF · 90 FPS · green hand tint):**
   - Pure native WebXR anchor tracking — low power and free of optical stutter.
-  - Hover any locked tag, Time-Copy, or path point with your index fingertip to inspect `X / Y / Z / Floor`.
+  - Hover any locked tag, Time-Copy, or path point with your index fingertip to reveal the full 3D tag square, orientation plane, speed (`mm/s`), and `X / Y / Z / Floor`.
   - **Index + Thumb Pinch** (left or right hand) or hover card **`[📌]`** orb pins/unpins points for live pairwise 3D distance rails (`mm`, `ΔZ`, `Δt`).
-  - **Gated Wrist Menu** (`1.2 s` steady frontal palm gaze or tap inner Wrist-Dot, `120 ms`): `● SCAN`, `✕ PINS`, `↺ CLEAR ALL`, `Q: AUTO/FLUID/CRISP`, `HUD ON/OFF`, and `↺ RECALIBRATE`.
+  - **Gated Wrist Menu** (`1.2 s` steady frontal palm gaze or tap inner Wrist-Dot, `120 ms`): `✕ PINS`, `↺ CLEAR ALL`, `HUD ON/OFF`, `Q: AUTO/FLUID/CRISP`, `RANGE: STD/FAR` (opt-in FPS-guarded `decimate = 1`), and `↺ RECALIBRATE`.
 - **Re-anchor & Exit:** `1× Trigger` on tracking loss (`lost` / `failed`), `2× Trigger (≤ 1.5 s)` while `tracking` (controller); hold **Left Thumbstick** or **`B`/`Y`** (`1.4 s`) to exit AR.
 
 ---

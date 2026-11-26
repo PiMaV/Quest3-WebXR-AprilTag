@@ -4,6 +4,17 @@
   "printSeriesVersion": "3.0",
   "versionNote": "Current M.E.S.S. L-angle print sheet series (v3.0); print sheet revisions may increment independently while exact file checksums and calibrated rig geometries remain pinned here.",
   "copiedWithoutModification": true,
+  "idConvention": {
+    "summary": "Per 100-block in the M.E.S.S. AprilTag language (tag36h11), only the first 50 IDs (x00–x49) are free user-assignable AprilTags (e.g. 200–249 at 12 mm, 300–349 at 20 mm); IDs from x50 upward (x50–x99, e.g. 250–299 and 350–399) are reserved M.E.S.S. system/reference IDs.",
+    "freeRanges": {
+      "12mm": "200–249",
+      "20mm": "300–349"
+    },
+    "reservedRanges": {
+      "200Series": "250–299",
+      "300Series": "350–399"
+    }
+  },
   "paperMm": [
     297,
     210
@@ -22,7 +33,7 @@
     371,
     372
   ],
-  "stationaryPieceTagIds": [
+  "reservedPerimeterPieceTagIds": [
     353,
     354,
     355,
@@ -31,18 +42,18 @@
     358,
     359
   ],
-  "movableTagIds": [
+  "freeSampleTagIds20mm": [
     300,
     301
   ],
-  "microTagIds": [
+  "freeSampleTagIds12mm": [
     200,
     201
   ],
   "assets": [
     {
       "file": "print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf",
-      "role": "Primary A4 1:1 printable target sheet (L-angle 350/351/352 + perimeter/movable/micro pieces)",
+      "role": "Primary A4 1:1 printable target sheet (reserved L-angle 350–352 & perimeter pieces 353–359 + free sample tags 200–201 & 300–301)",
       "sha256": "fb3d6355136fb3b775acb6a6171cfb359480587ff8db0cca23832a5e4484b74a"
     },
     {

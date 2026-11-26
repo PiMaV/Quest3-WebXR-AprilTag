@@ -28,10 +28,9 @@ respective licenses:
   pose solver, anchor lifecycle, and runtime math modules have zero Three.js
   dependencies.
 
+## First-Party Asset Provenance
+
 * **Reference Print (`print/`) & Showcase / UI Branding Assets (`examples/assets/`)**
   Authored by PiMaV / Mattern Engineering & Software Solutions (`mess.engineering`),
-  licensed under **Apache-2.0** (`print/SOURCE.json`). Only the fixed primary
-  L-angle tags (`350 / 351 / 352` on the A4 target, or `370 / 371 / 372` on the
-  200 × 150 mm tablet target) form the calibrated reference assembly; loose
-  stationary/movable/micro pieces (`353–359`, `300–301`, `200–201`) remain
-  independent targets.
+  licensed under **Apache-2.0** (see `print/SOURCE.json` for SHA-256 checksums,
+  M.E.S.S. tag ID conventions, and sheet metadata).
