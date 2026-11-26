@@ -13,13 +13,19 @@ export async function deviceIdentity(camera,rig,userAgent=navigator.userAgent){
     trackLabel:camera.trackLabel,userAgent,cacheable};
 }
 export function validateCalibration(p){
+  const camT=Array.isArray(p?.viewerFromCameraGL)?p.viewerFromCameraGL.slice(12,15):null;
   if(p?.schema!==PROFILE_SCHEMA||!p.id||!p.device?.key||p.device.pipeline!==PIPELINE||!p.device.rigHash||
     !Array.isArray(p.imageSize)||p.imageSize.length!==2||p.imageSize.some(v=>!Number.isInteger(v)||v<64||v>4096)||
     !p.K||![p.K.fx,p.K.fy,p.K.cx,p.K.cy].every(Number.isFinite)||p.K.fx<=0||p.K.fy<=0||
     p.K.width!==p.imageSize[0]||p.K.height!==p.imageSize[1]||
     !isRigidPose(p.viewerFromCameraGL)||!Number.isFinite(p.timeOffsetMs)||Math.abs(p.timeOffsetMs)>=230||
+    !camT||Math.hypot(camT[0],camT[1],camT[2])>=0.16||Math.abs(camT[2])>=0.09||
     p.distCoeffs?.length!==5||p.distCoeffs.some(x=>x!==0)||
-    p.validation?.passed!==true||p.verification?.passed!==true||p.independentlyValidated!==false)
+    p.validation?.passed!==true||p.verification?.passed!==true||p.independentlyValidated!==false||
+    (p.validation.positionP95Mm!=null&&p.validation.positionP95Mm>=5.0)||
+    (p.validation.angleP95Deg!=null&&p.validation.angleP95Deg>=1.0)||
+    (p.verification.positionP95Mm!=null&&p.verification.positionP95Mm>=8.0)||
+    (p.verification.angleP95Deg!=null&&p.verification.angleP95Deg>=1.2))
     throw new Error('Not a validated, supported calibration profile');
   return p;
 }

@@ -537,3 +537,219 @@ export function createPathTubeMesh(maxPoints, material, {
     dispose,
   };
 }
+
+/**
+ * Paired single-draw-call pre-allocated 2-edge twist ribbon + border rail LineSegments
+ * encoding both 3D tag roll (via rightAxes) and speed (via per-vertex heatmap + halfWidths).
+ */
+export function createPathRibbonMesh(maxPoints, material, {
+  edgeMaterial = null,
+  halfWidth = 0.005,
+  rightEdgeTint = 0.18,
+  renderOrder = 0,
+  name = '',
+} = {}) {
+  const cap = Math.max(2, maxPoints | 0);
+  const defaultHalfWidth = Number.isFinite(halfWidth) && halfWidth > 1e-5 ? halfWidth : 0.005;
+  const tint = Number.isFinite(rightEdgeTint) ? Math.max(0, Math.min(1, rightEdgeTint)) : 0.18;
+
+  const positions = new Float32Array(cap * 2 * 3);
+  const colors = new Float32Array(cap * 2 * 3);
+  const IndexArray = (cap * 2 <= 65535) ? Uint16Array : Uint32Array;
+  const ribbonIndices = new IndexArray((cap - 1) * 6);
+  const edgeIndices = new IndexArray((cap - 1) * 4);
+
+  let rIdx = 0;
+  let eIdx = 0;
+  for (let i = 0; i < cap - 1; i++) {
+    const v0 = i * 2;
+    const v1 = v0 + 1;
+    const v2 = v0 + 2;
+    const v3 = v0 + 3;
+    ribbonIndices[rIdx++] = v0;
+    ribbonIndices[rIdx++] = v1;
+    ribbonIndices[rIdx++] = v3;
+    ribbonIndices[rIdx++] = v0;
+    ribbonIndices[rIdx++] = v3;
+    ribbonIndices[rIdx++] = v2;
+    edgeIndices[eIdx++] = v0;
+    edgeIndices[eIdx++] = v2;
+    edgeIndices[eIdx++] = v1;
+    edgeIndices[eIdx++] = v3;
+  }
+
+  const posAttr = new THREE.BufferAttribute(positions, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  const colAttr = new THREE.BufferAttribute(colors, 3);
+  colAttr.setUsage(THREE.DynamicDrawUsage);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', posAttr);
+  geometry.setAttribute('color', colAttr);
+  geometry.setIndex(new THREE.BufferAttribute(ribbonIndices, 1));
+  geometry.setDrawRange(0, 0);
+
+  const edgeGeometry = new THREE.BufferGeometry();
+  edgeGeometry.setAttribute('position', posAttr);
+  edgeGeometry.setAttribute('color', colAttr);
+  edgeGeometry.setIndex(new THREE.BufferAttribute(edgeIndices, 1));
+  edgeGeometry.setDrawRange(0, 0);
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = renderOrder;
+  if (name) mesh.name = name;
+
+  const ownsEdgeMaterial = !edgeMaterial;
+  const resolvedEdgeMat = edgeMaterial || new THREE.LineBasicMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const edgeLines = new THREE.LineSegments(edgeGeometry, resolvedEdgeMat);
+  edgeLines.frustumCulled = false;
+  edgeLines.renderOrder = renderOrder + 1;
+  if (name) edgeLines.name = `${name}-edges`;
+
+  let activePoints = 0;
+
+  function syncFromPositions(linePositions, count, {
+    rightAxes = null,
+    halfWidths = null,
+    colors: sampleColors = null,
+    fromIndex = 0,
+  } = {}) {
+    const n = Math.max(0, Math.min(cap, count | 0));
+    activePoints = n;
+    if (n < 2 || !linePositions) {
+      geometry.setDrawRange(0, 0);
+      edgeGeometry.setDrawRange(0, 0);
+      return 0;
+    }
+
+    const start = Math.max(0, Math.min(n - 1, fromIndex | 0));
+    for (let i = start; i < n; i++) {
+      const pOff = i * 3;
+      const px = linePositions[pOff];
+      const py = linePositions[pOff + 1];
+      const pz = linePositions[pOff + 2];
+
+      let rx = NaN, ry = NaN, rz = NaN;
+      if (rightAxes) {
+        const ax = rightAxes[pOff];
+        const ay = rightAxes[pOff + 1];
+        const az = rightAxes[pOff + 2];
+        const aLen = Math.hypot(ax, ay, az);
+        if (Number.isFinite(aLen) && aLen >= 1e-4) {
+          const inv = 1 / aLen;
+          rx = ax * inv;
+          ry = ay * inv;
+          rz = az * inv;
+        }
+      }
+
+      if (!Number.isFinite(rx)) {
+        let tx, ty, tz;
+        if (i === 0) {
+          tx = linePositions[3] - px;
+          ty = linePositions[4] - py;
+          tz = linePositions[5] - pz;
+        } else if (i === n - 1) {
+          tx = px - linePositions[pOff - 3];
+          ty = py - linePositions[pOff - 2];
+          tz = pz - linePositions[pOff - 1];
+        } else {
+          tx = linePositions[pOff + 3] - linePositions[pOff - 3];
+          ty = linePositions[pOff + 4] - linePositions[pOff - 2];
+          tz = linePositions[pOff + 5] - linePositions[pOff - 1];
+        }
+        let tLen = Math.hypot(tx, ty, tz);
+        if (tLen < 1e-6 && i > 0) {
+          tx = px - linePositions[pOff - 3];
+          ty = py - linePositions[pOff - 2];
+          tz = pz - linePositions[pOff - 1];
+          tLen = Math.hypot(tx, ty, tz);
+        }
+        if (tLen >= 1e-6) {
+          tx /= tLen;
+          ty /= tLen;
+          tz /= tLen;
+        } else {
+          tx = 1;
+          ty = 0;
+          tz = 0;
+        }
+        const ux = Math.abs(tz) < 0.9 ? 0 : 1;
+        const uy = 0;
+        const uz = Math.abs(tz) < 0.9 ? 1 : 0;
+        rx = uy * tz - uz * ty;
+        ry = uz * tx - ux * tz;
+        rz = ux * ty - uy * tx;
+        const rLen = Math.hypot(rx, ry, rz) || 1;
+        rx /= rLen;
+        ry /= rLen;
+        rz /= rLen;
+      }
+
+      const rawHW = halfWidths ? halfWidths[i] : defaultHalfWidth;
+      const hw = Number.isFinite(rawHW) && rawHW > 1e-5 ? rawHW : defaultHalfWidth;
+
+      let cr = 0.12, cg = 0.68, cb = 0.98;
+      if (sampleColors) {
+        const sr = sampleColors[pOff];
+        const sg = sampleColors[pOff + 1];
+        const sb = sampleColors[pOff + 2];
+        if (Number.isFinite(sr) && Number.isFinite(sg) && Number.isFinite(sb)) {
+          cr = sr;
+          cg = sg;
+          cb = sb;
+        }
+      }
+
+      const lOff = i * 6;
+      const rOff = lOff + 3;
+      positions[lOff] = px - rx * hw;
+      positions[lOff + 1] = py - ry * hw;
+      positions[lOff + 2] = pz - rz * hw;
+      positions[rOff] = px + rx * hw;
+      positions[rOff + 1] = py + ry * hw;
+      positions[rOff + 2] = pz + rz * hw;
+
+      colors[lOff] = cr;
+      colors[lOff + 1] = cg;
+      colors[lOff + 2] = cb;
+      colors[rOff] = cr + (1 - cr) * tint;
+      colors[rOff + 1] = cg + (1 - cg) * tint;
+      colors[rOff + 2] = cb + (1 - cb) * tint;
+    }
+
+    geometry.setDrawRange(0, (n - 1) * 6);
+    edgeGeometry.setDrawRange(0, (n - 1) * 4);
+    posAttr.needsUpdate = true;
+    colAttr.needsUpdate = true;
+    return n - 1;
+  }
+
+  function clear() {
+    activePoints = 0;
+    geometry.setDrawRange(0, 0);
+    edgeGeometry.setDrawRange(0, 0);
+  }
+
+  function dispose() {
+    geometry.dispose();
+    edgeGeometry.dispose();
+    if (ownsEdgeMaterial) resolvedEdgeMat.dispose();
+  }
+
+  return {
+    mesh,
+    edgeLines,
+    capacity: cap,
+    syncFromPositions,
+    clear,
+    activeSegments: () => Math.max(0, activePoints - 1),
+    dispose,
+  };
+}

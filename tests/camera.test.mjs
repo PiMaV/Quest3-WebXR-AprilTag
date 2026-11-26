@@ -435,11 +435,12 @@ test('createReferenceCamera forwards focusRois when provided and records focusRo
     assert.deepEqual(frameMsg.focusRois,expectedFocus);
     worker.onmessage({data:{
       type:'detections',serial:frameMsg.serial,markers:[],
-      frameEvidence:{fresh:true,pixelsChanged:true},preprocessMs:2,detectMs:8,roiCount:1,focusHit:true,
+      frameEvidence:{fresh:true,pixelsChanged:true},preprocessMs:2,detectMs:8,roiCount:2,focusHit:true,focusMissedBoxes:1,
     }});
     assert.equal(observations.length,1);
     assert.equal(observations[0].sample.focusRoiCount,1);
     assert.equal(observations[0].sample.focusHit,true);
+    assert.equal(observations[0].sample.focusMissedBoxes,1);
     cam.dispose();
   });
 });

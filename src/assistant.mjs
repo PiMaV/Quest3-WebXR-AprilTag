@@ -123,16 +123,21 @@ export function createCalibrationAssistant({rig,device,imageSize,store=createPro
       verification=report;
       let errSq=0;for(let k=0;k<errors.length;k++)errSq+=errors[k]*errors[k];
       report.reprojectionRmsPx=Math.sqrt(errSq/(errors.length/2));
-      if(report.ok&&report.positionP95Mm<12&&report.angleP95Deg<1.5&&report.reprojectionRmsPx<1.2&&motion>.04){
+      const isChecking=phase==='checking';
+      const posMax=isChecking?8.0:5.5;
+      const angMax=isChecking?1.2:1.0;
+      const rmsMax=isChecking?1.2:1.1;
+      const minMotion=isChecking?0.04:0.06;
+      if(report.ok&&report.positionP95Mm<posMax&&report.angleP95Deg<angMax&&report.reprojectionRmsPx<rmsMax&&motion>minMotion){
         verification=report;accept(report);return state();
       }
       if(rows.length>=30){
-        if(phase==='checking'){
+        if(isChecking){
           checkFailure={positionP95Mm:report.positionP95Mm,angleP95Deg:report.angleP95Deg,reprojectionRmsPx:report.reprojectionRmsPx,
-            motionM:motion,limits:{positionP95Mm:12,angleP95Deg:1.5,reprojectionRmsPx:1.2,minMotionM:.04}};
-          const why=report.angleP95Deg>=1.5?`orientation error ${report.angleP95Deg.toFixed(1)}° exceeds 1.5°`:
-            report.positionP95Mm>=12?`position error ${report.positionP95Mm.toFixed(1)} mm exceeds 12 mm`:
-            report.reprojectionRmsPx>=1.2?'marker image not sharp enough':motion<=.04?'head motion too small for verification':'spatial association incomplete';
+            motionM:motion,limits:{positionP95Mm:posMax,angleP95Deg:angMax,reprojectionRmsPx:rmsMax,minMotionM:minMotion}};
+          const why=report.angleP95Deg>=angMax?`orientation error ${report.angleP95Deg.toFixed(1)}° exceeds ${angMax}°`:
+            report.positionP95Mm>=posMax?`position error ${report.positionP95Mm.toFixed(1)} mm exceeds ${posMax} mm`:
+            report.reprojectionRmsPx>=rmsMax?'marker image not sharp enough':motion<=minMotion?'head motion too small for verification':'spatial association incomplete';
           phase='check-failed';message=`Profile loaded; verification failed: ${why}. Retry check or explicitly recalibrate.`;
           onProfile(null);notify();return state();
         }
@@ -144,7 +149,7 @@ export function createCalibrationAssistant({rig,device,imageSize,store=createPro
         }
         return state();
       }
-      message=motion<=.04?'Shift your head side-to-side and up/down for verification.':'Collecting verification views; keep L-angle stationary.';
+      message=motion<=minMotion?'Shift your head side-to-side and up/down for verification.':'Collecting verification views; keep L-angle stationary.';
     }
     notify();return state();
   }

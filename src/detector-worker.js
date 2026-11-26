@@ -91,7 +91,7 @@ self.onmessage=async({data})=>{
       if(!evidence.fresh) {postMessage({type:'frame-skipped',serial:data.serial,frameEvidence:evidence,preprocessMs:performance.now()-started});return;}
     } else gray=new Uint8Array(data.gray);
     const preprocessMs=performance.now()-started,start=performance.now();
-    let markers,coarseMs=0,roiMs=0,roiCount=0,focusHit=false;
+    let markers,coarseMs=0,roiMs=0,roiCount=0,focusHit=false,focusMissedBoxes=0;
     if(detectMode==='two-stage') {
       const coarseDecimate=activeDecimate===1?1:(activeDecimate===1.5?1.5:2);
       const priorRois=Array.isArray(data.priorRois)&&data.priorRois.length?data.priorRois:undefined;
@@ -102,6 +102,7 @@ self.onmessage=async({data})=>{
           ?detector.detectFocusRois(gray,data.width,data.height,focusRois,{fallbackOpts:{coarseDecimate,priorRois}})
           :detector.detectTwoStage(gray,data.width,data.height,{coarseDecimate,priorRois}));
       markers=res.markers;coarseMs=res.coarseMs;roiMs=res.roiMs;roiCount=res.roiCount;focusHit=Boolean(res.focusHit);
+      focusMissedBoxes=Number.isFinite(res.focusMissedBoxes)?res.focusMissedBoxes:0;
       if(trackRefIds?.length) {
         const idSet=new Set(trackRefIds);
         const found=new Set();
@@ -162,6 +163,6 @@ self.onmessage=async({data})=>{
       }
       poseFitMs=performance.now()-poseStarted;
     }
-    postMessage({type:'detections',serial:data.serial,markers,observation,poseFitMs,frameEvidence:evidence,preprocessMs,detectMs,readbackMode,detectMode,coarseMs,roiMs,roiCount,focusHit});
+    postMessage({type:'detections',serial:data.serial,markers,observation,poseFitMs,frameEvidence:evidence,preprocessMs,detectMs,readbackMode,detectMode,coarseMs,roiMs,roiCount,focusHit,focusMissedBoxes});
   } catch(error) {postMessage({type:'error',message:String(error)});}
 };

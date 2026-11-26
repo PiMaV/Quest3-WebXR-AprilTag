@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from '../vendor/three/three.module.js';
-import { createInstancedPool, createAxesBatch, createPathTubeMesh } from '../src/render-batch.mjs';
+import { createInstancedPool, createAxesBatch, createPathTubeMesh, createPathRibbonMesh } from '../src/render-batch.mjs';
 import { createBadgeAtlas, createBillboardAtlasMesh, createOrientedAtlasMesh } from '../src/ui-atlas.mjs';
 
 test('createInstancedPool packs active visible instances, handles colors, rods, and reuses freed slots', () => {
@@ -300,4 +300,71 @@ test('createOrientedAtlasMesh places quads flat on rotated 3D frames and skips c
   assert.equal(meshBatch.mesh.geometry.drawRange.count, 0);
   meshBatch.dispose();
   atlas.dispose();
+});
+
+test('createPathRibbonMesh builds 2-edge twist ribbon + border rails with heatmap colors and clear()', () => {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
+  const ribbon = createPathRibbonMesh(16, mat, { halfWidth: 0.005, rightEdgeTint: 0.2, renderOrder: 2, name: 'test-ribbon' });
+  assert.equal(ribbon.mesh.renderOrder, 2);
+  assert.equal(ribbon.edgeLines.renderOrder, 3);
+  assert.equal(ribbon.mesh.geometry.drawRange.count, 0);
+  assert.equal(ribbon.edgeLines.geometry.drawRange.count, 0);
+  // Shared vertex buffers between ribbon face and border edge lines
+  assert.equal(ribbon.mesh.geometry.attributes.position, ribbon.edgeLines.geometry.attributes.position);
+  assert.equal(ribbon.mesh.geometry.attributes.color, ribbon.edgeLines.geometry.attributes.color);
+
+  const pts = new Float32Array(16 * 3);
+  const axes = new Float32Array(16 * 3);
+  const hw = new Float32Array(16);
+  const cols = new Float32Array(16 * 3);
+  // 4 samples moving along +Y while tag twists from +X to +Z:
+  const samples = [
+    { p: [0, 0.00, 0], r: [1, 0, 0], hw: 0.004, c: [0.1, 0.7, 1.0] },
+    { p: [0, 0.05, 0], r: [0.7071, 0, 0.7071], hw: 0.008, c: [0.2, 0.8, 0.3] },
+    { p: [0, 0.10, 0], r: [0, 0, 1], hw: 0.012, c: [1.0, 0.8, 0.1] },
+    { p: [0, 0.15, 0], r: [0, 0, 1], hw: 0.014, c: [0.95, 0.2, 0.2] },
+  ];
+  for (let i = 0; i < samples.length; i++) {
+    pts.set(samples[i].p, i * 3);
+    axes.set(samples[i].r, i * 3);
+    hw[i] = samples[i].hw;
+    cols.set(samples[i].c, i * 3);
+  }
+
+  assert.equal(ribbon.syncFromPositions(pts, 1, { rightAxes: axes, halfWidths: hw, colors: cols }), 0);
+  assert.equal(ribbon.mesh.geometry.drawRange.count, 0);
+
+  assert.equal(ribbon.syncFromPositions(pts, 3, { rightAxes: axes, halfWidths: hw, colors: cols, fromIndex: 0 }), 2);
+  assert.equal(ribbon.mesh.geometry.drawRange.count, 2 * 6);
+  assert.equal(ribbon.edgeLines.geometry.drawRange.count, 2 * 4);
+
+  // Incremental append of index 3
+  assert.equal(ribbon.syncFromPositions(pts, 4, { rightAxes: axes, halfWidths: hw, colors: cols, fromIndex: 2 }), 3);
+  assert.equal(ribbon.mesh.geometry.drawRange.count, 3 * 6);
+  assert.equal(ribbon.edgeLines.geometry.drawRange.count, 3 * 4);
+  assert.equal(ribbon.activeSegments(), 3);
+
+  const pos = ribbon.mesh.geometry.attributes.position.array;
+  const col = ribbon.mesh.geometry.attributes.color.array;
+  // Sample 0: right axis +X, hw 0.004 -> left=(-0.004,0,0), right=(+0.004,0,0)
+  assert.ok(Math.abs(pos[0] - (-0.004)) < 1e-5 && Math.abs(pos[3] - 0.004) < 1e-5);
+  // Sample 2: right axis +Z (90 deg twist), hw 0.012 -> left=(0,0.10,-0.012), right=(0,0.10,+0.012)
+  assert.ok(Math.abs(pos[2 * 6 + 2] - (-0.012)) < 1e-5);
+  assert.ok(Math.abs(pos[2 * 6 + 5] - 0.012) < 1e-5);
+  // Sample 3 color: left gets exact red, right is tinted slightly lighter so twist edges stay distinct
+  assert.ok(Math.abs(col[3 * 6] - 0.95) < 1e-5 && Math.abs(col[3 * 6 + 1] - 0.2) < 1e-5);
+  assert.ok(col[3 * 6 + 4] > col[3 * 6 + 1]);
+
+  // Fallback axis path (no rightAxes passed) must stay finite and orthogonal
+  assert.equal(ribbon.syncFromPositions(pts, 3), 2);
+  for (let i = 0; i < 3 * 6; i++) {
+    assert.ok(Number.isFinite(pos[i]));
+  }
+
+  ribbon.clear();
+  assert.equal(ribbon.mesh.geometry.drawRange.count, 0);
+  assert.equal(ribbon.edgeLines.geometry.drawRange.count, 0);
+  assert.equal(ribbon.activeSegments(), 0);
+  ribbon.dispose();
+  mat.dispose();
 });

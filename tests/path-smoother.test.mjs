@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fuseCommittedTrailSegment,smoothLineTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius} from '../src/path-smoother.mjs';
+import {
+  fuseCommittedTrailSegment,
+  smoothLineTail,
+  smoothAxisTail,
+  SPEED_RADIUS_DEFAULTS,
+  speedToTubeRadius,
+  RIBBON_SPEED_DEFAULTS,
+  speedToRibbonHalfWidth,
+  speedToHeatColor,
+} from '../src/path-smoother.mjs';
 import {isRigidPose} from '../src/anchor.mjs';
 import {vectorRigid} from '../src/runtime.mjs';
 
@@ -90,4 +99,58 @@ test('speedToTubeRadius maps speed monotonically between clamped bounds and guar
   assert.ok(maxR/minR>5,'0..550 mm/s envelope must provide >5x tube diameter contrast');
 
   assert.equal(speedToTubeRadius(0.5,{minRadiusM:0.001,maxRadiusM:0.005,refSpeedMps:1.0,exponent:1.0}),0.003);
+});
+
+test('speedToRibbonHalfWidth swells 7x across 0..550 mm/s and speedToHeatColor spans cyan -> green -> yellow -> red',()=>{
+  const minHW=RIBBON_SPEED_DEFAULTS.minHalfWidthM;
+  const maxHW=RIBBON_SPEED_DEFAULTS.maxHalfWidthM;
+  assert.equal(speedToRibbonHalfWidth(0),minHW);
+  assert.equal(speedToRibbonHalfWidth(-2),minHW);
+  assert.equal(speedToRibbonHalfWidth(NaN),minHW);
+  assert.equal(speedToRibbonHalfWidth(0.55),maxHW);
+  assert.equal(speedToRibbonHalfWidth(2.0),maxHW);
+  assert.ok(maxHW/minHW>=6.5,`expected ~7x width swell, got ${maxHW/minHW}`);
+
+  const wMid=speedToRibbonHalfWidth(0.275);
+  assert.ok(Math.abs(wMid-(minHW+maxHW)*0.5)<1e-6);
+
+  // Verify 4 heatmap color stops & reused output buffer
+  const outBuf=new Float32Array(3);
+  const c0=speedToHeatColor(0,{out:outBuf});
+  assert.equal(c0,outBuf);
+  assert.ok(c0[2]>0.9&&c0[0]<0.2,'0 mm/s must be cyan-blue');
+  const cGreen=speedToHeatColor(0.55*0.35);
+  assert.ok(cGreen[1]>0.75&&cGreen[0]<0.2,'~192 mm/s must pass through green');
+  const cYellow=speedToHeatColor(0.55*0.70);
+  assert.ok(cYellow[0]>0.9&&cYellow[1]>0.7&&cYellow[2]<0.2,'~385 mm/s must pass through yellow');
+  const cRed=speedToHeatColor(0.55);
+  assert.ok(cRed[0]>0.9&&cRed[1]<0.3&&cRed[2]<0.3,'550 mm/s must saturate at vivid red-orange');
+  const cBad=speedToHeatColor(Infinity);
+  assert.ok(Math.abs(cBad[2]-c0[2])<1e-6);
+});
+
+test('smoothAxisTail preserves unit vectors, pins endpoints, and skips filtering across >=90 deg flips',()=>{
+  const s=Math.SQRT1_2;
+  const raw=new Float32Array([
+    1,0,0,
+    s,s,0,
+    1,0,0,
+  ]);
+  const out=new Float32Array(raw.length);
+  smoothAxisTail(raw,out,3);
+  assert.ok(Math.abs(out[0]-1)<1e-6&&Math.abs(out[1])<1e-6);
+  // Mid sample i=1 (45 deg) smoothed toward +X neighbors -> ~22.5 deg (cos ~0.924, sin ~0.383)
+  const midLen=Math.hypot(out[3],out[4],out[5]);
+  assert.ok(Math.abs(midLen-1)<1e-6);
+  assert.ok(out[3]>0.9&&out[4]>0.35&&out[4]<0.42);
+
+  // 180-deg flip between i=0 (+X) and i=1 (-X) must not cancel to 0!
+  const flipRaw=new Float32Array([
+    1,0,0,
+    -1,0,0,
+    -1,0,0,
+  ]);
+  const flipOut=new Float32Array(flipRaw.length);
+  smoothAxisTail(flipRaw,flipOut,3);
+  assert.ok(Math.abs(flipOut[3]-(-1))<1e-6&&Math.abs(flipOut[4])<1e-6);
 });

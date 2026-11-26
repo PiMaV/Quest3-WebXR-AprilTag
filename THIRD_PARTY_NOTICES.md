@@ -3,7 +3,7 @@
 Project-specific source code (`src/`, `examples/`, `rigs/`, `scripts/`, `tests/`)
 and supplied M.E.S.S. print, preview, and showcase branding assets (`print/`,
 `examples/assets/`) are licensed under the **Apache License, Version 2.0**
-(`v1.0.0`; see `LICENSE`).
+(`v1.1.0`; see `LICENSE`).
 
 Third-party components vendored in this repository remain under their own
 respective licenses:

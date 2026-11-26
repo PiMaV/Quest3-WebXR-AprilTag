@@ -6,3 +6,4 @@ node_modules/
 .claude/
 .cursor/
 scripts/lab-*
+raw_img_vid_footage/

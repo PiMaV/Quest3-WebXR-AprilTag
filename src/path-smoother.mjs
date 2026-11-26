@@ -133,3 +133,121 @@ export function speedToTubeRadius(speedMps, {
   const norm = Math.max(0, Math.min(1, v / refV));
   return minR + (maxR - minR) * Math.pow(norm, exp);
 }
+
+export const RIBBON_SPEED_DEFAULTS = Object.freeze({
+  minHalfWidthM: 0.0025, // 5 mm total width at standstill / turning points so twist stays crisp
+  maxHalfWidthM: 0.0175, // 35 mm total width (7x swell) at >= 550 mm/s
+  refSpeedMps: 0.55,
+  exponent: 1.0,
+});
+
+const HEAT_STOPS = Object.freeze([
+  Object.freeze([0.00, 0.12, 0.68, 0.98]), // Cyan-Blue
+  Object.freeze([0.35, 0.13, 0.82, 0.36]), // Emerald Green
+  Object.freeze([0.70, 0.98, 0.80, 0.08]), // Bright Yellow
+  Object.freeze([1.00, 0.96, 0.22, 0.18]), // Vivid Red-Orange
+]);
+
+/**
+ * Map instantaneous tangential path speed (m/s) to a smooth ribbon half-width (m).
+ */
+export function speedToRibbonHalfWidth(speedMps, {
+  minHalfWidthM = RIBBON_SPEED_DEFAULTS.minHalfWidthM,
+  maxHalfWidthM = RIBBON_SPEED_DEFAULTS.maxHalfWidthM,
+  refSpeedMps = RIBBON_SPEED_DEFAULTS.refSpeedMps,
+  exponent = RIBBON_SPEED_DEFAULTS.exponent,
+} = {}) {
+  const minHW = Number.isFinite(minHalfWidthM) && minHalfWidthM > 0 ? minHalfWidthM : RIBBON_SPEED_DEFAULTS.minHalfWidthM;
+  const maxHW = Number.isFinite(maxHalfWidthM) && maxHalfWidthM >= minHW ? maxHalfWidthM : minHW;
+  const refV = Number.isFinite(refSpeedMps) && refSpeedMps > 1e-4 ? refSpeedMps : RIBBON_SPEED_DEFAULTS.refSpeedMps;
+  const exp = Number.isFinite(exponent) && exponent > 0 ? exponent : RIBBON_SPEED_DEFAULTS.exponent;
+  const v = Number.isFinite(speedMps) && speedMps > 0 ? speedMps : 0;
+  const norm = Math.max(0, Math.min(1, v / refV));
+  return minHW + (maxHW - minHW) * Math.pow(norm, exp);
+}
+
+/**
+ * Map instantaneous tangential path speed (m/s) to a 4-stop [r, g, b] heatmap in [0..1].
+ */
+export function speedToHeatColor(speedMps, {
+  refSpeedMps = RIBBON_SPEED_DEFAULTS.refSpeedMps,
+  out = null,
+} = {}) {
+  const refV = Number.isFinite(refSpeedMps) && refSpeedMps > 1e-4 ? refSpeedMps : RIBBON_SPEED_DEFAULTS.refSpeedMps;
+  const v = Number.isFinite(speedMps) && speedMps > 0 ? speedMps : 0;
+  const t = Math.max(0, Math.min(1, v / refV));
+
+  let s0 = HEAT_STOPS[0];
+  let s1 = HEAT_STOPS[HEAT_STOPS.length - 1];
+  for (let i = 0; i < HEAT_STOPS.length - 1; i++) {
+    if (t <= HEAT_STOPS[i + 1][0]) {
+      s0 = HEAT_STOPS[i];
+      s1 = HEAT_STOPS[i + 1];
+      break;
+    }
+  }
+  const span = s1[0] - s0[0];
+  const f = span > 1e-6 ? Math.max(0, Math.min(1, (t - s0[0]) / span)) : 0;
+  const r = s0[1] + (s1[1] - s0[1]) * f;
+  const g = s0[2] + (s1[2] - s0[2]) * f;
+  const b = s0[3] + (s1[3] - s0[3]) * f;
+
+  if (out) {
+    out[0] = r;
+    out[1] = g;
+    out[2] = b;
+    return out;
+  }
+  return [r, g, b];
+}
+
+function writeNormalizedVec3(out, off, x, y, z) {
+  const len = Math.hypot(x, y, z);
+  if (len > 1e-6) {
+    const inv = 1 / len;
+    out[off] = x * inv;
+    out[off + 1] = y * inv;
+    out[off + 2] = z * inv;
+  } else {
+    out[off] = 1;
+    out[off + 1] = 0;
+    out[off + 2] = 0;
+  }
+}
+
+/**
+ * Zero-phase 3-tap binomial tail smoother ([1,2,1]/4, re-normalized) for unit 3D twist axes
+ * at index count - 2, pinning endpoints and skipping across rapid > 90 deg reversals.
+ */
+export function smoothAxisTail(rawAxes, outAxes, count) {
+  if (!rawAxes || !outAxes || count <= 0) return;
+
+  writeNormalizedVec3(outAxes, 0, rawAxes[0], rawAxes[1], rawAxes[2]);
+  if (count === 1) return;
+
+  const lastOff = (count - 1) * 3;
+  writeNormalizedVec3(outAxes, lastOff, rawAxes[lastOff], rawAxes[lastOff + 1], rawAxes[lastOff + 2]);
+  if (count < 3) return;
+
+  const i = count - 2;
+  const o = i * 3;
+  const m1 = o - 3;
+  const p1 = o + 3;
+  const cx = rawAxes[o], cy = rawAxes[o + 1], cz = rawAxes[o + 2];
+  const px = rawAxes[m1], py = rawAxes[m1 + 1], pz = rawAxes[m1 + 2];
+  const nx = rawAxes[p1], ny = rawAxes[p1 + 1], nz = rawAxes[p1 + 2];
+
+  const dotPrev = px * cx + py * cy + pz * cz;
+  const dotNext = nx * cx + ny * cy + nz * cz;
+  if (dotPrev > 0 && dotNext > 0) {
+    writeNormalizedVec3(
+      outAxes,
+      o,
+      px + 2 * cx + nx,
+      py + 2 * cy + ny,
+      pz + 2 * cz + nz,
+    );
+  } else {
+    writeNormalizedVec3(outAxes, o, cx, cy, cz);
+  }
+}

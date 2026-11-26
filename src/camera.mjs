@@ -52,6 +52,7 @@ export function createReferenceCamera({video,geometry,getSettings,getContext,onO
       if(Number.isFinite(data.roiMs)) sample.roiMs=data.roiMs;
       if(Number.isFinite(data.roiCount)) sample.roiCount=data.roiCount;
       if('focusHit' in data) sample.focusHit=Boolean(data.focusHit);
+      if(Number.isFinite(data.focusMissedBoxes)) sample.focusMissedBoxes=data.focusMissedBoxes;
       sample.receivedAtPerformanceMs=performance.now();sample.detectMs=data.detectMs;delete sample.timeout;
       try {
         let observation;

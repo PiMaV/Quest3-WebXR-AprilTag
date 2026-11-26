@@ -7,15 +7,17 @@ import {
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
   createPerfTracker,ADAPTIVE_QUALITY_MODES,createAdaptiveQualityController,
-  createInstancedPool,createAxesBatch,createPathTubeMesh,createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh,
-  projectPriorRois,prioritizeFocusCandidates,fuseCommittedTrailSegment,smoothLineTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius,
-  createTagMotionPredictor,
+  createInstancedPool,createAxesBatch,createPathRibbonMesh,createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh,
+  projectPriorRois,prioritizeFocusCandidates,fuseCommittedTrailSegment,smoothLineTail,smoothAxisTail,
+  RIBBON_SPEED_DEFAULTS,speedToRibbonHalfWidth,
+  createTagMotionPredictor,APP_VERSION_LABEL,
 } from '../src/index.mjs';
 import {associateAnchorCapture,auditAnchorObservation,createAnchorAudit} from '../src/anchor-audit.mjs';
 import {createPerimeterFence,isPerimeterTag,perimeterRole,FENCE_HEIGHT_M} from '../src/perimeter-fence.mjs';
 import {matToQuat,quatSlerp,composeRigid} from '../src/runtime.mjs';
 
-const $=id=>document.getElementById(id),status=text=>$('status').textContent=text;
+const $=id=>document.getElementById(id),status=text=>{const el=$('status');if(el)el.textContent=`${APP_VERSION_LABEL} · ${text}`;};
+if($('appVersion'))$('appVersion').textContent=APP_VERSION_LABEL;
 const PERIMETER_ENABLED=true;
 const EXTRA_COLORS=[0x38bdf8,0xf59e0b,0xa78bfa,0x34d399,0xfb7185,0xfacc15];
 const urlParams=new URLSearchParams(location.search);
@@ -522,7 +524,7 @@ function resetAnchorStability(){
   anchorBaseline=null;hasPrevAnchorWorld=false;anchorWinHead=0;anchorWinCount=0;
   liveJitterMm=null;liveDriftMm=null;liveDriftDeg=null;
 }
-let lastSampleStats=null,lastObs=null,lastObsAtMs=0,lastAuditRow=null,lastAuditAt=0,lastMotionState=null,rvfcWindowStart=null,rvfcWindowCount=0,rvfcHz=0,scanPulseCounter=0,focusSweepCounter=0;
+let lastSampleStats=null,lastObs=null,lastObsAtMs=0,lastAuditRow=null,lastAuditAt=0,lastMotionState=null,rvfcWindowStart=null,rvfcWindowCount=0,rvfcHz=0,scanPulseCounter=0,focusSweepCounter=0,focusPartialMissStreak=0;
 let calViewerPoses=[],lastCalCount=0,lastCalPhase='idle';
 let placedExtras=new Map(),extraPending=new Map(),movableTools=new Map(),lastDiagnostics=null,diagnostics=null;
 function pushDiagEvent(ev){
@@ -1031,8 +1033,9 @@ function getThickTagFrameGeo(edgeMm){
 
 const MAX_TRAIL_WAYPOINTS=600;
 const PATHLINE_DEFAULTS=Object.freeze({
-  tubeRadiusM:0.0014,
-  tubeOpacity:0.84,
+  ribbonHalfWidthM:RIBBON_SPEED_DEFAULTS.minHalfWidthM,
+  ribbonOpacity:0.48,
+  ribbonEdgeOpacity:0.95,
   waypointDotRadiusM:0.0030,
   timeCopyDotRadiusM:0.0046,
 });
@@ -1042,10 +1045,21 @@ const _tmpPlaneScale=new THREE.Vector3(0.0224,0.0224,1);
 const _rodGeo=new THREE.CylinderGeometry(1,1,1,6);
 const _nodeGeo=new THREE.SphereGeometry(0.0045,8,6);
 const _waypointDotGeo=new THREE.SphereGeometry(1,8,6);
+const _originDotGeo=new THREE.SphereGeometry(1,10,8);
 const _closeOrbGeo=new THREE.SphereGeometry(0.0085,10,8);
 const _recOrbGeo=new THREE.SphereGeometry(0.0115,10,8);
 const _upVec=new THREE.Vector3(0,1,0);
 const _vA=new THREE.Vector3(),_vB=new THREE.Vector3(),_vDir=new THREE.Vector3();
+function setTagOriginDot(dotMesh,matrix,edgeMm){
+  const edgeM=edgeMm/1000;
+  const h=edgeM*0.5*1.12;
+  dotMesh.position.set(
+    matrix[12]-matrix[0]*h-matrix[4]*h+matrix[8]*0.0006,
+    matrix[13]-matrix[1]*h-matrix[5]*h+matrix[9]*0.0006,
+    matrix[14]-matrix[2]*h-matrix[6]*h+matrix[10]*0.0006,
+  );
+  dotMesh.scale.setScalar(Math.max(0.0020,Math.min(0.0055,edgeM*0.13)));
+}
 
 const frameShimmerUniforms={uTime:{value:0}};
 const frameBatchMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.92,side:THREE.DoubleSide});
@@ -2035,6 +2049,10 @@ const highlightPlane=new THREE.Mesh(new THREE.PlaneGeometry(1,1),highlightPlaneM
 highlightPlane.matrixAutoUpdate=false;
 highlightPlane.renderOrder=9;
 inspectRoot.add(highlightPlane);
+const highlightOriginDotMat=new THREE.MeshBasicMaterial({color:0xff3b30,depthTest:false,depthWrite:false});
+const highlightOriginDot=new THREE.Mesh(_originDotGeo,highlightOriginDotMat);
+highlightOriginDot.renderOrder=11;
+inspectRoot.add(highlightOriginDot);
 // Thick volumetric 3D rods (3.6 mm diameter) all meeting at the table footprint (cx, cy, 0):
 // Cyan Z: (cx,cy,cz) -> (cx,cy,0), Red X (at y=cy): (cx,cy,0) -> (0,cy,0), Green Y (down): (cx,cy,0) -> (cx,0,0).
 const zRodMat=new THREE.MeshBasicMaterial({color:0x38bdf8,transparent:true,opacity:0.95});
@@ -2223,11 +2241,6 @@ const inspectLeaderMat=new THREE.MeshBasicMaterial({color:0xfbbf24,transparent:t
 const inspectLeaderRod=new THREE.Mesh(_rodGeo,inspectLeaderMat);
 inspectLeaderRod.renderOrder=10;
 inspectRoot.add(inspectLeaderRod);
-const inspectPinOrbMat=new THREE.MeshBasicMaterial({color:0xe879f9,transparent:true,opacity:0.92,depthTest:false,depthWrite:false});
-const inspectPinOrb=new THREE.Mesh(_closeOrbGeo,inspectPinOrbMat);
-inspectPinOrb.renderOrder=13;
-inspectPinOrb.visible=false;
-inspectRoot.add(inspectPinOrb);
 
 // Persistent pinned waypoints (max 6) + pairwise 3D distance measurement rails + live preview rails (all batched).
 const MAX_PINNED_POINTS=6;
@@ -2250,6 +2263,9 @@ const highlightPlane2=new THREE.Mesh(new THREE.PlaneGeometry(1,1),highlightPlane
 highlightPlane2.matrixAutoUpdate=false;
 highlightPlane2.renderOrder=9;
 inspect2Root.add(highlightPlane2);
+const highlightOriginDot2=new THREE.Mesh(_originDotGeo,highlightOriginDotMat);
+highlightOriginDot2.renderOrder=11;
+inspect2Root.add(highlightOriginDot2);
 const dropRod2=new THREE.Mesh(_rodGeo,zRodMat);
 inspect2Root.add(dropRod2);
 const dropRing2=new THREE.Mesh(
@@ -2286,10 +2302,6 @@ let hoveredFloorHeightMm=null;
 let hoveredClosePinKey=null;
 let closePokeKey=null;
 let closePokeSinceMs=0;
-let inspectPinPosL=null;
-let hoveredPinOrb=false;
-let pinOrbPokeSinceMs=0;
-let pinOrbDebounceUntilMs=0;
 let previewKey=null;
 let inspectVisible=false;
 
@@ -2321,7 +2333,7 @@ function syncStaticTagBadges(){
   }
 }
 
-function drawWaypointCard(canvas,tex,wp,probeKind,floorHeightMm,{alreadyPinned=false,pinOrbHot=false}={}){
+function drawWaypointCard(canvas,tex,wp,probeKind,floorHeightMm,{alreadyPinned=false}={}){
   const ctx=canvas.getContext('2d');
   ctx.clearRect(0,0,420,188);
   ctx.fillStyle=alreadyPinned?'rgba(16,16,32,0.86)':'rgba(8,14,24,0.84)';
@@ -2330,21 +2342,13 @@ function drawWaypointCard(canvas,tex,wp,probeKind,floorHeightMm,{alreadyPinned=f
   ctx.fillStyle=alreadyPinned?'#f0abfc':'#fbbf24';ctx.font='bold 19px ui-monospace,monospace';
   ctx.fillText(waypointTitle(wp),16,32);
   ctx.fillStyle=alreadyPinned?'#f0abfc':'#94a3b8';
-  ctx.font='13px system-ui,sans-serif';
+  ctx.font='bold 13px system-ui,sans-serif';
   ctx.textAlign='right';
   const cue=alreadyPinned
-    ?(probeKind==='hand'?'PINCH / ×':'TRIGGER / ×')
-    :(probeKind==='hand'?'PINCH / 📌':'TRIGGER / 📌');
-  ctx.fillText(cue,362,31);
+    ?(probeKind==='hand'?'PINCH TO UNPIN':'TRIGGER TO UNPIN')
+    :(probeKind==='hand'?'PINCH TO PIN':'TRIGGER TO PIN');
+  ctx.fillText(cue,404,31);
   ctx.textAlign='left';
-  // Tactile circular [📌] / [×] poke orb badge in top-right corner of the hover card.
-  ctx.fillStyle=pinOrbHot?(alreadyPinned?'#ef4444':'#e879f9'):(alreadyPinned?'#b91c1c':'#9333ea');
-  ctx.beginPath();ctx.arc(390,28,19,0,Math.PI*2);ctx.fill();
-  ctx.strokeStyle=pinOrbHot?'#fef08a':(alreadyPinned?'#fca5a5':'#f0abfc');ctx.lineWidth=2.5;ctx.stroke();
-  ctx.fillStyle='#ffffff';ctx.font=alreadyPinned?'bold 24px system-ui,sans-serif':'bold 19px system-ui,sans-serif';
-  ctx.textAlign='center';ctx.textBaseline='middle';
-  ctx.fillText(alreadyPinned?'×':'📌',390,29);
-  ctx.textAlign='left';ctx.textBaseline='alphabetic';
 
   const sx=wp.xMm>=0?'+':'',sy=wp.yMm>=0?'+':'',sz=wp.zMm>=0?'+':'';
   ctx.font='bold 22px ui-monospace,monospace';
@@ -2632,12 +2636,11 @@ function clearHover2(){
 }
 
 function hideWaypointInspector(){
-  inspectRoot.visible=false;floorInspectGroup.visible=false;inspectPinOrb.visible=false;
+  inspectRoot.visible=false;floorInspectGroup.visible=false;
   releaseRailSlots(previewRailSlots);
   clearHover2();
   hoveredWaypointKey=null;hoveredWaypoint=null;hoveredFloorHeightMm=null;
   hoveredClosePinKey=null;closePokeKey=null;closePokeSinceMs=0;
-  inspectPinPosL=null;hoveredPinOrb=false;pinOrbPokeSinceMs=0;
   previewKey=null;inspectVisible=false;
   hoverCardPosL=null;hoverCardForWpKey=null;
   inspectMat.opacity=1;inspectLeaderMat.opacity=0.72;
@@ -3159,22 +3162,11 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     }
   }
 
-  let nearPinOrbDist=Infinity,nearPinOrbProbe=null;
-  if(inspectVisible&&hoveredWaypoint&&inspectPinPosL){
-    const [ox,oy,oz]=inspectPinPosL;
-    for(const pr of probes){
-      const d=Math.hypot(ox-pr.pos[0],oy-pr.pos[1],oz-pr.pos[2]);
-      recordProbeProximity(pr.probeId,d);
-      if(d<nearPinOrbDist){nearPinOrbDist=d;nearPinOrbProbe=pr;}
-    }
-  }
-
-  // Always evaluate point/tag candidates FIRST so Infopill orbs ([×] / [📌]) never hijack closer targets.
+  // Always evaluate point/tag candidates FIRST so pinned [×] close orbs never hijack closer targets.
   const enterDist=0.048,exitDist=0.060;
   let best=null,bestDist=Infinity,bestCenterDist=Infinity,bestProbe=null;
-  let bestDistForCloseProbe=Infinity,bestDistForPinOrbProbe=Infinity;
+  let bestDistForCloseProbe=Infinity;
   const closeProbeId=nearCloseProbe?.probeId??null;
-  const pinOrbProbeId=nearPinOrbProbe?.probeId??null;
   const tryCandidate=(wp,pr,maxDist)=>{
     const dx=pr.pos[0]-wp.centerL[0],dy=pr.pos[1]-wp.centerL[1],dz=pr.pos[2]-wp.centerL[2];
     const cutoff=0.16+wp.edgeMm*0.00072;
@@ -3182,7 +3174,6 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     const m=tagSurfaceMetrics(wp.matrix,wp.edgeMm,pr.pos);
     recordProbeProximity(pr.probeId,m.surfaceDist);
     if(closeProbeId&&pr.probeId===closeProbeId&&m.surfaceDist<bestDistForCloseProbe)bestDistForCloseProbe=m.surfaceDist;
-    if(pinOrbProbeId&&pr.probeId===pinOrbProbeId&&m.surfaceDist<bestDistForPinOrbProbe)bestDistForPinOrbProbe=m.surfaceDist;
     if(m.surfaceDist>=maxDist)return;
     const better=(Math.abs(m.surfaceDist-bestDist)<0.008)?(m.centerDist<bestCenterDist):(m.surfaceDist<bestDist);
     if(better){bestDist=m.surfaceDist;bestCenterDist=m.centerDist;best=wp;bestProbe=pr;}
@@ -3236,11 +3227,11 @@ function updateWaypointInspector(frameInputs,world,pose,now){
   }
 
   const clearHover=()=>{
-    inspectRoot.visible=false;floorInspectGroup.visible=false;inspectPinOrb.visible=false;
+    inspectRoot.visible=false;floorInspectGroup.visible=false;
     if(previewKey!==null){releaseRailSlots(previewRailSlots);previewKey=null;}
     clearHover2();
     hoveredWaypoint=null;hoveredWaypointKey=null;hoveredFloorHeightMm=null;inspectVisible=false;
-    hoverCardPosL=null;hoverCardForWpKey=null;inspectPinPosL=null;hoveredPinOrb=false;pinOrbPokeSinceMs=0;
+    hoverCardPosL=null;hoverCardForWpKey=null;
     inspectMat.opacity=1;inspectLeaderMat.opacity=0.72;
     resetPinHold();
     syncStaticTagBadges();
@@ -3255,17 +3246,8 @@ function updateWaypointInspector(frameInputs,world,pose,now){
   const threshold=pinHoldSince!=null?0.11:(inspectVisible?exitDist:enterDist);
   const hasTagHover=Boolean(best&&bestDist<=threshold);
   const closeBlocksActiveHover=Boolean(hoveredClosePinKey&&(!hasTagHover||bestProbe?.probeId===nearCloseProbe?.probeId));
-  const reachingPinOrb=Boolean(
-    !closeBlocksActiveHover&&inspectVisible&&hoveredWaypoint&&inspectPinPosL&&
-    nearPinOrbDist<0.048&&(!hasTagHover||best===hoveredWaypoint||nearPinOrbDist<bestDistForPinOrbProbe),
-  );
-  if(reachingPinOrb){
-    best=hoveredWaypoint;
-    bestProbe=nearPinOrbProbe;
-    bestDist=0;
-  }
 
-  if(!best||(!reachingPinOrb&&bestDist>threshold)||closeBlocksActiveHover){
+  if(!best||bestDist>threshold||closeBlocksActiveHover){
     clearHover();
     return;
   }
@@ -3293,34 +3275,9 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     floorInspectGroup.visible=false;
   }
 
-  // Tactile [📌] / [×] poke-orb on the hover card (180 ms poke, < 3.4 cm) — works with either hand & never conflicts with Quest OS.
-  let loaderShown=false;
-  hoveredPinOrb=Boolean(inspectPinPosL&&nearPinOrbDist<0.048);
-  if(inspectPinPosL&&nearPinOrbDist<0.034&&now>=pinOrbDebounceUntilMs){
-    if(!pinOrbPokeSinceMs)pinOrbPokeSinceMs=now;
-    const prog=Math.min(1,(now-pinOrbPokeSinceMs)/180);
-    const orbW=lPointToWorld(world,inspectPinPosL[0],inspectPinPosL[1],inspectPinPosL[2]);
-    pinLoadSprite.visible=true;
-    pinLoadSprite.position.set(orbW[0],orbW[1]+0.018,orbW[2]);
-    const sc=0.030+prog*0.010;
-    pinLoadSprite.scale.set(sc,sc,1);
-    pinLoadMat.opacity=1;
-    drawPinLoader(prog,alreadyPinned?'#ef4444':'#e879f9',alreadyPinned?'×':'📌',false);
-    loaderShown=true;
-    if(prog>=1){
-      pinOrbPokeSinceMs=0;
-      pinOrbDebounceUntilMs=now+500;
-      togglePinWaypoint(best,floorHeightMm,orbW);
-      alreadyPinned=pinnedPoints.has(wpKey);
-      hoveredWaypointKey=null;
-      loaderShown=renderPinFlash(now);
-    }
-  }else{
-    pinOrbPokeSinceMs=0;
-  }
-
   // Bare-hand Left or Right Thumb+Index pinch (350 ms hold) to pin/unpin the hovered tag or waypoint.
   // Left-hand pinch is suppressed only when looking directly at the left palm (Meta Quest OS menu / wrist menu).
+  let loaderShown=false;
   const pinchEligible=isPinchHandEligible({
     kind:bestProbe.kind,
     handedness:bestProbe.handedness,
@@ -3328,8 +3285,7 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     leftPalmFacingViewer,
     leftMenuOpen:leftMenuOpenNow,
   });
-  const pinOrbBlockingPinch=reachingPinOrb&&nearPinOrbDist<0.036;
-  if(!loaderShown&&!pinOrbBlockingPinch&&pinchEligible&&bestProbe.input?.hand){
+  if(pinchEligible&&bestProbe.input?.hand){
     const jt=bestProbe.input.getJoint('thumb-tip');
     const ji=bestProbe.input.getJoint('index-finger-tip');
     const pDist=(jt&&ji)?Math.hypot(
@@ -3403,7 +3359,7 @@ function updateWaypointInspector(frameInputs,world,pose,now){
   if(!hoverCardPosL||hoverCardForWpKey!==wpKey){
     hoverCardPosL=cardLayout.cardPos.slice();
     hoverCardForWpKey=wpKey;
-  }else if(!reachingPinOrb){
+  }else{
     const cardAlpha=1-Math.exp(-dt*14);
     hoverCardPosL[0]+=(cardLayout.cardPos[0]-hoverCardPosL[0])*cardAlpha;
     hoverCardPosL[1]+=(cardLayout.cardPos[1]-hoverCardPosL[1])*cardAlpha;
@@ -3411,15 +3367,6 @@ function updateWaypointInspector(frameInputs,world,pose,now){
   }
   inspectSprite.visible=true;
   inspectSprite.position.set(hoverCardPosL[0],hoverCardPosL[1],hoverCardPosL[2]);
-  // Position tactile [📌] / [×] orb at the top-right badge of the hover card.
-  const pox=hoverCardPosL[0]+cardLayout.screenRight[0]*(HOVER_CARD_W_M*0.428)+cardLayout.screenUp[0]*(HOVER_CARD_H_M*0.35);
-  const poy=hoverCardPosL[1]+cardLayout.screenRight[1]*(HOVER_CARD_W_M*0.428)+cardLayout.screenUp[1]*(HOVER_CARD_H_M*0.35);
-  const poz=hoverCardPosL[2]+cardLayout.screenRight[2]*(HOVER_CARD_W_M*0.428)+cardLayout.screenUp[2]*(HOVER_CARD_H_M*0.35);
-  inspectPinPosL=[pox,poy,poz];
-  inspectPinOrb.visible=true;
-  inspectPinOrb.position.set(pox,poy,poz);
-  inspectPinOrb.scale.setScalar(hoveredPinOrb?1.35:1.0);
-  inspectPinOrbMat.color.setHex(hoveredPinOrb?0xfef08a:(alreadyPinned?0xdc2626:0xe879f9));
 
   const lAx=hoverCardPosL[0]-cardLayout.screenRight[0]*(cardLayout.sideSign*HOVER_CARD_W_M*0.44)-cardLayout.screenUp[0]*(HOVER_CARD_H_M*0.44);
   const lAy=hoverCardPosL[1]-cardLayout.screenRight[1]*(cardLayout.sideSign*HOVER_CARD_W_M*0.44)-cardLayout.screenUp[1]*(HOVER_CARD_H_M*0.44);
@@ -3434,7 +3381,7 @@ function updateWaypointInspector(frameInputs,world,pose,now){
   inspectLeaderMat.opacity+=((pinching?0.24:0.72)-inspectLeaderMat.opacity)*fadeAlpha;
 
   const floorBucket=floorHeightMm!=null?Math.round(floorHeightMm/2):'na';
-  const key=`${wpKey}:${bestProbe.kind}:${floorBucket}:${alreadyPinned?1:0}:${hoveredPinOrb?1:0}`;
+  const key=`${wpKey}:${bestProbe.kind}:${floorBucket}:${alreadyPinned?1:0}`;
   if(key!==hoveredWaypointKey){
     hoveredWaypointKey=key;
     highlightFrame.geometry=getThickTagFrameGeo(best.edgeMm);
@@ -3445,6 +3392,7 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     _tmpMat4.fromArray(best.matrix).scale(_tmpPlaneScale);
     highlightPlane.matrix.copy(_tmpMat4);
     highlightPlane.matrixWorldNeedsUpdate=true;
+    setTagOriginDot(highlightOriginDot,best.matrix,best.edgeMm);
     // Thick 3D rods all meeting at the table footprint (cx, cy, 0):
     setRodSegment(dropRod,cx,cy,cz,cx,cy,0,0.0018);
     dropRing.position.set(cx,cy,0.0018);
@@ -3454,7 +3402,7 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     // Green Y straight down to X-arm: (cx, cy) -> (cx, 0).
     setRodSegment(yAxisRod,cx,cy,0.0018,cx,0,0.0018,0.0018);
     yHitRing.position.set(cx,0,0.0018);
-    drawWaypointCard(inspectCanvas,inspectTex,best,bestProbe.kind,floorHeightMm,{alreadyPinned,pinOrbHot:hoveredPinOrb});
+    drawWaypointCard(inspectCanvas,inspectTex,best,bestProbe.kind,floorHeightMm,{alreadyPinned});
   }
 
   // --- Dual-Hand Hover: if the other hand/controller simultaneously hovers a second tag, show its own Floating Infobar + live Δmm distance rail ---
@@ -3541,11 +3489,12 @@ function updateWaypointInspector(frameInputs,world,pose,now){
       _tmpMat4.fromArray(best2.matrix).scale(_tmpPlaneScale);
       highlightPlane2.matrix.copy(_tmpMat4);
       highlightPlane2.matrixWorldNeedsUpdate=true;
+      setTagOriginDot(highlightOriginDot2,best2.matrix,best2.edgeMm);
       setRodSegment(dropRod2,cx2,cy2,cz2,cx2,cy2,0,0.0018);
       dropRing2.position.set(cx2,cy2,0.0018);
       setRodSegment(xAxisRod2,cx2,cy2,0.0018,0,cy2,0.0018,0.0018);
       setRodSegment(yAxisRod2,cx2,cy2,0.0018,cx2,0,0.0018,0.0018);
-      drawWaypointCard(inspect2Canvas,inspect2Tex,best2,best2Probe.kind,floorHeight2Mm,{alreadyPinned:alreadyPinned2,pinOrbHot:false});
+      drawWaypointCard(inspect2Canvas,inspect2Tex,best2,best2Probe.kind,floorHeight2Mm,{alreadyPinned:alreadyPinned2});
     }
 
     // Live 3D distance rail (Δmm / ΔZ) directly between the two simultaneously hovered tags.
@@ -3629,20 +3578,50 @@ function drawMarkOrbPill(entry,hot){
 
 function ensureMovableTrailVisuals(entry){
   const accentCol=new THREE.Color(entry.theme.hex);
-  if(!entry.trailTube){
+  if(!entry.ribbonRgb){
+    const h=entry.theme.hex;
+    entry.ribbonRgb=[((h>>16)&255)/255,((h>>8)&255)/255,(h&255)/255];
+  }
+  if(!entry.trailRibbon){
     const rawLinePositions=new Float32Array(MAX_LINE_PTS*3);
     const linePositions=new Float32Array(MAX_LINE_PTS*3);
+    const rawLineRightAxes=new Float32Array(MAX_LINE_PTS*3);
+    const lineRightAxes=new Float32Array(MAX_LINE_PTS*3);
     const lineSpeeds=new Float32Array(MAX_LINE_PTS);
-    const lineRadii=new Float32Array(MAX_LINE_PTS);
-    const lineMat=new THREE.MeshBasicMaterial({color:accentCol,transparent:true,opacity:PATHLINE_DEFAULTS.tubeOpacity});
-    const trailTube=createPathTubeMesh(MAX_LINE_PTS,lineMat,{radius:PATHLINE_DEFAULTS.tubeRadiusM,sides:5,name:`trail-${entry.tagId}`});
-    extraRoot.add(trailTube.mesh);
-    entry.trailTube=trailTube;
+    const lineHalfWidths=new Float32Array(MAX_LINE_PTS);
+    const lineColors=new Float32Array(MAX_LINE_PTS*3);
+    const lineMat=new THREE.MeshBasicMaterial({
+      color:0xffffff,
+      vertexColors:true,
+      transparent:true,
+      opacity:PATHLINE_DEFAULTS.ribbonOpacity,
+      side:THREE.DoubleSide,
+      depthWrite:false,
+    });
+    const lineEdgeMat=new THREE.LineBasicMaterial({
+      color:0xffffff,
+      vertexColors:true,
+      transparent:true,
+      opacity:PATHLINE_DEFAULTS.ribbonEdgeOpacity,
+    });
+    const trailRibbon=createPathRibbonMesh(MAX_LINE_PTS,lineMat,{
+      edgeMaterial:lineEdgeMat,
+      halfWidth:PATHLINE_DEFAULTS.ribbonHalfWidthM,
+      rightEdgeTint:0.22,
+      renderOrder:2,
+      name:`ribbon-${entry.tagId}`,
+    });
+    extraRoot.add(trailRibbon.mesh,trailRibbon.edgeLines);
+    entry.trailRibbon=trailRibbon;
     entry.rawLinePositions=rawLinePositions;
     entry.linePositions=linePositions;
+    entry.rawLineRightAxes=rawLineRightAxes;
+    entry.lineRightAxes=lineRightAxes;
     entry.lineSpeeds=lineSpeeds;
-    entry.lineRadii=lineRadii;
+    entry.lineHalfWidths=lineHalfWidths;
+    entry.lineColors=lineColors;
     entry.lineMat=lineMat;
+    entry.lineEdgeMat=lineEdgeMat;
   }
   if(!entry.dotsMesh){
     const dotColor=new THREE.Color(0xf8fafc).lerp(accentCol,0.65);
@@ -3693,9 +3672,9 @@ function createMovableTool(tagId,edgeMm){
     markOrbSlot,markPillSlot,markPillKey:'',
     visible:false,faceVisible:false,recOrbVisible:false,markOrbVisible:false,
     frameColorHex:theme.hex,recOrbColorHex:0x0ea5e9,markOrbColorHex:0x22d3ee,recOrbScale:1,
-    trailTube:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineRadii:null,lineMat:null,lineCount:0,
+    trailRibbon:null,ribbonRgb:null,rawLinePositions:null,linePositions:null,rawLineRightAxes:null,lineRightAxes:null,lineSpeeds:null,lineHalfWidths:null,lineColors:null,lineMat:null,lineEdgeMat:null,lineCount:0,
     dotsMesh:null,dotMat:null,dotColor:null,timeCopyDotColor:null,
-    waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,smoothedSpeedMps:0,
+    waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,smoothedSpeedMps:0,hasEverAnnouncedLock:false,
     lockState:'settling',settleSamples:[],lockedMatrix:null,lockQuality:null,refineSamples:[],relocPending:null,
     stillAnchor:null,stillSinceMs:null,stillSamples:[],lockFlashUntilMs:0,currentPose:null,
     lastMatrix:null,lastOpticalMatrix:null,targetMatrix:null,displayMatrix:null,targetConfidence:1,lastAt:0,lastOpticalAtMs:0,lastSpeedMps:0,lastApparentEdgePx:0,lastOpticalRmsPx:null,pendingJump:null,skipNextJumpGuardUntilMs:0,
@@ -3727,16 +3706,26 @@ function syncCurrentPose(entry,matrix,atMs){
   return wp;
 }
 
-function appendLinePoint(entry,cx,cy,cz,speedMps=0){
+function appendLinePoint(entry,pose,speedMps=0){
+  if(!pose||pose.length<16)return;
   ensureMovableTrailVisuals(entry);
-  const rawR=speedToTubeRadius(speedMps);
+  const cx=pose[12],cy=pose[13],cz=pose[14];
+  let rx=pose[0],ry=pose[1],rz=pose[2];
+  const rLen=Math.hypot(rx,ry,rz);
+  if(Number.isFinite(rLen)&&rLen>1e-5){rx/=rLen;ry/=rLen;rz/=rLen;}
+  else{rx=1;ry=0;rz=0;}
+  const rawHW=speedToRibbonHalfWidth(speedMps);
+  const [cr,cg,cb]=entry.ribbonRgb;
   const fullRebuild=entry.lineCount>=MAX_LINE_PTS;
   let idx;
   if(fullRebuild){
     entry.rawLinePositions.copyWithin(0,3,MAX_LINE_PTS*3);
     entry.linePositions.copyWithin(0,3,MAX_LINE_PTS*3);
+    entry.rawLineRightAxes.copyWithin(0,3,MAX_LINE_PTS*3);
+    entry.lineRightAxes.copyWithin(0,3,MAX_LINE_PTS*3);
     entry.lineSpeeds.copyWithin(0,1,MAX_LINE_PTS);
-    entry.lineRadii.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineHalfWidths.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineColors.copyWithin(0,3,MAX_LINE_PTS*3);
     idx=MAX_LINE_PTS-1;
   }else{
     idx=entry.lineCount++;
@@ -3744,16 +3733,21 @@ function appendLinePoint(entry,cx,cy,cz,speedMps=0){
   const i=idx*3;
   entry.rawLinePositions[i]=cx;entry.rawLinePositions[i+1]=cy;entry.rawLinePositions[i+2]=cz;
   entry.linePositions[i]=cx;entry.linePositions[i+1]=cy;entry.linePositions[i+2]=cz;
+  entry.rawLineRightAxes[i]=rx;entry.rawLineRightAxes[i+1]=ry;entry.rawLineRightAxes[i+2]=rz;
+  entry.lineRightAxes[i]=rx;entry.lineRightAxes[i+1]=ry;entry.lineRightAxes[i+2]=rz;
   entry.lineSpeeds[idx]=speedMps;
-  entry.lineRadii[idx]=rawR;
+  entry.lineHalfWidths[idx]=rawHW;
+  entry.lineColors[i]=cr;entry.lineColors[i+1]=cg;entry.lineColors[i+2]=cb;
   if(idx>=2){
-    const s0=speedToTubeRadius(entry.lineSpeeds[idx-2]);
-    const s1=speedToTubeRadius(entry.lineSpeeds[idx-1]);
-    entry.lineRadii[idx-1]=s0*0.25+s1*0.50+rawR*0.25;
+    const avgSpd=entry.lineSpeeds[idx-2]*0.25+entry.lineSpeeds[idx-1]*0.50+speedMps*0.25;
+    entry.lineHalfWidths[idx-1]=speedToRibbonHalfWidth(avgSpd);
   }
   smoothLineTail(entry.rawLinePositions,entry.linePositions,entry.lineCount,{maxDeviationM:0.012});
-  entry.trailTube.syncFromPositions(entry.linePositions,entry.lineCount,{
-    radii:entry.lineRadii,
+  smoothAxisTail(entry.rawLineRightAxes,entry.lineRightAxes,entry.lineCount);
+  entry.trailRibbon.syncFromPositions(entry.linePositions,entry.lineCount,{
+    rightAxes:entry.lineRightAxes,
+    halfWidths:entry.lineHalfWidths,
+    colors:entry.lineColors,
     fromIndex:fullRebuild?0:Math.max(0,entry.lineCount-6),
   });
 }
@@ -3788,7 +3782,7 @@ function recordMovablePathPoint(entry,pose,atMs){
     }
     entry.lastRecLineMatrix=pose.slice();
     entry.lastRecAtMs=atMs;
-    appendLinePoint(entry,pose[12],pose[13],pose[14],speedMps);
+    appendLinePoint(entry,pose,speedMps);
     let framePosMm=Infinity,frameAngDeg=Infinity;
     if(entry.lastRecFrameMatrix){
       const df=rigidVector(product(inverse(entry.lastRecFrameMatrix),pose));
@@ -3836,7 +3830,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
   let entry=movableTools.get(tagId);
   if(conf<=0){
     // Keep already-visible tag anchored without moving its pose while head is turning fast.
-    if(entry?.displayMatrix)entry.lastAt=atMs;
+    if(entry?.displayMatrix){entry.lastAt=atMs;entry.lastOpticalAtMs=atMs;}
     return;
   }
   const farMode=Boolean(lastQualityState.longRangeActive);
@@ -3942,39 +3936,65 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
 
   // --- STATE 1: SETTLING -> auto-anchor after 2-3 consistent frames (posSpread <= 18 mm, angSpread <= 10 deg) ---
   if(entry.lockState==='settling'){
-    entry.settleSamples.push({atMs,matrix:lFromTag.slice()});
-    entry.settleSamples=entry.settleSamples.filter(s=>atMs-s.atMs<=1500).slice(-3);
-    entry.lastMatrix=lFromTag.slice();
-    entry.targetMatrix=lFromTag.slice();
-    if(!entry.displayMatrix)entry.displayMatrix=lFromTag.slice();
-    const needed=(conf<0.75||apparentEdgePx<18||softFallback)?3:2;
-    if(entry.settleSamples.length>=needed){
-      const mean=meanRigid(entry.settleSamples.map(s=>s.matrix));
-      const invM=inverse(mean);
-      const maxPos=Math.max(...entry.settleSamples.map(s=>Math.hypot(...rigidVector(product(invM,s.matrix)).slice(3))*1000));
-      const maxAng=Math.max(...entry.settleSamples.map(s=>Math.hypot(...rigidVector(product(invM,s.matrix)).slice(0,3))*180/Math.PI));
-      if(maxPos<=18&&maxAng<=10){
-        const wasNeverLocked=!entry.currentPose;
-        entry.lockState='locked';
-        entry.lockedMatrix=mean.slice();
-        entry.lockQuality={decimate,apparentEdgePx,confidence:conf,refineCount:0};
-        entry.refineSamples=[];
-        entry.displayMatrix=mean.slice();
-        entry.targetMatrix=mean.slice();
-        entry.lastMatrix=mean.slice();
-        entry.settleSamples=[];
-        entry.relocPending=null;
-        entry.lockFlashUntilMs=atMs+450;
-        tagPredictor.reset(tagId);
-        syncCurrentPose(entry,mean,atMs);
-        if(!entry.recording)drawLiveBadge(entry,'locked',false);
-        if(wasNeverLocked){
-          showHudToast(`✓ LOCKED #${tagId}`,'#4ade80',1300);
-          pushDiagEvent({type:'tag-auto-locked',tagId,edgeMm,atPerformanceMs:performance.now(),xMm:mean[12]*1000,yMm:mean[13]*1000,zMm:mean[14]*1000});
+    if(entry.recording&&conf>=0.35){
+      entry.lockState='moving';
+      entry.settleSamples=[];
+      entry.relocPending=null;
+      entry.pendingJump=null;
+      entry.stillAnchor=lFromTag.slice();
+      entry.stillSinceMs=atMs;
+      entry.stillSamples=[lFromTag.slice()];
+      drawLiveBadge(entry,'rec',entry.handCoupled);
+    }else{
+      entry.settleSamples.push({atMs,matrix:lFromTag.slice()});
+      entry.settleSamples=entry.settleSamples.filter(s=>atMs-s.atMs<=1500).slice(-3);
+      entry.lastMatrix=lFromTag.slice();
+      entry.targetMatrix=lFromTag.slice();
+      if(!entry.displayMatrix)entry.displayMatrix=lFromTag.slice();
+      const needed=(conf<0.75||apparentEdgePx<18||softFallback)?3:2;
+      if(entry.settleSamples.length>=needed){
+        const mean=meanRigid(entry.settleSamples.map(s=>s.matrix));
+        const invM=inverse(mean);
+        const maxPos=Math.max(...entry.settleSamples.map(s=>Math.hypot(...rigidVector(product(invM,s.matrix)).slice(3))*1000));
+        const maxAng=Math.max(...entry.settleSamples.map(s=>Math.hypot(...rigidVector(product(invM,s.matrix)).slice(0,3))*180/Math.PI));
+        if(maxPos<=18&&maxAng<=10){
+          const wasNeverLocked=!entry.hasEverAnnouncedLock;
+          entry.hasEverAnnouncedLock=true;
+          entry.lockState='locked';
+          entry.lockedMatrix=mean.slice();
+          entry.lockQuality={decimate,apparentEdgePx,confidence:conf,refineCount:0};
+          entry.refineSamples=[];
+          entry.displayMatrix=mean.slice();
+          entry.targetMatrix=mean.slice();
+          entry.lastMatrix=mean.slice();
+          entry.settleSamples=[];
+          entry.relocPending=null;
+          entry.lockFlashUntilMs=atMs+450;
+          tagPredictor.reset(tagId);
+          syncCurrentPose(entry,mean,atMs);
+          if(!entry.recording)drawLiveBadge(entry,'locked',false);
+          if(wasNeverLocked){
+            showHudToast(`✓ LOCKED #${tagId}`,'#4ade80',1300);
+            pushDiagEvent({type:'tag-auto-locked',tagId,edgeMm,atPerformanceMs:performance.now(),xMm:mean[12]*1000,yMm:mean[13]*1000,zMm:mean[14]*1000});
+          }
+          return;
         }
+        if(!softFallback&&conf>=0.55&&maxPos>18){
+          entry.lockState='moving';
+          entry.settleSamples=[];
+          entry.relocPending=null;
+          entry.pendingJump=null;
+          entry.stillAnchor=lFromTag.slice();
+          entry.stillSinceMs=atMs;
+          entry.stillSamples=[lFromTag.slice()];
+          drawLiveBadge(entry,'moving',entry.handCoupled);
+        }else{
+          return;
+        }
+      }else{
+        return;
       }
     }
-    return;
   }
 
   // --- STATE 2: LOCKED -> rigid when resting, iteratively refines when viewed cleaner/closer still, unlocks cleanly on move ---
@@ -4314,20 +4334,10 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       }
     }
 
-    const hasLocked=entry.lockState==='locked'&&Boolean(entry.lockedMatrix);
-    const hasEverLocked=Boolean(entry.currentPose||entry.lockedMatrix);
-    // If a previously-locked tag was moving (not hand-coupled, not recording) and left the camera view for > 900 ms,
-    // re-lock it cleanly at its last stable displayMatrix so scanned tags stay permanently anchored until cleared.
-    if(!entry.recording&&!isCoupled&&!hasLocked&&hasEverLocked&&entry.displayMatrix&&(now-entry.lastAt>=900)){
-      entry.lockState='locked';
-      entry.lockedMatrix=entry.displayMatrix.slice();
-      entry.targetMatrix=entry.lockedMatrix.slice();
-      entry.lastMatrix=entry.lockedMatrix.slice();
-      entry.stillAnchor=null;entry.stillSinceMs=null;entry.stillSamples=[];
-      syncCurrentPose(entry,entry.lockedMatrix,now);
-      drawLiveBadge(entry,'locked',false);
-    }
-    const alive=isCoupled||hasLocked||hasEverLocked||Boolean(entry.displayMatrix&&(now-entry.lastAt<1200));
+    // Live SCAN visuals render ONLY while physically tracked (optically fresh or actively hand-coupled) — no "last seen" ghosts in mid-air.
+    const liveDropoutMs=entry.recording?1200:950;
+    const opticallyFresh=entry.lastOpticalAtMs>0&&(now-entry.lastOpticalAtMs)<liveDropoutMs;
+    const alive=Boolean(entry.displayMatrix)&&(isCoupled||opticallyFresh);
     entry.visible=alive;
     entry.faceVisible=alive;
     if(!alive){
@@ -4342,7 +4352,23 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       badgeMesh.setQuadVisible(entry.markPillSlot,false);
       entry.markHoldSince=null;entry.markHoldConsumed=false;
       entry.recHoldSince=null;entry.recHoldConsumed=false;
-      if(wasCoupled)drawLiveBadge(entry,entry.recording?'rec':entry.lockState,false);
+      if(entry.lockState!=='settling'||entry.lockedMatrix||entry.displayMatrix||entry.currentPose){
+        tagPredictor.reset(entry.tagId);
+        entry.lockState='settling';
+        entry.lockedMatrix=null;
+        entry.displayMatrix=null;
+        entry.targetMatrix=null;
+        entry.lastMatrix=null;
+        entry.settleSamples=[];
+        entry.refineSamples=[];
+        entry.relocPending=null;
+        entry.pendingJump=null;
+        entry.stillAnchor=null;
+        entry.stillSinceMs=null;
+        entry.stillSamples=[];
+        entry.currentPose=null;
+        drawLiveBadge(entry,entry.recording?'rec':'settling',false);
+      }
       continue;
     }
     if(wasCoupled!==isCoupled){
@@ -4569,7 +4595,7 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
   entry.dotsMesh.count=entry.waypoints.length;
   entry.dotsMesh.instanceMatrix.needsUpdate=true;
   if(entry.dotsMesh.instanceColor)entry.dotsMesh.instanceColor.needsUpdate=true;
-  if(!skipLine)appendLinePoint(entry,cx,cy,cz,Number.isFinite(speedMps)?speedMps:0);
+  if(!skipLine)appendLinePoint(entry,lFromTag,Number.isFinite(speedMps)?speedMps:0);
   if(!silent){
     const flashPos=root.visible?lPointToWorld(root.matrix.elements,cx,cy,cz):null;
     if(flashPos)triggerPinFlash(flashPos,isTimeCopy?'#22d3ee':'#22c55e','✓');
@@ -4592,14 +4618,18 @@ function disposeMovableEntry(e){
   if(e.recPillSlot>=0){badgeMesh.clearSlot(e.recPillSlot);badgeAtlas.release(e.recPillSlot);}
   if(e.markOrbSlot>=0)recOrbBatch.free(e.markOrbSlot);
   if(e.markPillSlot>=0){badgeMesh.clearSlot(e.markPillSlot);badgeAtlas.release(e.markPillSlot);}
-  if(e.trailTube){
-    extraRoot.remove(e.trailTube.mesh);
-    e.trailTube.dispose();
+  if(e.trailRibbon){
+    extraRoot.remove(e.trailRibbon.mesh,e.trailRibbon.edgeLines);
+    e.trailRibbon.dispose();
     e.lineMat?.dispose?.();
+    e.lineEdgeMat?.dispose?.();
     e.rawLinePositions=null;
     e.linePositions=null;
+    e.rawLineRightAxes=null;
+    e.lineRightAxes=null;
     e.lineSpeeds=null;
-    e.lineRadii=null;
+    e.lineHalfWidths=null;
+    e.lineColors=null;
   }
   if(e.dotsMesh){
     extraRoot.remove(e.dotsMesh);
@@ -4614,7 +4644,7 @@ function clearAllUserItems(){
   clearPins();
   tagHandCoupler.reset();
   tagPredictor.reset();
-  focusSweepCounter=0;
+  focusSweepCounter=0;focusPartialMissStreak=0;
   liveTouchLoaderActive=false;
   pinLoadSprite.visible=false;
   for(const e of movableTools.values())disposeMovableEntry(e);
@@ -4635,7 +4665,7 @@ function clearExtras(){
   clearPins();
   tagHandCoupler.reset();
   tagPredictor.reset();
-  focusSweepCounter=0;
+  focusSweepCounter=0;focusPartialMissStreak=0;
   handHistory.clear();
   for(const e of movableTools.values())disposeMovableEntry(e);
   for(const extra of placedExtras.values()){
@@ -5101,6 +5131,7 @@ function observeExtraTags(observation,sample,assoc){
     lastSampleStats.motionConfidence=staticGate.confidence;
     lastSampleStats.motionFrozen=staticGate.frozen;
     lastSampleStats.carriedConfidence=carriedGate.confidence;
+    lastSampleStats.rawMovableIds=all.filter(d=>isMovableTag(d.id)).map(d=>d.id);
   }
   if(!K||!all.length)return;
   const counts=new Map();for(const d of all)counts.set(d.id,(counts.get(d.id)||0)+1);
@@ -5110,7 +5141,7 @@ function observeExtraTags(observation,sample,assoc){
     for(const raw of all){
       if(counts.get(raw.id)!==1||!isMovableTag(raw.id))continue;
       const existing=movableTools.get(raw.id);
-      if(existing?.displayMatrix)existing.lastAt=atMs;
+      if(existing?.displayMatrix){existing.lastAt=atMs;existing.lastOpticalAtMs=atMs;}
     }
     return;
   }
@@ -5145,6 +5176,9 @@ function observeExtraTags(observation,sample,assoc){
     const {edgeMm,pose,minEdgePx,rmsPx,softFallback}=solved;
     const lFromTag=product(lFromCamera,cvToGL(pose));
     valid.push({tagId:raw.id,edgeMm,lFromTag,apparentEdgePx:minEdgePx,rmsPx,movable,perimeter,softFallback});
+  }
+  if(lastSampleStats&&lastSampleStats.serial===sample.serial){
+    lastSampleStats.seenMovableIds=valid.filter(v=>v.movable).map(v=>v.tagId);
   }
 
   // Always observe perimeter markers (353-359) while SCAN is active and staticGate allows.
@@ -5489,7 +5523,7 @@ function renderLeftHud(now,as,an,cs){
           ?(fStatus==='active'
             ?'Auto-Lock + Follow · Hold 0.55s = Time-Copy · [● REC] = path · slide 353–359 for fence.'
             :'Auto-Lock + Follow · Hold 0.55s = Time-Copy · [● REC] = path · L-Fist = MEASURE.')
-          :'Camera OFF (90 FPS). Hover + R-Pinch or [📌] orb to pin · L-Fist / Grip = SCAN.');
+          :'Camera OFF (90 FPS). Hover + Pinch to pin/unpin · L-Fist / Grip = SCAN.');
       controls=now<reanchorConfirmUntil
         ?'PRESS TRIGGER AGAIN (1.5s) to re-anchor!'
         :`L-Fist (0.55s) / Palm-Dot: ${extraScanActive?'MEASURE':'SCAN (●)'} · Wrist-Dot: Menu`;
@@ -5662,16 +5696,18 @@ function renderRightHud(now,as,an,cs){
 
   // Compact technical metrics footer.
   const seed=an.seed;
-  const line1=seed
-    ?`Seed ±${seed.positionSpreadMm.toFixed(2)}mm/${seed.orientationSpreadDeg.toFixed(2)}° · RMS ${seed.maxReprojectionRmsPx.toFixed(2)}px`
-    :`Profile: ${profile?profile.id.slice(0,22):'uncalibrated'}`;
+  const line1=(seed&&profile)
+    ?`Seed ±${seed.positionSpreadMm.toFixed(1)}mm · Cal ±${(profile.validation?.positionP95Mm??0).toFixed(1)}mm · fx ${Math.round(profile.K.fx)}`
+    :(seed
+      ?`Seed ±${seed.positionSpreadMm.toFixed(2)}mm/${seed.orientationSpreadDeg.toFixed(2)}° · RMS ${seed.maxReprojectionRmsPx.toFixed(2)}px`
+      :`Profile: ${profile?profile.id.slice(0,22):'uncalibrated'}`);
   const rbMode=lastSampleStats?.readbackMode==='worker-videoframe-y'?'vf-y'
     :lastSampleStats?.readbackMode==='worker-videoframe-canvas'?'vf-2d'
     :lastSampleStats?.readbackMode==='worker-bitmap'?'bitmap':'main-rb';
   const syncTag=(lastMotionState&&now-lastMotionState.atMs<1200)
     ?(lastMotionState.frozen?'HOLD':(lastMotionState.source==='optical-l'?'L-0ms':'XR'))
     :(profile?`${Math.round(profile.timeOffsetMs)}ms`:'–');
-  const line2=`${cs.sourceSize.join('×')} · rVFC ${rvfcHz.toFixed(0)}Hz${cs.rvfcStalled?'!':''} · ${rbMode} · ${syncTag}`;
+  const line2=`${APP_VERSION_LABEL} · ${cs.sourceSize.join('×')} · ${rvfcHz.toFixed(0)}Hz${cs.rvfcStalled?'!':''} · ${rbMode} · ${syncTag}`;
   const auditState=audit.state();
   const fStat=perimeterFence?.status()??'idle';
   const fText=fStat==='active'?`${perimeterFence.dynamicCount()}/7`:(fStat==='offered'?'TL ready':'off');
@@ -5682,8 +5718,8 @@ function renderRightHud(now,as,an,cs){
     ?`Audit (${auditState.samples}×, read-only): med ${auditState.positionDifferenceMm.median.toFixed(1)}mm · p95 ${auditState.positionDifferenceMm.p95.toFixed(1)}mm`
     :`Frames ${an.posesTracked}/${an.posesMissing} · Fence ${fText}${lagText}${spdText}`;
 
-  c.fillStyle='#e2e8f0';c.font='16px ui-monospace,monospace';c.fillText(line1,18,346);
-  c.fillStyle='#94a3b8';c.font='15px ui-monospace,monospace';c.fillText(line2,18,374);
+  c.fillStyle='#e2e8f0';c.font='15px ui-monospace,monospace';c.fillText(line1,18,346);
+  c.fillStyle='#94a3b8';c.font='14px ui-monospace,monospace';c.fillText(line2,18,374);
   c.fillStyle='#94a3b8';c.font='15px system-ui';c.fillText(line3,18,402);
   rightTex.needsUpdate=true;
 }
@@ -5717,6 +5753,8 @@ function renderTopHudBar(now,as,an,cs){
   c.fillText(headline,420,52);
   c.fillStyle='#e2e8f0';c.font='600 22px system-ui,sans-serif';
   c.fillText(sub,420,90);
+  c.fillStyle='#94a3b8';c.font='600 14px ui-monospace,monospace';c.textAlign='right';
+  c.fillText(APP_VERSION_LABEL,816,28);
   c.textAlign='left';
   topBarTex.needsUpdate=true;
 }
@@ -5924,7 +5962,7 @@ function clean(s){
   if(session!==s)return;
   finalizeDiagnostics();
   space?.removeEventListener?.('reset',reset);
-  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
+  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
   hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;perimeterOfferSuppressed=false;
   modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';
   modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
@@ -5950,7 +5988,7 @@ function clean(s){
 }
 
 function reset(){
-  epoch++;history=[];obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;handHistory.clear();resetAnchorStability();clearTrail();
+  epoch++;history=[];obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();resetAnchorStability();clearTrail();
   anchor.resetReference(space,context(),performance.now());
   if(!anchor.state().created){profile=null;extraScanActive=false;clearExtras();assistant.reset();assistant.begin();}
 }
@@ -5984,7 +6022,7 @@ async function toggleExtraScan(){
   const now=performance.now();
   if(extraScanActive){
     extraScanActive=false;history=[];obsBuffer.clear();capture.stop();
-    tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;handHistory.clear();
+    tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();
     liveTouchLoaderActive=false;
     for(const e of movableTools.values()){
       e.pendingTrail.discard();
@@ -5992,8 +6030,8 @@ async function toggleExtraScan(){
         e.recording=false;e.lastRecLineMatrix=null;e.lastRecFrameMatrix=null;
         drawRecOrbPill(e,false,false);
       }
-      // If a tag was mid-move when switching to MEASURE, lock it cleanly at its grounded pose so it stays inspectable.
-      if(e.displayMatrix&&(e.lockState==='moving'||e.currentPose)){
+      // Keep only currently visible tags anchored in MEASURE; vanished tags leave no ghost frames (their paths & Time-Copies stay inspectable).
+      if(e.visible&&e.displayMatrix){
         const grounded=(e.handCoupled&&e.lastOpticalMatrix)?e.lastOpticalMatrix:e.displayMatrix;
         const finalMat=(e.lockState==='locked'&&e.lockedMatrix)?e.lockedMatrix:grounded;
         e.lockState='locked';
@@ -6002,6 +6040,15 @@ async function toggleExtraScan(){
         e.targetMatrix=finalMat.slice();
         e.lastMatrix=finalMat.slice();
         syncCurrentPose(e,finalMat,now);
+      }else{
+        e.visible=false;
+        e.faceVisible=false;
+        e.lockState='settling';
+        e.lockedMatrix=null;
+        e.displayMatrix=null;
+        e.targetMatrix=null;
+        e.lastMatrix=null;
+        e.currentPose=null;
       }
       e.handCoupled=false;e.coupledHand=null;
       e.recOrbVisible=false;
@@ -6018,9 +6065,13 @@ async function toggleExtraScan(){
     status('MEASURE mode · camera OFF (90 FPS)');
     showHudToast('■ MEASURE MODE · 90 FPS','#22c55e');
   }else{
-    extraScanActive=true;obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;handHistory.clear();
+    extraScanActive=true;obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();
     for(const e of movableTools.values()){
-      if(e.currentPose)drawLiveBadge(e,e.lockState);
+      if(e.visible&&e.currentPose){
+        e.lastOpticalAtMs=now;
+        e.lastAt=now;
+        drawLiveBadge(e,e.lockState);
+      }
     }
     playModeTick('scan');
     status('SCAN mode ON · Auto-Lock + Follow, [⏱ MARK] = Time-Copy, [● REC] = path');
@@ -6060,20 +6111,21 @@ function buildScanPriorRois(){
     const pointsL=[];
     const locked=[];
     for(const entry of movableTools.values()){
+      if(!entry.visible)continue;
       const m=entry.displayMatrix||entry.targetMatrix||entry.lockedMatrix;
       if(!m)continue;
       const pt=[m[12],m[13],m[14]];
       if(entry.handCoupled||entry.recording||entry.lockState!=='locked'){
-        pointsL.push({pos:pt,halfPx:68,minDistM:0.35,maxDistM:maxPriorDist});
+        pointsL.push({pos:pt,halfPx:68,minDistM:0.12,maxDistM:maxPriorDist});
       }else{
-        locked.push({pos:pt,halfPx:52,minDistM:0.55,maxDistM:maxPriorDist});
+        locked.push({pos:pt,halfPx:52,minDistM:0.40,maxDistM:maxPriorDist});
       }
     }
     if(Number.isFinite(lastXrTime)){
       for(const side of ['left','right']){
         const hs=handHistory.latest(side,lastXrTime,180);
         const hp=hs?.pinchMidL||hs?.palmCenter;
-        if(hp)pointsL.push({pos:hp,halfPx:84,minDistM:0.30,maxDistM:1.45});
+        if(hp)pointsL.push({pos:hp,halfPx:84,minDistM:0.12,maxDistM:1.45});
       }
     }
     for(const item of locked)pointsL.push(item);
@@ -6122,52 +6174,57 @@ function buildScanFocusRois(){
   const camPosL=[lFromCam[12],lFromCam[13],lFromCam[14]];
   const farMode=Boolean(lastQualityState.longRangeActive);
   // Awareness of the last full-frame detectMs breaks any self-triggering stale->full-frame death spiral.
-  const staleBudgetMs=Math.max(340,(lastSampleStats?.detectMs||0)+180);
+  const staleBudgetMs=Math.max(420,(lastSampleStats?.detectMs||0)+220);
   const candidates=[];
   let hasRecording=false,hasAnyActive=false,hasFreshActive=false;
 
   for(const entry of movableTools.values()){
+    const freshOptical=entry.lastOpticalAtMs>0&&(now-entry.lastOpticalAtMs)<=staleBudgetMs;
+    if(!entry.visible&&!(entry.displayMatrix&&freshOptical))continue;
     const moving=entry.lockState==='moving';
+    const settling=entry.lockState==='settling';
     const isActive=entry.handCoupled||entry.recording||moving;
     const isClose=(entry.lastApparentEdgePx||0)>=26;
-    if(!isActive&&!isClose)continue;
+    if(!isActive&&!isClose&&!settling)continue;
     if(isActive){
       hasAnyActive=true;
       if(entry.recording)hasRecording=true;
     }
-    if(!(entry.lastOpticalAtMs>0)||now-entry.lastOpticalAtMs>staleBudgetMs)continue;
+    if(!freshOptical)continue;
     if(isActive)hasFreshActive=true;
     const m=entry.displayMatrix||entry.targetMatrix||entry.lockedMatrix;
     if(!m)continue;
     let pos=[m[12],m[13],m[14]];
     if(entry.handCoupled&&entry.lastOpticalMatrix&&entry.displayMatrix){
       const om=entry.lastOpticalMatrix,dm=entry.displayMatrix;
-      if(Math.hypot(dm[12]-om[12],dm[13]-om[13],dm[14]-om[14])<=0.25){
-        pos=[(om[12]+dm[12])*0.5,(om[13]+dm[13])*0.5,(om[14]+dm[14])*0.5];
+      if(Math.hypot(dm[12]-om[12],dm[13]-om[13],dm[14]-om[14])<=0.30){
+        pos=[om[12]*0.15+dm[12]*0.85,om[13]*0.15+dm[13]*0.85,om[14]*0.15+dm[14]*0.85];
       }
     }
     const distToCameraM=Math.hypot(pos[0]-camPosL[0],pos[1]-camPosL[1],pos[2]-camPosL[2]);
     const spd=Math.max(entry.lastSpeedMps||0,tagPredictor.speedOf(entry.tagId)?.speedMps||0);
-    const halfPx=Math.min(230,Math.max(115,Math.round((entry.lastApparentEdgePx||48)*2.4+Math.min(110,spd*140))));
+    const halfPx=Math.min(240,Math.max(110,Math.round((entry.lastApparentEdgePx||44)*2.2+Math.min(130,spd*165))));
     candidates.push({
       tagId:entry.tagId,
       pos,
       halfPx,
-      minDistM:0.20,
+      minDistM:0.10,
       maxDistM:farMode?2.4:1.75,
       recording:entry.recording,
       handCoupled:entry.handCoupled,
       moving,
+      settling,
       apparentEdgePx:entry.lastApparentEdgePx||0,
       distToCameraM,
     });
   }
 
   if(hasAnyActive&&!hasFreshActive)return undefined;
-  const chosen=prioritizeFocusCandidates(candidates,{maxCount:2});
+  const chosen=prioritizeFocusCandidates(candidates,{maxCount:3});
   if(!chosen.length)return undefined;
+  if(focusPartialMissStreak>=2)return undefined;
   // Pure check: focusSweepCounter only advances on real completed observations in onObservation.
-  const sweepEvery=hasRecording?10:(hasAnyActive?7:5);
+  const sweepEvery=hasRecording?30:(hasAnyActive?20:12);
   if(focusSweepCounter>=sweepEvery)return undefined;
 
   const rois=projectPriorRois({
@@ -6226,10 +6283,10 @@ try{
         };
       }
       const fast=Boolean(extraScanActive&&$('fastScan')?.checked);
-      if(!fast){scanPulseCounter=0;focusSweepCounter=0;}
+      if(!fast){scanPulseCounter=0;focusSweepCounter=0;focusPartialMissStreak=0;}
       const activeMoving=fast&&hasActiveMovableTag();
       const focusRois=fast?buildScanFocusRois():undefined;
-      const priorRois=(fast&&!focusRois)?buildScanPriorRois():undefined;
+      const priorRois=(fast&&!focusRois&&!activeMoving)?buildScanPriorRois():undefined;
       const effDecimate=focusRois?2:(activeMoving?2:(fast?q.scanDecimate:1));
       const effMaxHz=focusRois?28:(activeMoving?Math.max(10,q.scanMaxHz):(fast?q.scanMaxHz:5));
       return {
@@ -6257,19 +6314,25 @@ try{
       lastSampleStats={
         serial:sample.serial,decimate:sample.decimate,detectMode:sample.detectMode??null,
         coarseMs:sample.coarseMs??null,roiMs:sample.roiMs??null,roiCount:sample.roiCount??null,priorRoiCount:sample.priorRoiCount??0,
-        focusRoiCount:sample.focusRoiCount??0,focusHit:Boolean(sample.focusHit),
+        focusRoiCount:sample.focusRoiCount??0,focusHit:Boolean(sample.focusHit),focusMissedBoxes:sample.focusMissedBoxes??0,
         detectMs:sample.detectMs,readbackMs:sample.mainThreadReadbackMs,
         preprocessMs:sample.workerPreprocessMs,poseFitMs:sample.poseFitMs,captureLagMs:lag,capturedInRvfc:sample.capturedInRvfc,
         readbackMode:sample.readbackMode,metadataMediaTimeDeltaS:sample.metadataMediaTimeDeltaS,
         mode:curPhase!=='ready'?'calibrating':(extraScanActive?'scan':'measure'),
       };
       if(extraScanActive){
-        if((sample.focusRoiCount??0)>0&&sample.focusHit)focusSweepCounter++;
-        else focusSweepCounter=0;
+        if((sample.focusRoiCount??0)>0&&sample.focusHit){
+          focusSweepCounter++;
+          if((sample.focusMissedBoxes??0)>0)focusPartialMissStreak++;
+          else focusPartialMissStreak=0;
+        }else{
+          focusSweepCounter=0;
+          focusPartialMissStreak=0;
+        }
         if((sample.focusRoiCount??0)===0&&smoothedHeadAngDegS<22)scanPulseCounter++;
         else if(smoothedHeadAngDegS>=22)scanPulseCounter=0;
       }else{
-        focusSweepCounter=0;scanPulseCounter=0;
+        focusSweepCounter=0;focusPartialMissStreak=0;scanPulseCounter=0;
       }
       if(diagnostics){
         if(diagnostics.samples.length<340)diagnostics.samples.push(lastSampleStats);
@@ -6458,7 +6521,7 @@ try{
       }
 
       session=acquired;sessionId=`quest-${++sessionCount}`;epoch=0;history=[];obsBuffer.clear();clearExtras();clearTrail();resetSpatialPortals();audit.reset();
-      hold={sinceMs:null,progress:0,fire:false};extraScanActive=false;reanchorConfirmUntil=0;scanPulseCounter=0;focusSweepCounter=0;tagPredictor.reset();
+      hold={sinceMs:null,progress:0,fire:false};extraScanActive=false;reanchorConfirmUntil=0;scanPulseCounter=0;focusSweepCounter=0;focusPartialMissStreak=0;tagPredictor.reset();
       adaptiveQuality.setMode(currentQualityMode());
       adaptiveQuality.setLongRange(currentLongRangeEnabled());
       adaptiveQuality.reset();
@@ -6471,7 +6534,7 @@ try{
       lastXrTime=null;fpsHistory=[];stabilityHistory=[];rmsHistory=[];maxFrameGapMs=0;resetAnchorStability();
       lastAuditRow=null;lastMotionState=null;lastSampleStats=null;lastObs=null;lastObsAtMs=0;lastCalPhase='idle';lastCalCount=0;
       rvfcWindowStart=performance.now();rvfcWindowCount=capture.presentedCallbacks?.()??capture.state().presentedCallbacks;rvfcHz=0;
-      diagnostics={startedAt:new Date().toISOString(),userAgent:navigator.userAgent,sessionId,rigId:rig.id,samples:[],events:[],errors:[]};
+      diagnostics={appVersion:APP_VERSION_LABEL,startedAt:new Date().toISOString(),userAgent:navigator.userAgent,sessionId,rigId:rig.id,samples:[],events:[],errors:[]};
 
       await renderer.xr.setSession(acquired);
       if(session!==acquired)return;

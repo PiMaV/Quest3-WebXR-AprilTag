@@ -386,4 +386,111 @@ test('prioritizeFocusCandidates prioritizes active targets over static tags and 
     {tagId:303,distToCameraM:0.50,apparentEdgePx:52},
   ],{maxCount:2});
   assert.deepEqual(staticOnly.map(c=>c.tagId),[303,302]);
+
+  // Two-tag ruler: recording #311 keeps sibling #310 (15 cm away) even if resting, while dropping distant #309 (70 cm away).
+  const rulerPair=prioritizeFocusCandidates([
+    {tagId:311,recording:true,handCoupled:false,moving:true,pos:[0,0,0],distToCameraM:0.32,apparentEdgePx:62},
+    {tagId:310,recording:false,handCoupled:false,moving:false,settling:false,pos:[0.15,0,0],distToCameraM:0.34,apparentEdgePx:58},
+    {tagId:309,recording:false,handCoupled:false,moving:false,settling:false,pos:[0.70,0,0],distToCameraM:0.85,apparentEdgePx:24},
+  ],{maxCount:3});
+  assert.deepEqual(rulerPair.map(c=>c.tagId),[311,310]);
+
+  // Moving/coupled (not recording) never starves nearby resting or newly settling sibling tags.
+  const movingPlusSettling=prioritizeFocusCandidates([
+    {tagId:311,recording:false,handCoupled:true,moving:true,pos:[0,0,0],distToCameraM:0.30,apparentEdgePx:64},
+    {tagId:310,recording:false,handCoupled:false,moving:false,settling:true,pos:[0.12,0,0],distToCameraM:0.31,apparentEdgePx:60},
+  ],{maxCount:3});
+  assert.deepEqual(movingPlusSettling.map(c=>c.tagId),[311,310]);
+});
+
+test('two-stage large Focus-ROI matches dec=1 corner accuracy, reports partial-miss counts, and rescues blur',async()=>{
+  const vendorDir=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../vendor/apriltag');
+  const src=fs.readFileSync(path.join(vendorDir,'apriltag_wasm.js'),'utf8');
+  const AprilTagWasm=new Function('require','__dirname','__filename',`${src}; return AprilTagWasm;`)(
+    createRequire(import.meta.url),vendorDir,path.join(vendorDir,'apriltag_wasm.js'),
+  );
+  const wasmBinary=fs.readFileSync(path.join(vendorDir,'apriltag_wasm.wasm'));
+  const wasm=await AprilTagWasm({wasmBinary});
+  const detector=createAprilTagDetector(wasm,1);
+
+  const W=1280,H=1080;
+  const gray=new Uint8Array(W*H);
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++)gray[y*W+x]=140+((x*7+y*13)%90);
+  }
+  const tagSpecs=[
+    {id:350,code:0x89ded4ea1n,cell:8,ox:260,oy:260}, // 64 px tag inside Box 1
+    {id:351,code:0x256a0ba34n,cell:8,ox:760,oy:260}, // 64 px tag inside Box 2
+  ];
+  for(const sp of tagSpecs)paintTagGray(gray,W,H,sp.code,sp);
+
+  const baseline=detector.detect(gray,W,H);
+  assert.equal(baseline.length,2);
+  const baseById=new Map(baseline.map(m=>[m.id,m]));
+
+  // Two 460x460 search ROIs (>= 52k px² triggers Stage-1 dec=2 search + Stage-3 tight dec=1 refinement).
+  const resBoth=detector.detectFocusRois(gray,W,H,[
+    [100,100,560,560],
+    [600,100,1060,560],
+  ]);
+  assert.equal(resBoth.focusHit,true);
+  assert.equal(resBoth.focusHitBoxes,2);
+  assert.equal(resBoth.focusMissedBoxes,0);
+  assert.equal(resBoth.markers.length,2);
+  let maxErrPx=0;
+  for(const m of resBoth.markers){
+    const ref=baseById.get(m.id);
+    assert.ok(ref);
+    for(let i=0;i<4;i++){
+      const err=Math.hypot(m.corners[i].x-ref.corners[i].x,m.corners[i].y-ref.corners[i].y);
+      if(err>maxErrPx)maxErrPx=err;
+    }
+  }
+  assert.ok(maxErrPx<=0.35,`expected <=0.35px corner delta vs dec=1, got ${maxErrPx.toFixed(4)}px`);
+
+  // Partial miss telemetry: Box 1 hits #350 while Box 2 (bottom-right) is empty texture.
+  const partial=detector.detectFocusRois(gray,W,H,[
+    [100,100,560,560],
+    [700,600,1160,1060],
+  ]);
+  assert.equal(partial.focusHit,true);
+  assert.equal(partial.focusHitBoxes,1);
+  assert.equal(partial.focusMissedBoxes,1);
+  assert.equal(partial.markers.length,1);
+  assert.equal(partial.markers[0].id,350);
+
+  // Large-box (320x320) Stage-2 dec=1.5 ref=0 motion-blur rescue on a 9 px horizontally smeared cell=5 tag.
+  const cell=5,ox=500,oy=400,blurPx=9,size=cell*8,qPad=cell*2;
+  const sharp=new Float32Array(W*H).fill(180);
+  for(let y=oy-qPad;y<oy+size+qPad;y++)for(let x=ox-qPad;x<ox+size+qPad;x++)sharp[y*W+x]=240;
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      let val=20;
+      if(r>0&&r<7&&c>0&&c<7){
+        const bit=(r-1)*6+(c-1);
+        val=Number((0x89ded4ea1n>>BigInt(35-bit))&1n)?240:20;
+      }
+      for(let dy=0;dy<cell;dy++)for(let dx=0;dx<cell;dx++)sharp[(oy+r*cell+dy)*W+(ox+c*cell+dx)]=val;
+    }
+  }
+  const blurred=new Uint8Array(W*H).fill(180);
+  const half=Math.floor(blurPx/2);
+  for(let y=oy-qPad;y<oy+size+qPad;y++){
+    for(let x=ox-qPad-blurPx;x<ox+size+qPad+blurPx;x++){
+      let sum=0;
+      for(let dx=0;dx<blurPx;dx++)sum+=sharp[y*W+Math.min(W-1,Math.max(0,x-half+dx))];
+      blurred[y*W+x]=Math.round(sum/blurPx);
+    }
+  }
+  // Confirm single-pass 320x320 dec=1, ref=1 misses blurPx=9 while two-stage Focus-ROI rescues #350!
+  detector.setOptions({decimate:1,refineEdges:1});
+  const cropBlur=new Uint8Array(320*320);
+  for(let r=0;r<320;r++)cropBlur.set(blurred.subarray((oy-140+r)*W+(ox-140),(oy-140+r)*W+(ox+size+140)),r*320);
+  assert.equal(detector.detect(cropBlur,320,320).length,0);
+  const resBlur=detector.detectFocusRois(blurred,W,H,[[ox-140,oy-140,ox+size+140,oy+size+140]]);
+  assert.equal(resBlur.focusHit,true);
+  assert.equal(resBlur.focusHitBoxes,1);
+  assert.equal(resBlur.focusMissedBoxes,0);
+  assert.equal(resBlur.markers.length,1);
+  assert.equal(resBlur.markers[0].id,350);
 });

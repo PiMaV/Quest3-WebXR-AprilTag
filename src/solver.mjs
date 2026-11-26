@@ -170,12 +170,85 @@ export function diversity(rows,history){
   if(poses.length<3)return {ok:false,reason:'Time-matched XR poses missing'};
   const inv=inverse(poses[0]),vectors=poses.map(p=>rigidVector(product(inv,p)).slice(0,3));
   const maxAngle=Math.max(...vectors.map(v=>Math.hypot(...v)));
-  // Two non-collinear rotation axes are essential to identify hand/eye translation.
-  let area=0;for(const a of vectors)for(const b of vectors)area=Math.max(area,Math.hypot(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]));
-  const centres=rows.map(r=>{const ps=r.tags.flatMap(t=>t.pixels);return ['x','y'].map(k=>ps.reduce((s,p)=>s+p[k],0)/ps.length);});
-  const span=[0,1].map(i=>Math.max(...centres.map(p=>p[i]))-Math.min(...centres.map(p=>p[i])));
-  return {ok:maxAngle>.2&&area>.015,maxAngleDeg:maxAngle*180/Math.PI,rotationArea:area,imageCentreSpanPx:span,
-    reason:'Rotate head around multiple axes; view L-angle left/right and up/down'};
+  // Two non-collinear rotation axes AND real 3D translation span are essential to decouple fx and hand/eye depth.
+  let area=0,maxTransM=0;
+  for(const a of vectors)for(const b of vectors)area=Math.max(area,Math.hypot(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]));
+  for(let i=0;i<poses.length;i++){
+    const a=poses[i];
+    for(let j=i+1;j<poses.length;j++){
+      const b=poses[j];
+      const d=Math.hypot(b[12]-a[12],b[13]-a[13],b[14]-a[14]);
+      if(d>maxTransM)maxTransM=d;
+    }
+  }
+  const ok=maxAngle>.2&&area>.015&&maxTransM>=.14;
+  const reason=(maxAngle>.2&&area>.015&&maxTransM<.14)
+    ?'Move head wider & closer/farther around multiple axes (>= 15 cm)'
+    :'Rotate head around multiple axes and vary distance/side-to-side (>= 15 cm)';
+  return {ok,maxAngleDeg:maxAngle*180/Math.PI,rotationArea:area,translationSpanM:maxTransM,imageCentreSpanPx:(()=>{
+    const centres=rows.map(r=>{const ps=r.tags.flatMap(t=>t.pixels);return ['x','y'].map(k=>ps.reduce((s,p)=>s+p[k],0)/ps.length);});
+    return [0,1].map(i=>Math.max(...centres.map(p=>p[i]))-Math.min(...centres.map(p=>p[i])));
+  })(),reason};
+}
+function jointReprojectionErrors(rows,history,K,X,L,offsetMs){
+  const invX=inverse(X),out=[];
+  for(const r of rows){
+    const H=poseAt(history,r.captureTime+offsetMs);if(!H)return null;
+    const C=product(invX,inverse(H),L);
+    for(const t of r.tags)for(let i=0;i<t.points.length;i++){
+      const [tx,ty]=t.points[i];
+      const px=C[12]+C[0]*tx+C[4]*ty,py=C[13]+C[1]*tx+C[5]*ty,pz=C[14]+C[2]*tx+C[6]*ty;
+      const zCV=-pz;if(!(zCV>.02))return null;
+      out.push(K.fx*(px/zCV)+K.cx-t.pixels[i].x,K.fy*(-py/zCV)+K.cy-t.pixels[i].y);
+    }
+  }
+  return out.length&&out.every(Number.isFinite)?out:null;
+}
+function jointReprojectionRms(rows,history,K,X,L,offsetMs){
+  const e=jointReprojectionErrors(rows,history,K,X,L,offsetMs);
+  return e?Math.sqrt(sq(e)/(e.length/2)):Infinity;
+}
+function refineJointCalibration(validRows,history,initK,hand,{imageSize,model='centered-square'}){
+  const [W,H]=imageSize;
+  const init=[
+    ...rigidVector(hand.viewerFromCameraGL),
+    ...rigidVector(hand.worldFromRig),
+    Math.max(-.24,Math.min(.24,hand.timeOffsetMs/1000)),
+    ...(model==='pinhole'?[Math.log(initK.fx),Math.log(initK.fy),initK.cx/W,initK.cy/H]:[Math.log(initK.fx)]),
+  ];
+  const fun=x=>{
+    const KK=modelK(x.slice(13),imageSize,model);
+    if(!(KK.fx>W*.2&&KK.fx<W*4&&KK.fy>W*.2&&KK.fy<W*4&&KK.cx>0&&KK.cx<W&&KK.cy>0&&KK.cy<H))return null;
+    const err=jointReprojectionErrors(validRows,history,KK,vectorRigid(x.slice(0,6)),vectorRigid(x.slice(6,12)),x[12]*1000);
+    return err?err.map(v=>v*.5):null;
+  };
+  const fit=lm(fun,init,{maxIterations:80});
+  const x=fit.x;
+  const K=modelK(x.slice(13),imageSize,model);
+  const viewerFromCameraGL=vectorRigid(x.slice(0,6));
+  const worldFromRig=vectorRigid(x.slice(6,12));
+  const timeOffsetMs=x[12]*1000;
+  const r0=fun(x);
+  let fxStd=Infinity;
+  if(r0){
+    const n=x.length,J=r0.map(()=>Array(n));
+    let ok=true;
+    for(let j=0;j<n;j++){
+      const eps=j===12?1e-5:1e-6,xx=x.slice();xx[j]+=eps;
+      const rr=fun(xx);if(!rr){ok=false;break;}
+      for(let i=0;i<r0.length;i++)J[i][j]=(rr[i]-r0[i])/eps;
+    }
+    if(ok){
+      const {A}=normal(J,r0,n);
+      const e13=Array(n).fill(0);e13[13]=1;
+      const col=linear(A,e13);
+      const dof=Math.max(1,r0.length-n);
+      const variance=sq(r0)/dof;
+      if(col&&col[13]>0)fxStd=Math.sqrt(col[13]*variance);
+    }
+  }
+  const jointTrainingRmsPx=jointReprojectionRms(validRows,history,K,viewerFromCameraGL,worldFromRig,timeOffsetMs);
+  return {K,viewerFromCameraGL,worldFromRig,timeOffsetMs,jointTrainingRmsPx,fxStd};
 }
 export function solveCalibration({rows,history,imageSize,model='centered-square'},progress=()=>{}){
   if(rows.length<30)throw new Error('At least 30 distinct multi-tag views required');
@@ -184,23 +257,44 @@ export function solveCalibration({rows,history,imageSize,model='centered-square'
   if(!diversity(rows,history).ok)throw new Error(diversity(rows,history).reason);
   // Last fifth is never fitted: this also exposes motion-dependent overfitting.
   const cut=Math.floor(rows.length*.8),training=rows.slice(0,cut),held=rows.slice(cut);
-  if(!diversity(training,history).ok)throw new Error('Collect more diverse head motions');
+  if(!diversity(training,history).ok)throw new Error('Collect more diverse head motions and distance');
   progress('Fitting camera model');const fit=fitIntrinsics(training,imageSize,{model});
-  progress('Solving camera-headset transform and delay');const hand=fitHandEye(training,history,fit.K);
-  const worlds=worldPoses(held,history,fit.K,hand.viewerFromCameraGL,hand.timeOffsetMs);
-  const validation=consistency(worlds,hand.worldFromRig);
+  progress('Solving camera-headset transform and delay');const hand0=fitHandEye(training,history,fit.K);
+  const validTraining=training.filter(r=>hasContinuousHistory(history,r.captureTime-250,r.captureTime+250));
+  const initJointRms=jointReprojectionRms(validTraining,history,fit.K,hand0.viewerFromCameraGL,hand0.worldFromRig,hand0.timeOffsetMs);
+  progress('Refining focal length & hand-eye jointly');
+  let finalK=fit.K,finalX=hand0.viewerFromCameraGL,finalL=hand0.worldFromRig,finalOffset=hand0.timeOffsetMs;
+  let jointTrainingRmsPx=initJointRms,jointFxStd=Infinity;
+  try{
+    const joint=refineJointCalibration(validTraining,history,fit.K,hand0,{imageSize,model});
+    if(Number.isFinite(joint.jointTrainingRmsPx)&&joint.jointTrainingRmsPx<=initJointRms+.05){
+      finalK=joint.K;finalX=joint.viewerFromCameraGL;finalL=joint.worldFromRig;finalOffset=joint.timeOffsetMs;
+      jointTrainingRmsPx=joint.jointTrainingRmsPx;jointFxStd=joint.fxStd;
+    }
+  }catch{ /* keep decoupled fit if joint step fails */ }
+  const worlds=worldPoses(held,history,finalK,finalX,finalOffset);
+  const validation=consistency(worlds,finalL);
   const errors=held.flatMap(r=>{
-    const pose=fitPlanarPose(r.tags,fit.K),e=pose&&projectResidual(pose,r.tags,fit.K);return e??[1e6];
+    const pose=fitPlanarPose(r.tags,finalK),e=pose&&projectResidual(pose,r.tags,finalK);return e??[1e6];
   });
   const heldRms=Math.sqrt(sq(errors)/(errors.length/2));
-  const uncertainty=fit.std[0]<.05&&(model!=='pinhole'||(fit.std[1]<.05&&fit.std[2]<.04&&fit.std[3]<.04));
-  const offsetSafe=Math.abs(hand.timeOffsetMs)<230,translationSafe=Math.hypot(...hand.viewerFromCameraGL.slice(12,15))<.3;
-  const delayIdentified=hand.convergedSeeds>=2&&hand.delaySpreadMs<15;
-  const passed=uncertainty&&offsetSafe&&translationSafe&&delayIdentified&&fit.rmsPx<1&&heldRms<1.2&&validation.positionP95Mm<15&&validation.angleP95Deg<2;
-  return {K:fit.K,distCoeffs:[0,0,0,0,0],...hand,model,
+  const jointHeldOutRmsPx=jointReprojectionRms(held,history,finalK,finalX,finalL,finalOffset);
+  const fxStd=Number.isFinite(jointFxStd)?Math.min(fit.std[0],jointFxStd):fit.std[0];
+  const uncertainty=fxStd<.05&&(model!=='pinhole'||(fit.std[1]<.05&&fit.std[2]<.04&&fit.std[3]<.04));
+  const camT=finalX.slice(12,15);
+  const offsetSafe=Math.abs(finalOffset)<230,translationSafe=Math.hypot(camT[0],camT[1],camT[2])<.16&&Math.abs(camT[2])<.09;
+  const delayIdentified=hand0.convergedSeeds>=2&&hand0.delaySpreadMs<15;
+  const passed=uncertainty&&offsetSafe&&translationSafe&&delayIdentified&&fit.rmsPx<1&&heldRms<1.2&&
+    validation.positionP95Mm<5&&validation.angleP95Deg<1&&jointHeldOutRmsPx<2.2;
+  return {K:finalK,distCoeffs:[0,0,0,0,0],
+    viewerFromCameraGL:finalX,worldFromRig:finalL,timeOffsetMs:finalOffset,
+    cost:hand0.cost,delaySpreadMs:hand0.delaySpreadMs,convergedSeeds:hand0.convergedSeeds,usedViews:hand0.usedViews,
+    model,
     assumptions:model==='centered-square'?['square pixels','centered principal point','zero distortion','fixed stationary target','nominal print scale']:
       ['zero distortion','fixed stationary target','nominal print scale'],
     validation:{...validation,passed,trainingViews:training.length,heldOutViews:held.length,
-      trainingRmsPx:fit.rmsPx,heldOutRmsPx:heldRms,intrinsicStd:fit.std,uncertainty,offsetSafe,translationSafe,delayIdentified},
+      trainingRmsPx:fit.rmsPx,heldOutRmsPx:heldRms,jointTrainingRmsPx,jointHeldOutRmsPx,
+      planarFx:fit.K.fx,jointFx:finalK.fx,intrinsicStd:[fxStd,...fit.std.slice(1)],
+      uncertainty,offsetSafe,translationSafe,delayIdentified},
     independentlyValidated:false};
 }

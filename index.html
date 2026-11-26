@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#05070a">
   <title>Quest3-WebXR-AprilTag · M.E.S.S.</title>
-  <meta name="description" content="Physical millimeter (0, 0, 0) WebXR anchor for Meta Quest 3 — calibrate once, lock a native XRAnchor, and track at 90 FPS with the camera off.">
+  <meta name="description" content="AprilTag tracking. Live on Quest 3. In your browser. Hand tracking first, controllers optional. No Unity, no installation, Apache-2.0 open source.">
 
   <meta property="og:title" content="Quest3-WebXR-AprilTag · M.E.S.S.">
-  <meta property="og:description" content="Browser-native AprilTag to WebXR Spatial Anchor registration for Meta Quest 3. Zero build step, zero native app, 90 FPS native tracking.">
+  <meta property="og:description" content="Track the object. Not the controller. AprilTag tracking live on Meta Quest 3 in your browser.">
   <meta property="og:type" content="website">
   <link rel="canonical" href="https://q3.mess.engineering/">
   <meta property="og:url" content="https://q3.mess.engineering/">
@@ -39,6 +39,8 @@
 
     * { box-sizing: border-box; }
 
+    html { scroll-behavior: smooth; }
+
     body {
       margin: 0;
       min-height: 100vh;
@@ -50,23 +52,16 @@
       line-height: 1.5;
     }
 
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
+    a { color: inherit; text-decoration: none; }
   </style>
 
   <!-- Canonical M.E.S.S. Brand SSoT -->
   <link rel="stylesheet" href="https://mess.engineering/brand/css/brand.css">
 
   <style>
-    :root {
-      --maxw: 980px;
-    }
+    :root { --maxw: 980px; }
 
-    body {
-      background: linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 100%);
-    }
+    body { background: linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 100%); }
 
     .wrap {
       width: min(calc(100% - 32px), var(--maxw));
@@ -88,8 +83,9 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
+      gap: 10px 16px;
       padding: 6px 0;
+      flex-wrap: wrap;
     }
 
     .brand-group {
@@ -111,9 +107,7 @@
       color: var(--text);
     }
 
-    .brand-link:hover {
-      color: var(--dampf);
-    }
+    .brand-link:hover, .brand-link:focus-visible { color: var(--dampf); }
 
     .brand-icon {
       display: block;
@@ -124,10 +118,7 @@
       flex-shrink: 0;
     }
 
-    .brand-sep {
-      color: var(--muted);
-      opacity: 0.45;
-    }
+    .brand-sep { color: var(--muted); opacity: 0.45; }
 
     .brand-project {
       font-family: Orbitron, sans-serif;
@@ -136,26 +127,42 @@
       color: var(--muted);
     }
 
+    .top-nav {
+      display: flex;
+      align-items: center;
+      gap: 8px 16px;
+      flex-wrap: wrap;
+    }
+
     .top-link {
       font-family: Orbitron, sans-serif;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       letter-spacing: 0.05em;
       color: var(--muted);
       white-space: nowrap;
+      padding: 4px 2px;
       transition: color 0.16s ease;
     }
 
-    .top-link:hover {
+    .top-link:hover, .top-link:focus-visible { color: var(--dampf); }
+
+    .top-cta {
+      padding: 5px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(0, 255, 242, 0.40);
+      background: rgba(0, 255, 242, 0.08);
       color: var(--dampf);
     }
 
-    main {
-      flex: 1;
+    .top-cta:hover, .top-cta:focus-visible {
+      border-color: var(--dampf);
+      background: rgba(0, 255, 242, 0.16);
+      color: var(--text);
     }
 
-    .hero {
-      padding: 14px 0 24px;
-    }
+    main { flex: 1; }
+
+    .hero { padding: 14px 0 24px; }
 
     .demo-card {
       width: min(100%, calc((100vh - 150px) * 16 / 9));
@@ -172,45 +179,6 @@
       transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     }
 
-    .hero-summary {
-      margin: 18px 0 0;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 8px 20px;
-    }
-
-    .hero-title {
-      margin: 0 0 4px;
-      font-family: Orbitron, sans-serif;
-      font-size: 1rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      color: var(--text);
-    }
-
-    .hero-pitch {
-      margin: 0;
-      max-width: 72ch;
-      font-size: 0.96rem;
-      color: var(--muted);
-    }
-
-    .hero-pitch strong {
-      color: var(--text);
-      font-weight: 600;
-    }
-
-    .hero-meta {
-      margin: 0;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.78rem;
-      color: var(--muted);
-      opacity: 0.8;
-      white-space: nowrap;
-    }
-
     .demo-card:hover {
       transform: translateY(-2px);
       border-color: var(--dampf);
@@ -224,20 +192,57 @@
       overflow: hidden;
     }
 
-    .demo-preview img {
+    .demo-preview-link { display: block; width: 100%; height: 100%; }
+
+    .demo-preview img,
+    .demo-preview video {
       display: block;
       width: 100%;
       height: 100%;
       object-fit: cover;
+      background: #0b0f14;
+    }
+
+    .demo-clips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(5, 7, 10, 0.55);
+    }
+
+    .clip-btn {
+      appearance: none;
+      padding: 5px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line-strong);
+      background: var(--panel);
+      color: var(--muted);
+      font-family: Orbitron, sans-serif;
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+    }
+
+    .clip-btn.active {
+      border-color: var(--dampf);
+      background: rgba(0, 255, 242, 0.12);
+      color: var(--dampf);
     }
 
     .demo-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 14px;
+      gap: 10px 16px;
       padding: 16px 20px;
       flex-wrap: wrap;
+    }
+
+    .demo-bar:focus-visible {
+      outline: 2px solid var(--dampf);
+      outline-offset: -2px;
     }
 
     .demo-cta {
@@ -249,8 +254,57 @@
     }
 
     .demo-sub {
+      font-family: Orbitron, sans-serif;
       font-size: 0.88rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      color: var(--text);
+    }
+
+    .hero-summary {
+      margin: 18px 0 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px 20px;
+    }
+
+    .hero-slogan {
+      margin: 0 0 6px;
+      font-family: Orbitron, sans-serif;
+      font-size: clamp(1.05rem, 2.2vw, 1.32rem);
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: var(--text);
+    }
+
+    .hero-slogan span { color: var(--dampf); }
+
+    .hero-sub {
+      margin: 0 0 4px;
+      font-size: 0.94rem;
       color: var(--muted);
+    }
+
+    .hero-sub strong { color: var(--text); font-weight: 600; }
+
+    .hero-pitch {
+      margin: 0;
+      max-width: 76ch;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .hero-pitch em { color: var(--text); }
+
+    .hero-meta {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.78rem;
+      color: var(--muted);
+      opacity: 0.8;
+      white-space: nowrap;
     }
 
     .targets-row {
@@ -261,9 +315,7 @@
     }
 
     @media (max-width: 640px) {
-      .targets-row {
-        grid-template-columns: 1fr;
-      }
+      .targets-row { grid-template-columns: 1fr; }
     }
 
     .target-card {
@@ -276,15 +328,9 @@
       transition: transform 0.16s ease, border-color 0.16s ease;
     }
 
-    .target-card:hover {
-      transform: translateY(-1px);
-      border-color: var(--line-strong);
-    }
+    .target-card:hover { transform: translateY(-1px); border-color: var(--line-strong); }
 
-    .target-main {
-      display: flex;
-      flex-direction: column;
-    }
+    .target-main { display: flex; flex-direction: column; }
 
     .target-head {
       padding: 14px 16px 12px;
@@ -305,9 +351,7 @@
       transition: color 0.16s ease;
     }
 
-    .target-main:hover .target-title {
-      color: var(--dampf);
-    }
+    .target-main:hover .target-title { color: var(--dampf); }
 
     .target-open {
       font-family: Orbitron, sans-serif;
@@ -349,31 +393,26 @@
       white-space: nowrap;
     }
 
-    .pdf-link:hover {
-      color: var(--dampf);
+    .pdf-link:hover { color: var(--dampf); }
+
+    .marker-note {
+      margin: 12px 0 0;
+      font-size: 0.84rem;
+      color: var(--muted);
     }
 
     .section {
-      padding: 26px 0;
+      padding: 24px 0;
       border-top: 1px solid var(--line);
     }
 
-    .section-head {
-      margin-bottom: 16px;
-    }
+    .section-head { margin-bottom: 14px; }
 
     .section-head h2 {
-      margin: 0 0 6px;
-      font-family: Orbitron, sans-serif;
-      font-size: clamp(1.15rem, 2vw, 1.5rem);
-      letter-spacing: 0.04em;
-    }
-
-    .section-head p {
       margin: 0;
-      max-width: 72ch;
-      font-size: 0.94rem;
-      color: var(--muted);
+      font-family: Orbitron, sans-serif;
+      font-size: clamp(1.08rem, 2vw, 1.38rem);
+      letter-spacing: 0.04em;
     }
 
     .metrics-grid {
@@ -383,15 +422,11 @@
     }
 
     @media (max-width: 900px) {
-      .metrics-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
+      .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
 
     @media (max-width: 480px) {
-      .metrics-grid {
-        grid-template-columns: 1fr;
-      }
+      .metrics-grid { grid-template-columns: 1fr; }
     }
 
     .metric-card {
@@ -404,7 +439,7 @@
     .metric-val {
       display: block;
       font-family: Orbitron, sans-serif;
-      font-size: clamp(1.1rem, 1.8vw, 1.38rem);
+      font-size: clamp(1.1rem, 1.8vw, 1.36rem);
       font-weight: 700;
       color: var(--text);
       margin-bottom: 4px;
@@ -412,7 +447,7 @@
 
     .metric-label {
       display: block;
-      font-size: 0.84rem;
+      font-size: 0.83rem;
       color: var(--muted);
     }
 
@@ -422,63 +457,44 @@
       color: var(--muted);
     }
 
-    .steps-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 14px;
-    }
-
-    .step-card {
-      padding: 18px 20px;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      background: var(--panel);
-    }
-
-    .step-tag {
-      display: block;
-      font-family: Orbitron, sans-serif;
-      font-size: 0.72rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-
-    .step-card h3 {
-      margin: 0 0 6px;
-      font-family: Orbitron, sans-serif;
-      font-size: 0.96rem;
-      letter-spacing: 0.03em;
-      color: var(--text);
-    }
-
-    .step-card p {
-      margin: 0;
-      font-size: 0.9rem;
-      color: var(--muted);
-    }
-
+    .honesty-note a,
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.86em;
       color: var(--dampf);
+    }
+
+    code {
       background: rgba(0, 255, 242, 0.07);
       padding: 1px 5px;
       border-radius: 5px;
     }
 
-    .formula-bar {
-      margin-top: 14px;
-      padding: 12px 16px;
-      border-radius: 12px;
+    .doc-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .doc-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 8px 14px;
+      border-radius: 10px;
       border: 1px solid var(--line);
-      background: var(--surface);
-      overflow-x: auto;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.84rem;
+      background: var(--panel);
+      font-family: Orbitron, sans-serif;
+      font-size: 0.78rem;
+      letter-spacing: 0.03em;
       color: var(--text);
-      white-space: nowrap;
+      transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+    }
+
+    .doc-pill:hover, .doc-pill:focus-visible {
+      border-color: var(--dampf);
+      background: var(--panel-strong);
+      color: var(--dampf);
     }
 
     .site-footer {
@@ -503,9 +519,7 @@
       gap: 10px 18px;
     }
 
-    .footer-links a:hover {
-      color: var(--dampf);
-    }
+    .footer-links a:hover { color: var(--dampf); }
   </style>
 </head>
 <body>
@@ -520,34 +534,40 @@
         <span class="brand-project">Quest3-WebXR-AprilTag</span>
       </div>
 
-      <a class="top-link" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag" target="_blank" rel="noopener">GitHub ↗</a>
+      <nav class="top-nav" aria-label="Primary">
+        <a class="top-link top-cta" href="./examples/quest.html">Launch</a>
+        <a class="top-link" href="#markers">Markers</a>
+        <a class="top-link" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag" target="_blank" rel="noopener">GitHub ↗</a>
+      </nav>
     </div>
   </header>
 
   <main>
     <section class="hero">
       <div class="wrap">
-        <a class="demo-card" href="./examples/quest.html">
-          <div class="demo-preview">
-            <img src="./examples/assets/quest_demo_preview.png" alt="Quest 3 AR Demo preview">
+        <div class="demo-card" id="demoCard">
+          <div class="demo-preview" id="demoPreview">
+            <a class="demo-preview-link" href="./examples/quest.html">
+              <img src="./examples/assets/quest_demo_preview.png" alt="Quest 3 AR Demo preview">
+            </a>
           </div>
-          <div class="demo-bar">
+          <div class="demo-clips" id="clipTabs" hidden></div>
+          <a class="demo-bar" href="./examples/quest.html">
             <span class="demo-cta">Launch Quest 3 AR Demo →</span>
-            <span class="demo-sub">Meta Quest Browser · immersive-ar · calibrate, lock &amp; measure</span>
-          </div>
-        </a>
+            <span class="demo-sub">Track the object. Not the controller.</span>
+          </a>
+        </div>
 
         <div class="hero-summary">
           <div>
-            <h1 class="hero-title">Quest3-WebXR-AprilTag</h1>
-            <p class="hero-pitch">
-              Physical millimeter <strong>(0, 0, 0)</strong> WebXR anchor for Meta Quest 3 — calibrate once, lock a native <strong>XRAnchor</strong>, and track at <strong>90 FPS</strong> with the camera off.
-            </p>
+            <h1 class="hero-slogan">AprilTag tracking. Live on Quest 3. <span>In your browser.</span></h1>
+            <p class="hero-sub"><strong>Hand tracking first. Controllers optional.</strong> · No Unity. No installation. Open source.</p>
+            <p class="hero-pitch">Attach a tag. Move the object. Track it in 3D. Real objects. Real motion. Real coordinates. <em>Tangible Mixed Reality meets spatial measurement.</em></p>
           </div>
-          <p class="hero-meta">v1.0.0 · Apache-2.0 · Zero build step</p>
+          <p class="hero-meta">Apache-2.0 · Zero build step</p>
         </div>
 
-        <div class="targets-row" aria-label="1:1 calibration targets">
+        <div class="targets-row" id="markers" aria-label="1:1 calibration targets">
           <article class="target-card">
             <a class="target-main" href="./examples/target.html" title="Open 1:1 SCREEN target">
               <div class="target-head">
@@ -580,6 +600,8 @@
             </div>
           </article>
         </div>
+
+        <p class="marker-note">Print at 100% scale (no "Fit to Page") or size 1:1 with a bank/ID card (<code>85.6 × 54.0 mm</code>).</p>
       </div>
     </section>
 
@@ -592,81 +614,42 @@
         <div class="metrics-grid">
           <div class="metric-card">
             <span class="metric-val">89–90 FPS</span>
-            <span class="metric-label">Native <code>XRAnchor</code> loop</span>
-          </div>
-          <div class="metric-card">
-            <span class="metric-val">0.8–0.9 ms</span>
-            <span class="metric-label">Median main-thread readback (max 2.4 ms)</span>
-          </div>
-          <div class="metric-card">
-            <span class="metric-val">~15 ms</span>
-            <span class="metric-label">Native <code>XRAnchor</code> creation time</span>
-          </div>
-          <div class="metric-card">
-            <span class="metric-val">0 lost</span>
-            <span class="metric-label">18,777 max consecutive tracked frames</span>
+            <span class="metric-label">Native <code>XRAnchor</code> loop (camera off)</span>
           </div>
           <div class="metric-card">
             <span class="metric-val">0.27–0.37 px</span>
-            <span class="metric-label">Held-out reprojection RMS (<code>fx = fy: 866–892 px</code>)</span>
+            <span class="metric-label">Held-out reprojection RMS</span>
           </div>
           <div class="metric-card">
-            <span class="metric-val">-50.2…-53.4 ms</span>
-            <span class="metric-label">Solved capture-to-XR lag (&lt; 1 µs seed spread)</span>
+            <span class="metric-val">~15 ms</span>
+            <span class="metric-label">Native <code>XRAnchor</code> lock (0 lost)</span>
           </div>
           <div class="metric-card">
             <span class="metric-val">2–4 mm</span>
             <span class="metric-label">Cross-session repeatability (1 m span)</span>
           </div>
-          <div class="metric-card">
-            <span class="metric-val">0 deps</span>
-            <span class="metric-label">Pure ES core in <code>src/</code> · 110 passing tests</span>
-          </div>
         </div>
 
         <p class="honesty-note">
-          Meta Quest 3 · <code>OculusBrowser 157 / Chrome 157</code> · <code>1280×1080</code> · self-consistency metrics are not independent metrology certification · anchors session-scoped, calibration persisted in <code>localStorage</code>.
+          Meta Quest 3 · <code>OculusBrowser 157</code> · <code>1280×1080</code> · Zero-dependency ES core in <code>src/</code>, vendored AprilTag WASM &amp; Three.js · Self-consistency only (<code>independentlyValidated: false</code>) · <a href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/benchmarks.md" target="_blank" rel="noopener">Full benchmarks ↗</a>
         </p>
       </div>
     </section>
 
-    <section class="section" aria-labelledby="how-title">
+    <section class="section" aria-labelledby="docs-title">
       <div class="wrap">
         <div class="section-head">
-          <h2 id="how-title">How It Works</h2>
-          <p>
-            WebXR starts <code>(0, 0, 0)</code> in an arbitrary room frame, while Quest Browser's <code>getUserMedia()</code> stream exposes no camera intrinsics, no headset offset, and ~50 ms of capture delay. Calibrating all three once lets native WebXR SLAM take over.
-          </p>
+          <h2 id="docs-title">Documentation</h2>
         </div>
 
-        <div class="steps-grid">
-          <article class="step-card">
-            <span class="step-tag">01 · Calibrate Once</span>
-            <h3>Intrinsics, Hand-Eye &amp; Lag</h3>
-            <p>
-              Orbit around a flat L-angle (<code>350–352</code> or <code>370–372</code>). A background Web Worker solves focal length <code>K</code>, <code>viewerFromCameraGL</code>, and capture delay, checks held-out views, and caches the profile in <code>localStorage</code>.
-            </p>
-          </article>
-
-          <article class="step-card">
-            <span class="step-tag">02 · Lock Native XRAnchor</span>
-            <h3>Hand Off to Quest SLAM</h3>
-            <p>
-              Five steady 3-tag views create one native <code>XRAnchor</code> on the physical origin and stop the camera. Quest SLAM drives the coordinate frame at 90 FPS with zero optical fallback.
-            </p>
-          </article>
-
-          <article class="step-card">
-            <span class="step-tag">03 · SCAN or MEASURE</span>
-            <h3>Live Tags &amp; 90 FPS Probing</h3>
-            <p>
-              Use <strong>SCAN</strong> (camera on) for perimeter markers (<code>353–359</code>), 90 Hz hand-coupled tags (<code>300–301</code>), Time-Copies, and <code>[● REC]</code> paths; switch to <strong>MEASURE</strong> (camera off) for fingertip hover and pairwise <code>mm</code> distance rails.
-            </p>
-          </article>
-        </div>
-
-        <div class="formula-bar" aria-label="Coordinate transform equation">
-          worldFromL = worldFromViewer(captureTime + timeOffsetMs) × viewerFromCameraGL × cameraFromL(captureTime)
+        <div class="doc-pills">
+          <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/architecture.md" target="_blank" rel="noopener">How It Works &amp; Architecture ↗</a>
+          <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/controls.md" target="_blank" rel="noopener">Controls (SCAN / MEASURE) ↗</a>
+          <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/benchmarks.md" target="_blank" rel="noopener">Benchmarks &amp; Scope ↗</a>
+          <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/markers.md" target="_blank" rel="noopener">Markers &amp; IDs ↗</a>
+          <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/architecture.md#run-locally" target="_blank" rel="noopener">Local Dev ↗</a>
+          <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/media.md" target="_blank" rel="noopener">Media Guide ↗</a>
+          <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog ↗</a>
         </div>
       </div>
     </section>
@@ -674,14 +657,68 @@
 
   <footer class="site-footer">
     <div class="wrap footer-inner">
-      <span>M.E.S.S. – Mattern Engineering &amp; Software Solutions · Tübingen, Germany</span>
+      <span>Philipp Mattern · M.E.S.S. – Mattern Engineering &amp; Software Solutions · Tübingen, Germany</span>
       <div class="footer-links">
         <a href="https://mess.engineering/" target="_blank" rel="noopener">mess.engineering</a>
         <a href="https://wetter.mess.engineering/" target="_blank" rel="noopener">WETTER</a>
         <a href="https://github.com/PiMaV/Quest3-WebXR-AprilTag" target="_blank" rel="noopener">GitHub</a>
         <a href="./LICENSE" target="_blank" rel="noopener">Apache-2.0</a>
+        <a href="./THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener">Third-Party Notices</a>
       </div>
     </div>
   </footer>
+
+  <script>
+    (function () {
+      // Prepared drop-in media slots (keep null while MP4 assets are unpublished to avoid 404 requests).
+      var DEMO_MEDIA = { hook: null, launch: null, full: null };
+      var CLIPS = [
+        { key: 'hook', label: 'Hook · 10 s', loop: true },
+        { key: 'launch', label: 'Launch · 50 s', loop: false },
+        { key: 'full', label: 'Full · 3 min', loop: false }
+      ];
+      var available = CLIPS.filter(function (c) { return Boolean(DEMO_MEDIA[c.key]); });
+      if (!available.length) return;
+
+      var preview = document.getElementById('demoPreview');
+      var tabs = document.getElementById('clipTabs');
+      var video = document.createElement('video');
+      video.playsInline = true;
+      video.preload = 'metadata';
+
+      function selectClip(clip) {
+        video.src = DEMO_MEDIA[clip.key];
+        video.loop = clip.loop;
+        video.muted = clip.loop;
+        video.autoplay = clip.loop;
+        video.controls = !clip.loop;
+        var btns = tabs.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].classList.toggle('active', btns[i].getAttribute('data-clip') === clip.key);
+        }
+        if (clip.loop) {
+          var p = video.play();
+          if (p && p.catch) p.catch(function () {});
+        }
+      }
+
+      preview.innerHTML = '';
+      preview.appendChild(video);
+
+      if (available.length > 1) {
+        tabs.hidden = false;
+        available.forEach(function (clip) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'clip-btn';
+          btn.setAttribute('data-clip', clip.key);
+          btn.textContent = clip.label;
+          btn.addEventListener('click', function () { selectClip(clip); });
+          tabs.appendChild(btn);
+        });
+      }
+      selectClip(available[0]);
+    })();
+  </script>
 </body>
 </html>
