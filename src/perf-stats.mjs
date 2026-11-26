@@ -64,7 +64,10 @@ export function createPerfTracker({capacity=2048}={}){
     scan:makeBucket(cap),
   };
   const stepBuf=new Float32Array(cap);
+  const lagBuf=new Float32Array(cap);
   let stepHead=0,stepCount=0,stepSamples=0;
+  let lagHead=0,lagCount=0,maxLagMs=0;
+  let maxOpticalSpeedMps=0,maxCoupledSpeedMps=0;
   let maxStepMm=0,maxStepDeg=0,maxJitterMm=null,maxDriftMm=null;
   let hudVisibleFrames=0,uploadsLeft=0,uploadsRight=0,uploadsTop=0,maxHudDrawMs=0;
 
@@ -120,12 +123,31 @@ export function createPerfTracker({capacity=2048}={}){
     if(Number.isFinite(driftMm)&&(maxDriftMm==null||driftMm>maxDriftMm))maxDriftMm=driftMm;
   }
 
+  function recordOpticalLag(lagMs){
+    if(!Number.isFinite(lagMs)||lagMs<0||lagMs>=2000)return;
+    lagBuf[lagHead]=lagMs;
+    lagHead=(lagHead+1)%cap;
+    if(lagCount<cap)lagCount++;
+    if(lagMs>maxLagMs)maxLagMs=lagMs;
+  }
+
+  function recordTagSpeed(speedMps,coupled=false){
+    if(!Number.isFinite(speedMps)||speedMps<0||speedMps>=10)return;
+    if(coupled){
+      if(speedMps>maxCoupledSpeedMps)maxCoupledSpeedMps=speedMps;
+    }else{
+      if(speedMps>maxOpticalSpeedMps)maxOpticalSpeedMps=speedMps;
+    }
+  }
+
   function reset(){
     resetBucket(buckets.overall);
     resetBucket(buckets.calibrating);
     resetBucket(buckets.measure);
     resetBucket(buckets.scan);
     stepHead=0;stepCount=0;stepSamples=0;
+    lagHead=0;lagCount=0;maxLagMs=0;
+    maxOpticalSpeedMps=0;maxCoupledSpeedMps=0;
     maxStepMm=0;maxStepDeg=0;maxJitterMm=null;maxDriftMm=null;
     hudVisibleFrames=0;uploadsLeft=0;uploadsRight=0;uploadsTop=0;maxHudDrawMs=0;
   }
@@ -152,8 +174,14 @@ export function createPerfTracker({capacity=2048}={}){
         maxJitterMm:maxJitterMm!=null?round2(maxJitterMm):null,
         maxDriftMm:maxDriftMm!=null?round2(maxDriftMm):null,
       },
+      trackingBenchmark:{
+        opticalLagMs:percentiles(lagBuf,lagCount,maxLagMs),
+        maxSpeedMmPerSec:Math.round(Math.max(maxOpticalSpeedMps,maxCoupledSpeedMps)*1000),
+        maxOpticalSpeedMmPerSec:Math.round(maxOpticalSpeedMps*1000),
+        maxCoupledSpeedMmPerSec:Math.round(maxCoupledSpeedMps*1000),
+      },
     };
   }
 
-  return {recordFrame,recordHudFrame,recordHudUpload,recordAnchorStep,reset,snapshot};
+  return {recordFrame,recordHudFrame,recordHudUpload,recordAnchorStep,recordOpticalLag,recordTagSpeed,reset,snapshot};
 }

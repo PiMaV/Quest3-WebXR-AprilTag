@@ -242,6 +242,10 @@ test('createPerfTracker records per-mode percentiles, drops, HUD counts, anchor 
 
   tracker.recordAnchorStep(0.15,0.02,0.4,0.8);
   tracker.recordAnchorStep(1.25,0.18,1.5,1.1);
+  tracker.recordOpticalLag(48.5);
+  tracker.recordOpticalLag(112.0);
+  tracker.recordTagSpeed(0.42,false);
+  tracker.recordTagSpeed(0.76,true);
 
   snap=tracker.snapshot();
   assert.equal(snap.frameTiming.overall.frames,14);
@@ -272,6 +276,10 @@ test('createPerfTracker records per-mode percentiles, drops, HUD counts, anchor 
   assert.equal(snap.anchorStability.maxStepDeg,0.18);
   assert.equal(snap.anchorStability.maxJitterMm,1.5);
   assert.equal(snap.anchorStability.maxDriftMm,1.1);
+  assert.equal(snap.trackingBenchmark.opticalLagMs.max,112);
+  assert.equal(snap.trackingBenchmark.maxOpticalSpeedMmPerSec,420);
+  assert.equal(snap.trackingBenchmark.maxCoupledSpeedMmPerSec,760);
+  assert.equal(snap.trackingBenchmark.maxSpeedMmPerSec,760);
 
   tracker.reset();
   snap=tracker.snapshot();
@@ -279,6 +287,8 @@ test('createPerfTracker records per-mode percentiles, drops, HUD counts, anchor 
   assert.equal(snap.hud.visibleFrames,0);
   assert.equal(snap.hud.uploadsLeft,0);
   assert.equal(snap.anchorStability.stepSamples,0);
+  assert.equal(snap.trackingBenchmark.opticalLagMs,null);
+  assert.equal(snap.trackingBenchmark.maxSpeedMmPerSec,0);
 });
 
 test('createAdaptiveQualityController transitions smoothly fluid -> refined -> crisp when still and drops immediately on movement',()=>{
@@ -349,6 +359,54 @@ test('createAdaptiveQualityController transitions smoothly fluid -> refined -> c
   assert.ok(st.tierFrames.fluid>=4&&st.tierFrames.refined>=1&&st.tierFrames.crisp>=2);
   aq.reset();
   assert.equal(aq.stats().transitions,0);
+});
+
+test('createAdaptiveQualityController opt-in longRange keeps fluid dec=2 fast, enables decimate=1 when steady, and backs off under <72 FPS',()=>{
+  const aq=createAdaptiveQualityController({mode:'auto',longRange:false});
+  assert.equal(aq.getLongRange(),false);
+  aq.update({angDegPerSec:1,linMPerSec:0,nowMs:0});
+  let s=aq.update({angDegPerSec:1,linMPerSec:0,nowMs:1300,xrFps:90});
+  assert.equal(s.tier,'crisp');
+  assert.equal(s.scanDecimate,1.5);
+  assert.equal(s.longRangeActive,false);
+
+  // Enable long-range while steady (crisp) at 90 FPS -> decimate 1 @ 6 Hz
+  s=aq.setLongRange(true);
+  assert.equal(aq.getLongRange(),true);
+  assert.equal(s.longRange,true);
+  assert.equal(s.longRangeActive,true);
+  assert.equal(s.scanDecimate,1);
+  assert.equal(s.scanMaxHz,6);
+
+  // Moving in auto long-range dynamically stays on full-speed fluid decimate=2 @ 12 Hz (never penalizing hand/motion speed)
+  s=aq.update({angDegPerSec:25,linMPerSec:0.2,nowMs:1400,xrFps:90});
+  assert.equal(s.tier,'fluid');
+  assert.equal(s.longRangeActive,false);
+  assert.equal(s.scanDecimate,2);
+  assert.equal(s.scanMaxHz,12);
+
+  // Settle again at 88 FPS -> automatically switches back up to long-range decimate 1
+  aq.update({angDegPerSec:1,linMPerSec:0,nowMs:1500,xrFps:88});
+  s=aq.update({angDegPerSec:1,linMPerSec:0,nowMs:2050,xrFps:88});
+  assert.equal(s.tier,'refined');
+  assert.equal(s.scanDecimate,1);
+  assert.equal(s.longRangeActive,true);
+
+  // FPS drops below 72 -> automatically backs off to decimate 1.5
+  s=aq.update({angDegPerSec:1,linMPerSec:0,nowMs:2200,xrFps:69});
+  assert.equal(s.longRangeActive,false);
+  assert.equal(s.scanDecimate,1.5);
+  assert.equal(s.scanMaxHz,10);
+
+  // Hysteresis band (75 FPS) keeps backoff active until >= 78 FPS
+  s=aq.update({angDegPerSec:1,linMPerSec:0,nowMs:2400,xrFps:75});
+  assert.equal(s.longRangeActive,false);
+  assert.equal(s.scanDecimate,1.5);
+
+  // Recovers at >= 78 FPS
+  s=aq.update({angDegPerSec:1,linMPerSec:0,nowMs:2600,xrFps:80});
+  assert.equal(s.longRangeActive,true);
+  assert.equal(s.scanDecimate,1);
 });
 
 test('perimeterFence.version tracks mutations and stays constant during idle MEASURE frames',()=>{

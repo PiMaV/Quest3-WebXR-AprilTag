@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
-import {createAprilTagDetector,projectPriorRois} from '../src/detector.mjs';
+import {createAprilTagDetector,prioritizeFocusCandidates,projectPriorRois} from '../src/detector.mjs';
 import {prepareRgbaFrame} from '../src/frame-evidence.mjs';
 import {vectorRigid} from '../src/runtime.mjs';
 
@@ -161,6 +161,18 @@ test('detectTwoStage and detectTrackedRoi match full-frame dec=1 corner accuracy
       assert.ok(Math.hypot(m.corners[i].x-ref.corners[i].x,m.corners[i].y-ref.corners[i].y)<0.15);
     }
   }
+
+  // Focus-ROI fast near-tracking hits 2 tags directly without coarse scan and falls back cleanly on miss.
+  const focusHit=detector.detectFocusRois(gray,W,H,[[210,210,510,510]]);
+  assert.equal(focusHit.focusHit,true);
+  assert.equal(focusHit.coarseMs,0);
+  assert.equal(focusHit.roiCount,1);
+  const fIds=new Set(focusHit.markers.map(m=>m.id));
+  assert.ok(fIds.has(350)&&fIds.has(351)&&fIds.has(352));
+
+  const focusMiss=detector.detectFocusRois(gray,W,H,[[20,20,120,120]],{fallbackOpts:{coarseDecimate:2}});
+  assert.equal(focusMiss.focusHit,false);
+  assert.equal(focusMiss.markers.length,5);
 });
 
 function paintFractionalTagGray(gray,width,height,code,{sizePx=14,ox=632,oy=532,blur=false}={}){
@@ -263,6 +275,12 @@ test('detectTwoStage extends detection range via coarseDecimate=1.5 (3A) and pri
   assert.equal(pulse.markers[0].id,350);
   assert.ok(!pulse.markers[0].softFallback,'refined 16 px pulse marker should not be flagged softFallback');
   assert.equal(pulse.roiCount,1);
+
+  // Case 4 (Long-Range coarseDecimate=1): rescues blurred 14 px tag from coarse pass even if refineEdges=1 ROI drops it.
+  const far=detector.detectTwoStage(gray14,W,H,{coarseDecimate:1});
+  assert.equal(far.markers.length,1,'coarseDecimate=1 must rescue 14 px blurred tag');
+  assert.equal(far.markers[0].id,350);
+  assert.equal(far.markers[0].softFallback,true);
 });
 
 test('projectPriorRois projects L-frame 3D anchors into priority-capped CV image ROIs with GL->CV sign handling',()=>{
@@ -298,4 +316,74 @@ test('projectPriorRois projects L-frame 3D anchors into priority-capped CV image
     worldFromAnchor:I,worldFromViewer:I,viewerFromCameraGL:I,K,width:1280,height:1080,
   });
   assert.equal(merged.length,1);
+});
+
+test('detectFocusRois recovers motion-blurred tags via unrefined ROI retry inside fast Focus-ROI path',async()=>{
+  const vendorDir=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../vendor/apriltag');
+  const src=fs.readFileSync(path.join(vendorDir,'apriltag_wasm.js'),'utf8');
+  const AprilTagWasm=new Function('require','__dirname','__filename',`${src}; return AprilTagWasm;`)(
+    createRequire(import.meta.url),vendorDir,path.join(vendorDir,'apriltag_wasm.js'),
+  );
+  const wasmBinary=fs.readFileSync(path.join(vendorDir,'apriltag_wasm.wasm'));
+  const wasm=await AprilTagWasm({wasmBinary});
+  const detector=createAprilTagDetector(wasm,1);
+
+  const W=1280,H=1080,cell=5,ox=500,oy=400,blurPx=9;
+  const sharp=new Float32Array(W*H).fill(180);
+  const size=cell*8,qPad=cell*2;
+  for(let y=oy-qPad;y<oy+size+qPad;y++)for(let x=ox-qPad;x<ox+size+qPad;x++)sharp[y*W+x]=240;
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      let val=20;
+      if(r>0&&r<7&&c>0&&c<7){
+        const bit=(r-1)*6+(c-1);
+        val=Number((0x89ded4ea1n>>BigInt(35-bit))&1n)?240:20;
+      }
+      for(let dy=0;dy<cell;dy++)for(let dx=0;dx<cell;dx++)sharp[(oy+r*cell+dy)*W+(ox+c*cell+dx)]=val;
+    }
+  }
+  const blurred=new Uint8Array(W*H).fill(180);
+  const half=Math.floor(blurPx/2);
+  for(let y=oy-qPad;y<oy+size+qPad;y++){
+    for(let x=ox-qPad-blurPx;x<ox+size+qPad+blurPx;x++){
+      let sum=0;
+      for(let dx=0;dx<blurPx;dx++)sum+=sharp[y*W+Math.min(W-1,Math.max(0,x-half+dx))];
+      blurred[y*W+x]=Math.round(sum/blurPx);
+    }
+  }
+
+  const res=detector.detectFocusRois(blurred,W,H,[[ox-60,oy-60,ox+size+60,oy+size+60]]);
+  assert.equal(res.focusHit,true);
+  assert.equal(res.markers.length,1);
+  assert.equal(res.markers[0].id,350);
+  assert.equal(res.markers[0].softFallback,true);
+});
+
+test('prioritizeFocusCandidates prioritizes active targets over static tags and picks closest-to-camera first',()=>{
+  const candidates=[
+    {tagId:309,recording:false,handCoupled:false,moving:false,distToCameraM:0.35,apparentEdgePx:60},
+    {tagId:310,recording:false,handCoupled:false,moving:true,distToCameraM:1.10,apparentEdgePx:24},
+    {tagId:305,recording:true,handCoupled:false,moving:true,distToCameraM:0.55,apparentEdgePx:42},
+    {tagId:306,recording:false,handCoupled:false,moving:true,distToCameraM:0.45,apparentEdgePx:50},
+    {tagId:311,recording:false,handCoupled:true,moving:true,distToCameraM:0.40,apparentEdgePx:48},
+  ];
+  // Active targets exclude resting static tag #309; recording/coupled #311 (0.40m) & #305 (0.55m) outrank uncoupled #306/#310.
+  const two=prioritizeFocusCandidates(candidates,{maxCount:2});
+  assert.deepEqual(two.map(c=>c.tagId),[311,305]);
+
+  // Single recording pendulum + resting nearby table tags -> picks ONLY the recording pendulum so it gets 1 tight ~9-20ms ROI.
+  const singlePendulum=prioritizeFocusCandidates([
+    {tagId:309,recording:false,handCoupled:false,moving:false,distToCameraM:0.35,apparentEdgePx:60},
+    {tagId:310,recording:false,handCoupled:false,moving:false,distToCameraM:0.40,apparentEdgePx:54},
+    {tagId:305,recording:true,handCoupled:false,moving:true,distToCameraM:0.70,apparentEdgePx:36},
+  ],{maxCount:2});
+  assert.deepEqual(singlePendulum.map(c=>c.tagId),[305]);
+
+  // When only close static tags are visible, sorts nearest-to-camera first (with apparentEdgePx tie-break).
+  const staticOnly=prioritizeFocusCandidates([
+    {tagId:301,distToCameraM:0.95,apparentEdgePx:28},
+    {tagId:302,distToCameraM:0.50,apparentEdgePx:45},
+    {tagId:303,distToCameraM:0.50,apparentEdgePx:52},
+  ],{maxCount:2});
+  assert.deepEqual(staticOnly.map(c=>c.tagId),[303,302]);
 });

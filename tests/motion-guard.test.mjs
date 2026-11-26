@@ -158,15 +158,21 @@ test('evaluateCarriedJumpGuard accepts continuous walking without deadlock while
   const gWalk2=evaluateCarriedJumpGuard({prevMatrix:p1,nextMatrix:pFast,dtSinceLastMs:100,confidence:0.50,atMs:1200});
   assert.equal(gWalk2.accept,true);
 
-  // Single-frame 300 mm PnP spike in 100 ms is rejected on frame 1 and sets pendingJump.
-  const pSpike=vectorRigid([0,0,0,0.45,0,0]);
+  // Fast 1.30 m/s optical step (130 mm in 100 ms) also accepts directly without stalling above 500 mm/s.
+  const pSprint=vectorRigid([0,0,0,0.28,0,0]);
+  const gSprint=evaluateCarriedJumpGuard({prevMatrix:pFast,nextMatrix:pSprint,dtSinceLastMs:100,confidence:0.85,atMs:1250});
+  assert.equal(gSprint.accept,true);
+  assert.equal(gSprint.nextPendingJump,null);
+
+  // Single-frame 470 mm PnP spike in 100 ms (> 220 mm guard) is rejected on frame 1 and sets pendingJump.
+  const pSpike=vectorRigid([0,0,0,0.62,0,0]);
   const gSpike=evaluateCarriedJumpGuard({prevMatrix:pFast,nextMatrix:pSpike,dtSinceLastMs:100,confidence:0.85,atMs:1300});
   assert.equal(gSpike.accept,false);
   assert.equal(gSpike.reason,'jump');
   assert.ok(gSpike.nextPendingJump);
 
   // If frame 2 returns to normal trajectory, pendingJump clears; if frame 2 continues at spike+60 mm in 100 ms, it confirms.
-  const pSpikeCont=vectorRigid([0,0,0,0.51,0,0]);
+  const pSpikeCont=vectorRigid([0,0,0,0.68,0,0]);
   const gConfirm=evaluateCarriedJumpGuard({
     prevMatrix:pFast,
     nextMatrix:pSpikeCont,

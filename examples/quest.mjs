@@ -7,8 +7,9 @@ import {
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
   createPerfTracker,ADAPTIVE_QUALITY_MODES,createAdaptiveQualityController,
-  createInstancedPool,createAxesBatch,createBadgeAtlas,createBillboardAtlasMesh,
-  projectPriorRois,fuseCommittedTrailSegment,smoothLineTail,
+  createInstancedPool,createAxesBatch,createPathTubeMesh,createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh,
+  projectPriorRois,prioritizeFocusCandidates,fuseCommittedTrailSegment,smoothLineTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius,
+  createTagMotionPredictor,
 } from '../src/index.mjs';
 import {associateAnchorCapture,auditAnchorObservation,createAnchorAudit} from '../src/anchor-audit.mjs';
 import {createPerimeterFence,isPerimeterTag,perimeterRole,FENCE_HEIGHT_M} from '../src/perimeter-fence.mjs';
@@ -20,15 +21,18 @@ const EXTRA_COLORS=[0x38bdf8,0xf59e0b,0xa78bfa,0x34d399,0xfb7185,0xfacc15];
 const urlParams=new URLSearchParams(location.search);
 const aaToggleEl=$('aaToggle');
 const qualityModeEl=$('qualityMode');
+const longRangeEl=$('longRange');
 if(urlParams.has('aa')&&aaToggleEl)aaToggleEl.checked=urlParams.get('aa')!=='0';
 const reqQuality=urlParams.get('quality');
 if(reqQuality&&ADAPTIVE_QUALITY_MODES.includes(reqQuality)&&qualityModeEl)qualityModeEl.value=reqQuality;
+if(urlParams.has('range')&&longRangeEl)longRangeEl.checked=urlParams.get('range')==='far'||urlParams.get('range')==='1';
 const currentAaEnabled=()=>urlParams.has('aa')?urlParams.get('aa')!=='0':Boolean($('aaToggle')?.checked??true);
 const currentQualityMode=()=>{
   const v=$('qualityMode')?.value;
   return ADAPTIVE_QUALITY_MODES.includes(v)?v:'auto';
 };
-const adaptiveQuality=createAdaptiveQualityController({mode:currentQualityMode()});
+const currentLongRangeEnabled=()=>urlParams.has('range')?(urlParams.get('range')==='far'||urlParams.get('range')==='1'):Boolean($('longRange')?.checked??false);
+const adaptiveQuality=createAdaptiveQualityController({mode:currentQualityMode(),longRange:currentLongRangeEnabled()});
 let appliedFoveation=null,lastQualityState=adaptiveQuality.state();
 const _prevViewerPoseBuf=new Float32Array(16);
 let hasPrevViewerPose=false,prevViewerPoseMs=0,smoothedHeadAngDegS=0,smoothedHeadLinMS=0;
@@ -80,10 +84,13 @@ function warmupSceneShaders(r,scn,cam){
   const tmpSpriteMat=new THREE.SpriteMaterial({color:0xffffff,transparent:true,depthTest:false,depthWrite:false});
   const tmpSprite=new THREE.Sprite(tmpSpriteMat);
   scn.add(tmpInst,tmpAxes,tmpLine,tmpSprite);
+  const prevFrameCount=frameBatch.mesh.count;
+  if(prevFrameCount===0)frameBatch.mesh.count=1;
   try{
     r.compile(scn,cam);
     shadersWarmed=true;
   }catch{}
+  frameBatch.mesh.count=prevFrameCount;
   scn.remove(tmpInst,tmpAxes,tmpLine,tmpSprite);
   tmpInst.dispose();tmpGeo.dispose();tmpInstMat.dispose();
   tmpAxes.geometry.dispose();tmpAxes.material.dispose();
@@ -96,6 +103,12 @@ if(qualityModeEl){
   qualityModeEl.onchange=()=>{
     const m=currentQualityMode();
     adaptiveQuality.setMode(m);
+    lastQualityState=adaptiveQuality.state();
+  };
+}
+if(longRangeEl){
+  longRangeEl.onchange=()=>{
+    adaptiveQuality.setLongRange(currentLongRangeEnabled());
     lastQualityState=adaptiveQuality.state();
   };
 }
@@ -483,6 +496,14 @@ function cycleAdaptiveQualityMode(){
   playModeTick('pin');
   showHudToast(`QUALITY: ${next.toUpperCase()}`,next==='crisp'?'#38bdf8':(next==='fluid'?'#f59e0b':'#4ade80'),1500);
 }
+function toggleLongRangeMode(){
+  const next=!adaptiveQuality.getLongRange();
+  adaptiveQuality.setLongRange(next);
+  lastQualityState=adaptiveQuality.state();
+  if(longRangeEl)longRangeEl.checked=next;
+  playModeTick(next?'scan':'pin');
+  showHudToast(next?'RANGE: EXP FAR (DEC 1 IDLE)':'RANGE: AUTO (MAX DEC 1.5)',next?'#22d3ee':'#94a3b8',1600);
+}
 let leftPalmDwellSince=null,leftMenuOpenUntil=0,leftWristPrev=null,leftWristSpeed=0,leftDotTapSince=null;
 let leftPalmFacingViewer=false,leftMenuOpenNow=false;
 let rightPalmDwellSince=null,rightMenuOpenUntil=0,rightWristPrev=null,rightWristSpeed=0,rightDotTapSince=null;
@@ -501,7 +522,7 @@ function resetAnchorStability(){
   anchorBaseline=null;hasPrevAnchorWorld=false;anchorWinHead=0;anchorWinCount=0;
   liveJitterMm=null;liveDriftMm=null;liveDriftDeg=null;
 }
-let lastSampleStats=null,lastObs=null,lastObsAtMs=0,lastAuditRow=null,lastAuditAt=0,lastMotionState=null,rvfcWindowStart=null,rvfcWindowCount=0,rvfcHz=0,scanPulseCounter=0;
+let lastSampleStats=null,lastObs=null,lastObsAtMs=0,lastAuditRow=null,lastAuditAt=0,lastMotionState=null,rvfcWindowStart=null,rvfcWindowCount=0,rvfcHz=0,scanPulseCounter=0,focusSweepCounter=0;
 let calViewerPoses=[],lastCalCount=0,lastCalPhase='idle';
 let placedExtras=new Map(),extraPending=new Map(),movableTools=new Map(),lastDiagnostics=null,diagnostics=null;
 function pushDiagEvent(ev){
@@ -512,7 +533,8 @@ function pushDiagEvent(ev){
 const obsBuffer=createObservationBuffer({maxAgeMs:650,maxItems:16});
 const audit=createAnchorAudit({maxSamples:120});
 const handHistory=createHandHistory({maxMs:1800});
-const tagHandCoupler=createTagHandCoupler({opticalStaleTimeoutMs:750,maxUnconfirmedDriftM:0.35});
+const tagHandCoupler=createTagHandCoupler({opticalStaleTimeoutMs:380,maxUnconfirmedDriftM:0.26});
+const tagPredictor=createTagMotionPredictor();
 const context=()=>({sessionId,spaceEpoch:epoch});
 const isMovableTag=id=>id>=300&&id<=349;
 const refGroup=new THREE.Group();
@@ -987,17 +1009,19 @@ function buildSpatialPortals(rig){
 const thickFrameGeoCache=new Map();
 function getThickTagFrameGeo(edgeMm){
   if(thickFrameGeoCache.has(edgeMm))return thickFrameGeoCache.get(edgeMm);
-  const h=(edgeMm/1000)/2,b=Math.max(0.0018,edgeMm/1000*0.085),i=Math.max(0.001,h-b);
-  // Four flat border strips (8 triangles) forming a sleek 1.5 mm 3D hollow square frame.
+  const h=(edgeMm/1000)/2;
+  const i=Math.max(0.001,h-0.0004);
+  const o=h+Math.max(0.0024,(edgeMm/1000)*0.12);
+  // Four flat border strips (8 triangles) framing outward so the printed tag border stays clear.
   const pos=new Float32Array([
     // bottom strip
-    -h,-h,0,  h,-h,0,  h,-i,0,   -h,-h,0,  h,-i,0, -h,-i,0,
+    -o,-o,0,  o,-o,0,  o,-i,0,   -o,-o,0,  o,-i,0, -o,-i,0,
     // top strip
-    -h, i,0,  h, i,0,  h, h,0,   -h, i,0,  h, h,0, -h, h,0,
+    -o, i,0,  o, i,0,  o, o,0,   -o, i,0,  o, o,0, -o, o,0,
     // left strip
-    -h,-i,0, -i,-i,0, -i, i,0,   -h,-i,0, -i, i,0, -h, i,0,
+    -o,-i,0, -i,-i,0, -i, i,0,   -o,-i,0, -i, i,0, -o, i,0,
     // right strip
-     i,-i,0,  h,-i,0,  h, i,0,    i,-i,0,  h, i,0,  i, i,0,
+     i,-i,0,  o,-i,0,  o, i,0,    i,-i,0,  o, i,0,  i, i,0,
   ]);
   const geo=new THREE.BufferGeometry();
   geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
@@ -1006,19 +1030,46 @@ function getThickTagFrameGeo(edgeMm){
 }
 
 const MAX_TRAIL_WAYPOINTS=600;
+const PATHLINE_DEFAULTS=Object.freeze({
+  tubeRadiusM:0.0014,
+  tubeOpacity:0.84,
+  waypointDotRadiusM:0.0030,
+  timeCopyDotRadiusM:0.0046,
+});
 const _tmpMat4=new THREE.Matrix4();
 const _tmpScale=new THREE.Vector3(1.12,1.12,1);
+const _tmpPlaneScale=new THREE.Vector3(0.0224,0.0224,1);
 const _rodGeo=new THREE.CylinderGeometry(1,1,1,6);
 const _nodeGeo=new THREE.SphereGeometry(0.0045,8,6);
+const _waypointDotGeo=new THREE.SphereGeometry(1,8,6);
 const _closeOrbGeo=new THREE.SphereGeometry(0.0085,10,8);
 const _recOrbGeo=new THREE.SphereGeometry(0.0115,10,8);
 const _upVec=new THREE.Vector3(0,1,0);
 const _vA=new THREE.Vector3(),_vB=new THREE.Vector3(),_vDir=new THREE.Vector3();
 
-// Shared L-frame render batches & single billboarded badge atlas (~8-10 draw calls for all tags, pins, rails & fence posts).
+const frameShimmerUniforms={uTime:{value:0}};
+const frameBatchMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.92,side:THREE.DoubleSide});
+frameBatchMat.customProgramCacheKey=()=>'tag-frame-shimmer-v1';
+frameBatchMat.onBeforeCompile=shader=>{
+  shader.uniforms.uTime=frameShimmerUniforms.uTime;
+  shader.vertexShader=shader.vertexShader
+    .replace('#include <common>','#include <common>\nvarying vec2 vFrameUv;\nvarying float vFramePhase;')
+    .replace(
+      '#include <begin_vertex>',
+      '#include <begin_vertex>\nvFrameUv = position.xy / 0.0124;\n#ifdef USE_INSTANCING\nvFramePhase = dot(instanceMatrix[3].xyz, vec3(19.37, 43.13, 27.91));\n#else\nvFramePhase = 0.0;\n#endif',
+    );
+  shader.fragmentShader=shader.fragmentShader
+    .replace('#include <common>','#include <common>\nuniform float uTime;\nvarying vec2 vFrameUv;\nvarying float vFramePhase;')
+    .replace(
+      '#include <color_fragment>',
+      '#include <color_fragment>\nfloat ang = atan(vFrameUv.y, vFrameUv.x);\nfloat sweep = pow(0.5 + 0.5 * sin(ang * 2.0 - uTime * 2.4 + vFramePhase), 6.0);\nfloat corner = smoothstep(0.60, 0.96, min(abs(vFrameUv.x), abs(vFrameUv.y)));\nfloat twinkle = corner * pow(0.5 + 0.5 * sin(uTime * 4.0 + vFramePhase * 2.3 + ang * 4.0), 4.0);\nfloat glint = clamp(sweep * 0.40 + twinkle * 0.60, 0.0, 0.80);\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), glint * 0.68);\ndiffuseColor.a = min(1.0, diffuseColor.a + glint * 0.14);',
+    );
+};
+
+// Shared L-frame render batches & single billboarded/oriented badge atlases for all tags, pins, rails & fence posts.
 const frameBatch=createInstancedPool(
   getThickTagFrameGeo(20),
-  new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.90,side:THREE.DoubleSide}),
+  frameBatchMat,
   64,
   {name:'frameBatch'},
 );
@@ -1055,7 +1106,7 @@ const zRingBatch=createInstancedPool(
 const recOrbBatch=createInstancedPool(
   _recOrbGeo,
   new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.35,depthTest:false,depthWrite:false}),
-  32,
+  64,
   {renderOrder:11,name:'recOrbBatch'},
 );
 const closeOrbBatch=createInstancedPool(
@@ -1067,10 +1118,12 @@ const closeOrbBatch=createInstancedPool(
 const axesBatch=createAxesBatch(64);
 const badgeAtlas=createBadgeAtlas({width:1024,height:2304,cellW:256,cellH:96});
 const badgeMesh=createBillboardAtlasMesh(badgeAtlas,96,{renderOrder:12,depthTest:false});
+const tagFaceAtlas=createBadgeAtlas({width:512,height:1024,cellW:128,cellH:128});
+const tagFaceMesh=createOrientedAtlasMesh(tagFaceAtlas,32,{renderOrder:6,depthTest:true,depthWrite:false});
 root.add(
   frameBatch.mesh,overlayFrameBatch.mesh,rodBatch.mesh,overlayRodBatch.mesh,
   nodeBatch.mesh,zRingBatch.mesh,recOrbBatch.mesh,closeOrbBatch.mesh,
-  axesBatch.lines,badgeMesh.mesh,
+  axesBatch.lines,badgeMesh.mesh,tagFaceMesh.mesh,
 );
 
 const _framePoseBuf=new Float32Array(16);
@@ -1097,11 +1150,40 @@ function localZOffset(mat16,zOff){
 function drawStaticBadgeAtlas(slot,cacheKey,text,border='#38bdf8'){
   if(slot<0)return;
   badgeAtlas.draw(slot,cacheKey,(ctx,w,h)=>{
-    ctx.scale(w/200,h/64);
-    ctx.fillStyle='rgba(15,23,42,0.88)';ctx.fillRect(0,0,200,64);
-    ctx.strokeStyle=border;ctx.lineWidth=4;ctx.strokeRect(2,2,196,60);
-    ctx.fillStyle='#f8fafc';ctx.font='bold 24px system-ui';ctx.textAlign='center';
-    ctx.fillText(text,100,42);ctx.textAlign='left';
+    ctx.scale(w/180,h/64);
+    ctx.fillStyle='rgba(8,14,24,0.74)';
+    ctx.beginPath();ctx.roundRect(4,4,172,56,18);ctx.fill();
+    ctx.strokeStyle=border;ctx.lineWidth=3;ctx.stroke();
+    ctx.fillStyle='#f8fafc';ctx.font='bold 28px ui-monospace,monospace';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(text,90,33,156);
+    ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  });
+}
+
+function drawTagMatrixFace(slot,cacheKey,idText,accentCss,{fill='rgba(6,11,20,0.88)',statusSymbol='',statusColor=null}={}){
+  if(slot<0)return;
+  tagFaceAtlas.draw(slot,cacheKey,(ctx,w,h)=>{
+    ctx.scale(w/128,h/128);
+    ctx.fillStyle=fill;
+    ctx.fillRect(0,0,128,128);
+    ctx.strokeStyle=accentCss;
+    ctx.lineWidth=4;
+    ctx.strokeRect(4,4,120,120);
+    if(statusSymbol){
+      ctx.fillStyle=statusColor||accentCss;
+      ctx.font='bold 22px system-ui,sans-serif';
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(statusSymbol,64,28);
+      ctx.fillStyle='#f8fafc';
+      ctx.font='bold 42px ui-monospace,monospace';
+      ctx.fillText(idText,64,78,108);
+    }else{
+      ctx.fillStyle='#f8fafc';
+      ctx.font='bold 46px ui-monospace,monospace';
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(idText,64,66,108);
+    }
+    ctx.textAlign='left';ctx.textBaseline='alphabetic';
   });
 }
 
@@ -1158,6 +1240,7 @@ function buildReferenceMesh(rig){
 function createExtraVisual(tagId,edgeMm,lFromTag){
   const s=Math.max(0.55,Math.min(2.2,edgeMm/20));
   const color=EXTRA_COLORS[tagId%EXTRA_COLORS.length];
+  const colorCss=`#${color.toString(16).padStart(6,'0')}`;
   const frameSlot=frameBatch.alloc();
   if(frameSlot>=0){
     setTagFramePose(frameBatch,frameSlot,lFromTag,0.0012,edgeMm/20);
@@ -1167,14 +1250,13 @@ function createExtraVisual(tagId,edgeMm,lFromTag){
   if(axesSlot>=0){
     axesBatch.setPose(axesSlot,lFromTag,0.025*s);
   }
-  const bs=Math.min(1.2,Math.max(0.75,s));
-  const badgeSlot=badgeAtlas.acquire();
-  if(badgeSlot>=0){
-    const label=`#${tagId} (${edgeMm}mm)`;
-    drawStaticBadgeAtlas(badgeSlot,`extra:${tagId}:${edgeMm}`,label,'#38bdf8');
-    badgeMesh.setQuad(badgeSlot,localZOffset(lFromTag,0.022*s),0.048*bs,0.0155*bs,true);
+  const faceSlot=tagFaceAtlas.acquire();
+  if(faceSlot>=0){
+    const faceEdge=Math.max(0.008,edgeMm/1000-0.0006);
+    drawTagMatrixFace(faceSlot,`extra:${tagId}:${edgeMm}:${colorCss}`,`${tagId}`,colorCss);
+    tagFaceMesh.setOrientedQuad(faceSlot,lFromTag,faceEdge,faceEdge,0.0009,true);
   }
-  return {frameSlot,axesSlot,badgeSlot};
+  return {frameSlot,axesSlot,faceSlot};
 }
 
 function setRodSegment(mesh,ax,ay,az,bx,by,bz,radius=0.0018){
@@ -1287,7 +1369,7 @@ function getOrCreatePerimeterTagVisual(m){
   const axesSlot=axesBatch.alloc();
   const badgeSlot=badgeAtlas.acquire();
   if(badgeSlot>=0){
-    drawStaticBadgeAtlas(badgeSlot,`perim:${m.id}:${m.role}`,`#${m.id} ${m.role} (20mm)`,'#22d3ee');
+    drawStaticBadgeAtlas(badgeSlot,`perim:${m.role}`,m.role,'#22d3ee');
   }
   const wp={
     isStatic:true,isPerimeter:true,perimeterRole:m.role,tagId:m.id,edgeMm:20,index:0,
@@ -1334,7 +1416,7 @@ function syncPerimeterTagVisuals(now){
     vis.wp.xMm=m.pos[0]*1000;
     vis.wp.yMm=m.pos[1]*1000;
     if(matMoved)syncPinnedWaypointPose(vis.wp);
-    badgeMesh.setQuad(vis.badgeSlot,localZOffset(m.matrix,0.022),0.056,0.017,isPerimeterBadgeVisible(vis));
+    badgeMesh.setQuad(vis.badgeSlot,localZOffset(m.matrix,0.018),0.026,0.012,isPerimeterBadgeVisible(vis));
   }
   for(const [id,vis] of perimeterTagVisuals){
     if(!activeIds.has(id)){
@@ -1356,7 +1438,7 @@ function getOrCreateFencePost(v){
   if(capSlot>=0)nodeBatch.setColor(capSlot,baseHex);
   const badgeSlot=badgeAtlas.acquire();
   if(badgeSlot>=0){
-    drawStaticBadgeAtlas(badgeSlot,`fpost:${v.id}:${v.role}:${v.fixed?1:0}`,`${v.id} ${v.role}`,v.fixed?'#4ade80':'#22d3ee');
+    drawStaticBadgeAtlas(badgeSlot,`fpost:${v.id}:${v.role}:${v.fixed?1:0}`,v.role,v.fixed?'#4ade80':'#22d3ee');
   }
   post={id:v.id,fixed:v.fixed,rodSlot,capSlot,badgeSlot,hot:false};
   fencePostCache.set(v.id,post);
@@ -1434,7 +1516,7 @@ function syncFenceVisuals(now,dtSec=0,force=false){
     rodBatch.setVisible(post.rodSlot,true);
     nodeBatch.setPoint(post.capSlot,ax,ay,h,0.93);
     nodeBatch.setVisible(post.capSlot,true);
-    badgeMesh.setQuad(post.badgeSlot,[ax,ay,h+0.022],0.052,0.017,true);
+    badgeMesh.setQuad(post.badgeSlot,[ax,ay,h+0.016],0.028,0.0125,true);
     if(!a.fixed){
       const isHot=Boolean(extraScanActive&&a.lastAt>0&&now-a.lastAt<480);
       if(post.hot!==isHot){
@@ -1663,6 +1745,14 @@ modeFenceSprite.scale.set(0.072,0.030,1);
 modeFenceSprite.renderOrder=14;
 modePillGroup.add(modeFenceSprite);
 
+const modeClearCanvas=document.createElement('canvas');modeClearCanvas.width=240;modeClearCanvas.height=96;
+const modeClearTex=makeUiTexture(modeClearCanvas);
+const modeClearSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeClearTex,transparent:true,depthTest:false,depthWrite:false}));
+modeClearSprite.position.set(-0.172,0,0);
+modeClearSprite.scale.set(0.072,0.030,1);
+modeClearSprite.renderOrder=14;
+modePillGroup.add(modeClearSprite);
+
 const modeInfoCanvas=document.createElement('canvas');modeInfoCanvas.width=96;modeInfoCanvas.height=96;
 const modeInfoTex=makeUiTexture(modeInfoCanvas);
 const modeInfoSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeInfoTex,transparent:true,depthTest:false,depthWrite:false}));
@@ -1680,10 +1770,36 @@ modeHelpSprite.visible=false;
 modeHelpSprite.renderOrder=15;
 modePillGroup.add(modeHelpSprite);
 
-let hoveredModePill=false,hoveredModeMain=false,hoveredModeInfo=false,hoveredModeFence=false;
+let hoveredModePill=false,hoveredModeMain=false,hoveredModeInfo=false,hoveredModeFence=false,hoveredModeClear=false;
 let modePillPokeSince=null,modePillPokeConsumed=false,modePillCooldownUntil=0,lastModePillKey='';
 let modeFencePokeSince=null,modeFencePokeConsumed=false,modeFenceCooldownUntil=0,lastModeFenceKey='';
+let modeClearPokeSince=null,modeClearPokeConsumed=false,modeClearCooldownUntil=0,lastModeClearKey='';
 let modeHelpOpen=false,modeInfoPokeSince=null,modeInfoPokeConsumed=false,modeInfoCooldownUntil=0,lastModeInfoKey='',lastModeHelpKey='';
+const userItemCount=()=>movableTools.size+placedExtras.size+pinnedPoints.size;
+function drawModeClearBtn(itemCount,hot,prog=0){
+  const hasItems=itemCount>0;
+  const key=`${itemCount}:${hot?1:0}:${Math.round(prog*20)}`;
+  if(key===lastModeClearKey)return;
+  lastModeClearKey=key;
+  const ctx=modeClearCanvas.getContext('2d');
+  ctx.clearRect(0,0,240,96);
+  ctx.fillStyle=hasItems?(hot?'rgba(62,28,8,0.96)':'rgba(32,20,10,0.92)'):'rgba(15,23,42,0.78)';
+  ctx.beginPath();ctx.roundRect(4,4,232,88,24);ctx.fill();
+  ctx.strokeStyle=hot&&hasItems?'#fde047':(hasItems?'#f59e0b':'#475569');
+  ctx.lineWidth=hot&&hasItems?5:3.5;ctx.stroke();
+  if(prog>0.02&&hasItems){
+    ctx.fillStyle='rgba(245,158,11,0.34)';
+    ctx.beginPath();ctx.roundRect(6,6,Math.max(16,228*Math.min(1,prog)),84,22);ctx.fill();
+  }
+  ctx.fillStyle=hot&&hasItems?'#ffffff':(hasItems?'#fbbf24':'#64748b');
+  ctx.font='bold 24px system-ui,sans-serif';ctx.textAlign='center';
+  ctx.fillText('↺ CLEAR ALL',120,44);
+  ctx.fillStyle=hasItems?'#fde68a':'#64748b';
+  ctx.font='bold 16px ui-monospace,monospace';
+  ctx.fillText(hasItems?`${itemCount} ITEMS`:'EMPTY',120,74);
+  ctx.textAlign='left';
+  modeClearTex.needsUpdate=true;
+}
 function drawModeFenceBtn(fStatus,dynCount,hot,prog=0){
   const eff=(fStatus==='offered'&&perimeterOfferSuppressed)?'idle':fStatus;
   const key=`${eff}:${dynCount}:${hot?1:0}:${Math.round(prog*20)}`;
@@ -1771,15 +1887,15 @@ function drawModeHelpCard(scanActive){
 
   const lines=scanActive?[
     '• Look at AprilTags (300–359) to auto-lock in 3D',
-    '• Grab & move a tag → live 90 Hz hand tracking',
-    '• Hold [● REC] above tag (0.65 s) → record 3D path',
-    '• Hold locked tag (0.55 s) → Time-Copy snapshot',
+    '• Grab & move tag/ruler → 90 Hz hand tracking',
+    '• Hold [● REC] above tag → record speed path',
+    '• Hold [⏱ MARK] below tag → mark snapshot',
     '• Poke [■ MEASURE] or Left Fist → switch mode',
   ]:[
-    '• Hover any tag/waypoint → live X / Y / Z coords',
-    '• Pinch / Trigger tag → pin & measure distance',
-    '• Pin 2+ tags → automatic 3D distance rails',
-    '• Touch sparkling SETUP glow → mess.engineering panel',
+    '• Hover any tag/point → X/Y/Z, speed & 3D square',
+    '• Pinch / Trigger point → pin & measure distance',
+    '• Pin 2+ points → automatic 3D distance rails',
+    '• Poke [↺ CLEAR ALL] on table → reset tags & trails',
     '• Poke [● SCAN] or Left Fist → scan more tags',
   ];
   ctx.fillStyle='#e2e8f0';ctx.font='19px system-ui,sans-serif';
@@ -1801,33 +1917,39 @@ function toggleModeHelp(now=performance.now()){
 function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   const anchored=Boolean(world)&&asPhase==='ready'&&(anPhase==='tracking'||anPhase==='created');
   if(!anchored){
-    modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;
+    modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;
     modePillPokeSince=null;modePillPokeConsumed=false;
     modeFencePokeSince=null;modeFencePokeConsumed=false;
+    modeClearPokeSince=null;modeClearPokeConsumed=false;
     modeInfoPokeSince=null;modeInfoPokeConsumed=false;
     modeHelpSprite.visible=false;
     return;
   }
   modePillGroup.visible=true;
+  const itemCount=userItemCount();
   const probes=frameInputs.getProbesL();
-  let bestDist=Infinity,bestInfoDist=Infinity,bestFenceDist=Infinity;
+  let bestDist=Infinity,bestInfoDist=Infinity,bestFenceDist=Infinity,bestClearDist=Infinity;
   for(const pr of probes){
     const d=Math.hypot(pr.pos[0]-0.11,pr.pos[1]+0.048,pr.pos[2]-0.032);
     const di=Math.hypot(pr.pos[0]-0.174,pr.pos[1]+0.048,pr.pos[2]-0.032);
     const df=Math.hypot(pr.pos[0]-0.020,pr.pos[1]+0.048,pr.pos[2]-0.032);
-    recordProbeProximity(pr.probeId,Math.min(d,di,df));
+    const dc=Math.hypot(pr.pos[0]+0.062,pr.pos[1]+0.048,pr.pos[2]-0.032);
+    recordProbeProximity(pr.probeId,Math.min(d,di,df,dc));
     if(d<bestDist)bestDist=d;
     if(di<bestInfoDist)bestInfoDist=di;
     if(df<bestFenceDist)bestFenceDist=df;
+    if(dc<bestClearDist)bestClearDist=dc;
   }
   hoveredModeMain=bestDist<0.044;
   hoveredModeInfo=bestInfoDist<0.034;
   hoveredModeFence=Boolean(perimeterFence)&&bestFenceDist<0.038;
-  hoveredModePill=hoveredModeMain||hoveredModeInfo||hoveredModeFence;
+  hoveredModeClear=bestClearDist<0.038;
+  hoveredModePill=hoveredModeMain||hoveredModeInfo||hoveredModeFence||hoveredModeClear;
   modePillSprite.scale.set(hoveredModeMain?0.096:0.086,hoveredModeMain?0.034:0.030,1);
   modeInfoSprite.scale.set(hoveredModeInfo?0.035:0.030,hoveredModeInfo?0.035:0.030,1);
   modeFenceSprite.visible=Boolean(perimeterFence);
   modeFenceSprite.scale.set(hoveredModeFence?0.080:0.072,hoveredModeFence?0.034:0.030,1);
+  modeClearSprite.scale.set(hoveredModeClear&&itemCount>0?0.080:0.072,hoveredModeClear&&itemCount>0?0.034:0.030,1);
 
   let prog=0;
   if(bestDist<0.038&&now>=modePillCooldownUntil){
@@ -1859,6 +1981,21 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
     if(bestFenceDist>0.050)modeFencePokeConsumed=false;
   }
 
+  let clearProg=0;
+  if(itemCount>0&&bestClearDist<0.034&&now>=modeClearCooldownUntil){
+    if(!modeClearPokeConsumed){
+      if(modeClearPokeSince==null)modeClearPokeSince=now;
+      clearProg=Math.min(1,(now-modeClearPokeSince)/350);
+      if(clearProg>=1){
+        modeClearPokeConsumed=true;modeClearPokeSince=null;modeClearCooldownUntil=now+900;
+        clearAllUserItems();
+      }
+    }
+  }else{
+    modeClearPokeSince=null;
+    if(bestClearDist>0.050)modeClearPokeConsumed=false;
+  }
+
   let infoProg=0;
   if(bestInfoDist<0.028&&now>=modeInfoCooldownUntil){
     if(!modeInfoPokeConsumed){
@@ -1878,6 +2015,7 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   if(perimeterFence){
     drawModeFenceBtn(perimeterFence.status(),perimeterFence.dynamicCount(),hoveredModeFence,fenceProg);
   }
+  drawModeClearBtn(userItemCount(),hoveredModeClear,clearProg);
   drawModeInfoBtn(modeHelpOpen,hoveredModeInfo,infoProg);
   modeHelpSprite.visible=modeHelpOpen;
   if(modeHelpOpen)drawModeHelpCard(extraScanActive);
@@ -1892,6 +2030,11 @@ const highlightFrame=new THREE.Mesh(getThickTagFrameGeo(20),highlightMat);
 highlightFrame.matrixAutoUpdate=false;
 highlightFrame.renderOrder=10;
 inspectRoot.add(highlightFrame);
+const highlightPlaneMat=new THREE.MeshBasicMaterial({color:0xfbbf24,transparent:true,opacity:0.16,side:THREE.DoubleSide,depthTest:false,depthWrite:false});
+const highlightPlane=new THREE.Mesh(new THREE.PlaneGeometry(1,1),highlightPlaneMat);
+highlightPlane.matrixAutoUpdate=false;
+highlightPlane.renderOrder=9;
+inspectRoot.add(highlightPlane);
 // Thick volumetric 3D rods (3.6 mm diameter) all meeting at the table footprint (cx, cy, 0):
 // Cyan Z: (cx,cy,cz) -> (cx,cy,0), Red X (at y=cy): (cx,cy,0) -> (0,cy,0), Green Y (down): (cx,cy,0) -> (cx,0,0).
 const zRodMat=new THREE.MeshBasicMaterial({color:0x38bdf8,transparent:true,opacity:0.95});
@@ -2102,6 +2245,11 @@ const highlightFrame2=new THREE.Mesh(getThickTagFrameGeo(20),highlight2Mat);
 highlightFrame2.matrixAutoUpdate=false;
 highlightFrame2.renderOrder=10;
 inspect2Root.add(highlightFrame2);
+const highlightPlane2Mat=new THREE.MeshBasicMaterial({color:0x38bdf8,transparent:true,opacity:0.16,side:THREE.DoubleSide,depthTest:false,depthWrite:false});
+const highlightPlane2=new THREE.Mesh(new THREE.PlaneGeometry(1,1),highlightPlane2Mat);
+highlightPlane2.matrixAutoUpdate=false;
+highlightPlane2.renderOrder=9;
+inspect2Root.add(highlightPlane2);
 const dropRod2=new THREE.Mesh(_rodGeo,zRodMat);
 inspect2Root.add(dropRod2);
 const dropRing2=new THREE.Mesh(
@@ -2152,14 +2300,14 @@ function waypointIdKey(wp){
   return `${wp.tagId}:${wp.index}`;
 }
 function waypointTitle(wp){
-  if(wp.isPerimeter)return `TAG #${wp.tagId} · ${wp.perimeterRole} (PERIM)`;
+  if(wp.isPerimeter)return `${wp.perimeterRole} · PERIMETER`;
   if(wp.isStatic)return `TAG #${wp.tagId} · STATIC`;
   if(wp.isCurrent)return `TAG #${wp.tagId} · LOCKED`;
   if(wp.isTimeCopy)return `TAG #${wp.tagId} · T${wp.timeCopyIndex}`;
   return `TAG #${wp.tagId} · PT #${wp.index}`;
 }
 function waypointShortLabel(wp){
-  if(wp.isPerimeter)return `#${wp.tagId} · ${wp.perimeterRole}`;
+  if(wp.isPerimeter)return wp.perimeterRole;
   if(wp.isStatic)return `#${wp.tagId} · STATIC`;
   if(wp.isCurrent)return `#${wp.tagId}`;
   if(wp.isTimeCopy)return `#${wp.tagId} · T${wp.timeCopyIndex}`;
@@ -2167,23 +2315,9 @@ function waypointShortLabel(wp){
 }
 
 function syncStaticTagBadges(){
-  for(const extra of placedExtras.values()){
-    if(!extra.wp||extra.badgeSlot<0)continue;
-    const k=waypointIdKey(extra.wp);
-    badgeMesh.setQuadVisible(extra.badgeSlot,!(hoveredWaypoint===extra.wp||hoveredWaypoint2===extra.wp||pinnedPoints.has(k)));
-  }
   for(const vis of perimeterTagVisuals.values()){
     if(!vis.wp||vis.badgeSlot<0)continue;
     badgeMesh.setQuadVisible(vis.badgeSlot,vis.visible&&isPerimeterBadgeVisible(vis));
-  }
-  if(!extraScanActive){
-    for(const entry of movableTools.values()){
-      if(!entry.currentPose||entry.badgeSlot<0)continue;
-      const k=waypointIdKey(entry.currentPose);
-      const show=entry.visible&&!(hoveredWaypoint===entry.currentPose||hoveredWaypoint2===entry.currentPose||pinnedPoints.has(k));
-      entry.badgeVisible=show;
-      badgeMesh.setQuadVisible(entry.badgeSlot,show);
-    }
   }
 }
 
@@ -2227,6 +2361,9 @@ function drawWaypointCard(canvas,tex,wp,probeKind,floorHeightMm,{alreadyPinned=f
     ctx.fillText('above floor',230,134);
   }
   ctx.fillStyle='#cbd5e1';ctx.font='bold 16px ui-monospace,monospace';
+  const speedText=Number.isFinite(wp.speedMps)
+    ?(wp.speedMps<1.0?` · v ${Math.round(wp.speedMps*1000)}mm/s`:` · v ${wp.speedMps.toFixed(2)}m/s`)
+    :'';
   const meta=wp.isPerimeter
     ?`PERIMETER ${wp.perimeterRole} · ${wp.edgeMm}mm · ${wp.clock}`
     :(wp.isStatic
@@ -2235,14 +2372,14 @@ function drawWaypointCard(canvas,tex,wp,probeKind,floorHeightMm,{alreadyPinned=f
         ?`LOCKED · ${wp.edgeMm}mm · ${wp.clock} · tilt ${wp.tiltDeg.toFixed(0)}°`
         :(wp.isTimeCopy
           ?`TIME-COPY · ${wp.clock} · tilt ${wp.tiltDeg.toFixed(0)}°`
-          :`t +${wp.elapsedS.toFixed(1)}s · ${wp.clock} · tilt ${wp.tiltDeg.toFixed(0)}°`)));
-  ctx.fillText(meta,16,168);
+          :`t +${wp.elapsedS.toFixed(1)}s${speedText} · tilt ${wp.tiltDeg.toFixed(0)}°`)));
+  ctx.fillText(meta,16,168,388);
   tex.needsUpdate=true;
 }
 
 function drawPinPillAtlas(slot,wp,{closeHot=false}={}){
   if(slot<0)return;
-  const idLabel=wp.isPerimeter?`#${wp.tagId}·${wp.perimeterRole}`:(wp.isStatic||wp.isCurrent?`#${wp.tagId}`:(wp.isTimeCopy?`#${wp.tagId}·T${wp.timeCopyIndex}`:`#${wp.tagId}·${wp.index}`));
+  const idLabel=wp.isPerimeter?wp.perimeterRole:(wp.isStatic||wp.isCurrent?`#${wp.tagId}`:(wp.isTimeCopy?`#${wp.tagId}·T${wp.timeCopyIndex}`:`#${wp.tagId}·${wp.index}`));
   const sz=wp.zMm>=0?'+':'';
   const zText=`Z ${sz}${wp.zMm.toFixed(0)}mm`;
   const key=`pin:${idLabel}:${zText}:${closeHot?1:0}`;
@@ -3304,6 +3441,10 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     _tmpMat4.fromArray(best.matrix).scale(_tmpScale);
     highlightFrame.matrix.copy(_tmpMat4);
     highlightFrame.matrixWorldNeedsUpdate=true;
+    _tmpPlaneScale.set((best.edgeMm/1000)*1.12,(best.edgeMm/1000)*1.12,1);
+    _tmpMat4.fromArray(best.matrix).scale(_tmpPlaneScale);
+    highlightPlane.matrix.copy(_tmpMat4);
+    highlightPlane.matrixWorldNeedsUpdate=true;
     // Thick 3D rods all meeting at the table footprint (cx, cy, 0):
     setRodSegment(dropRod,cx,cy,cz,cx,cy,0,0.0018);
     dropRing.position.set(cx,cy,0.0018);
@@ -3396,6 +3537,10 @@ function updateWaypointInspector(frameInputs,world,pose,now){
       _tmpMat4.fromArray(best2.matrix).scale(_tmpScale);
       highlightFrame2.matrix.copy(_tmpMat4);
       highlightFrame2.matrixWorldNeedsUpdate=true;
+      _tmpPlaneScale.set((best2.edgeMm/1000)*1.12,(best2.edgeMm/1000)*1.12,1);
+      _tmpMat4.fromArray(best2.matrix).scale(_tmpPlaneScale);
+      highlightPlane2.matrix.copy(_tmpMat4);
+      highlightPlane2.matrixWorldNeedsUpdate=true;
       setRodSegment(dropRod2,cx2,cy2,cz2,cx2,cy2,0,0.0018);
       dropRing2.position.set(cx2,cy2,0.0018);
       setRodSegment(xAxisRod2,cx2,cy2,0.0018,0,cy2,0.0018,0.0018);
@@ -3440,28 +3585,14 @@ function blendRigid(a,b,alpha){
 
 function drawLiveBadge(entry,mode,coupled=false){
   const key=`${entry.tagId}:${mode}:${coupled?1:0}`;
-  if(key===entry.badgeKey||entry.badgeSlot<0)return;
-  entry.badgeKey=key;
+  if(key===entry.faceKey||entry.faceSlot<0)return;
+  entry.faceKey=key;
   const rec=mode==='rec',near=mode==='near',locked=mode==='locked',moving=mode==='moving',measure=mode==='measure';
   const stroke=rec?'#ef4444':(coupled?'#4ade80':(near?'#22d3ee':(locked?'#4ade80':entry.theme.css)));
-  const fill=rec?'rgba(45,8,14,0.92)':(coupled?'rgba(8,30,22,0.92)':'rgba(10,16,26,0.88)');
-  const fg=rec?'#fca5a5':(coupled?'#86efac':(near?'#67e8f9':(locked?'#86efac':entry.theme.css)));
-  const text=rec
-    ?(coupled?`● REC ✋ #${entry.tagId}`:`● REC #${entry.tagId}`)
-    :(coupled?`✋ #${entry.tagId}`
-    :(near?`⏱ HOLD #${entry.tagId}`
-    :(measure?`#${entry.tagId}`
-    :(locked?`✓ #${entry.tagId}`
-    :(moving?`↻ #${entry.tagId}`:`#${entry.tagId} …`)))));
-  badgeAtlas.draw(entry.badgeSlot,`live:${key}`,(ctx,w,h)=>{
-    ctx.scale(w/220,h/64);
-    ctx.fillStyle=fill;
-    ctx.beginPath();ctx.roundRect(3,3,214,58,14);ctx.fill();
-    ctx.strokeStyle=stroke;ctx.lineWidth=(rec||coupled)?4.5:3.5;ctx.stroke();
-    ctx.fillStyle=fg;
-    ctx.font=coupled?'bold 21px ui-monospace,monospace':'bold 22px ui-monospace,monospace';ctx.textAlign='center';
-    ctx.fillText(text,110,40);ctx.textAlign='left';
-  });
+  const fill=rec?'rgba(45,8,14,0.92)':(coupled?'rgba(8,30,22,0.92)':(near?'rgba(8,28,36,0.92)':'rgba(6,11,20,0.86)'));
+  const statusSymbol=rec?(coupled?'● ✋':'●'):(coupled?'✋':(near?'⏱':(moving?'↻':(measure||locked?'':'…'))));
+  const statusColor=rec?'#fca5a5':(coupled?'#86efac':(near?'#67e8f9':entry.theme.css));
+  drawTagMatrixFace(entry.faceSlot,`live:${key}`,`${entry.tagId}`,stroke,{fill,statusSymbol,statusColor});
 }
 
 function drawRecOrbPill(entry,recording,hot){
@@ -3480,36 +3611,52 @@ function drawRecOrbPill(entry,recording,hot){
   });
 }
 
+function drawMarkOrbPill(entry,hot){
+  const key=`${entry.tagId}:${hot?1:0}`;
+  if(key===entry.markPillKey||entry.markPillSlot<0)return;
+  entry.markPillKey=key;
+  badgeAtlas.draw(entry.markPillSlot,`mark:${key}`,(ctx,w,h)=>{
+    ctx.scale(w/256,h/112);
+    ctx.fillStyle='rgba(8,26,38,0.92)';
+    ctx.beginPath();ctx.roundRect(6,6,244,100,28);ctx.fill();
+    ctx.strokeStyle=hot?'#fef08a':'#22d3ee';
+    ctx.lineWidth=hot?6:4;ctx.stroke();
+    ctx.fillStyle=hot?'#ffffff':'#67e8f9';
+    ctx.font='bold 29px system-ui,sans-serif';ctx.textAlign='center';
+    ctx.fillText(`⏱ MARK #${entry.tagId}`,128,67);ctx.textAlign='left';
+  });
+}
+
 function ensureMovableTrailVisuals(entry){
-  if(!entry.centerLine){
-    const accentCol=new THREE.Color(entry.theme.hex);
+  const accentCol=new THREE.Color(entry.theme.hex);
+  if(!entry.trailTube){
     const rawLinePositions=new Float32Array(MAX_LINE_PTS*3);
     const linePositions=new Float32Array(MAX_LINE_PTS*3);
-    const lineGeo=new THREE.BufferGeometry();
-    const lineAttr=new THREE.BufferAttribute(linePositions,3);
-    lineGeo.setAttribute('position',lineAttr);
-    lineGeo.setDrawRange(0,0);
-    const lineMat=new THREE.LineBasicMaterial({color:accentCol,transparent:true,opacity:0.65});
-    const centerLine=new THREE.Line(lineGeo,lineMat);
-    centerLine.frustumCulled=false;
-    extraRoot.add(centerLine);
-    entry.centerLine=centerLine;
+    const lineSpeeds=new Float32Array(MAX_LINE_PTS);
+    const lineRadii=new Float32Array(MAX_LINE_PTS);
+    const lineMat=new THREE.MeshBasicMaterial({color:accentCol,transparent:true,opacity:PATHLINE_DEFAULTS.tubeOpacity});
+    const trailTube=createPathTubeMesh(MAX_LINE_PTS,lineMat,{radius:PATHLINE_DEFAULTS.tubeRadiusM,sides:5,name:`trail-${entry.tagId}`});
+    extraRoot.add(trailTube.mesh);
+    entry.trailTube=trailTube;
     entry.rawLinePositions=rawLinePositions;
     entry.linePositions=linePositions;
-    entry.lineAttr=lineAttr;
+    entry.lineSpeeds=lineSpeeds;
+    entry.lineRadii=lineRadii;
     entry.lineMat=lineMat;
   }
-  if(!entry.framesMesh){
-    const accentCol=new THREE.Color(entry.theme.hex);
-    const frameColor=new THREE.Color(0xf8fafc).lerp(accentCol,0.48);
-    const frameMat=new THREE.MeshBasicMaterial({color:frameColor,transparent:true,opacity:0.72,side:THREE.DoubleSide,depthWrite:false});
-    const framesMesh=new THREE.InstancedMesh(getThickTagFrameGeo(entry.edgeMm),frameMat,MAX_TRAIL_WAYPOINTS);
-    framesMesh.position.z=0.0004;
-    framesMesh.count=0;
-    framesMesh.frustumCulled=false;
-    extraRoot.add(framesMesh);
-    entry.framesMesh=framesMesh;
-    entry.frameMat=frameMat;
+  if(!entry.dotsMesh){
+    const dotColor=new THREE.Color(0xf8fafc).lerp(accentCol,0.65);
+    const timeCopyDotColor=new THREE.Color(0x67e8f9);
+    const dotMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.92});
+    const dotsMesh=new THREE.InstancedMesh(_waypointDotGeo,dotMat,MAX_TRAIL_WAYPOINTS);
+    dotsMesh.setColorAt(0,dotColor);
+    dotsMesh.count=0;
+    dotsMesh.frustumCulled=false;
+    extraRoot.add(dotsMesh);
+    entry.dotsMesh=dotsMesh;
+    entry.dotMat=dotMat;
+    entry.dotColor=dotColor;
+    entry.timeCopyDotColor=timeCopyDotColor;
   }
 }
 
@@ -3522,8 +3669,8 @@ function createMovableTool(tagId,edgeMm){
   }
   const axesSlot=axesBatch.alloc();
   if(axesSlot>=0)axesBatch.setVisible(axesSlot,false);
-  const badgeSlot=badgeAtlas.acquire();
-  if(badgeSlot>=0)badgeMesh.setQuadVisible(badgeSlot,false);
+  const faceSlot=tagFaceAtlas.acquire();
+  if(faceSlot>=0)tagFaceMesh.setQuadVisible(faceSlot,false);
   const recOrbSlot=recOrbBatch.alloc();
   if(recOrbSlot>=0){
     recOrbBatch.setColor(recOrbSlot,0x0ea5e9);
@@ -3531,24 +3678,34 @@ function createMovableTool(tagId,edgeMm){
   }
   const recPillSlot=badgeAtlas.acquire();
   if(recPillSlot>=0)badgeMesh.setQuadVisible(recPillSlot,false);
+  const markOrbSlot=recOrbBatch.alloc();
+  if(markOrbSlot>=0){
+    recOrbBatch.setColor(markOrbSlot,0x22d3ee);
+    recOrbBatch.setVisible(markOrbSlot,false);
+  }
+  const markPillSlot=badgeAtlas.acquire();
+  if(markPillSlot>=0)badgeMesh.setQuadVisible(markPillSlot,false);
 
   const entry={
     tagId,edgeMm,theme,
-    frameSlot,axesSlot,badgeSlot,badgeKey:'',
+    frameSlot,axesSlot,faceSlot,faceKey:'',
     recOrbSlot,recPillSlot,recPillKey:'',
-    visible:false,badgeVisible:false,recOrbVisible:false,
-    frameColorHex:theme.hex,recOrbColorHex:0x0ea5e9,recOrbScale:1,
-    centerLine:null,rawLinePositions:null,linePositions:null,lineAttr:null,lineMat:null,lineCount:0,
-    framesMesh:null,frameMat:null,waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,
+    markOrbSlot,markPillSlot,markPillKey:'',
+    visible:false,faceVisible:false,recOrbVisible:false,markOrbVisible:false,
+    frameColorHex:theme.hex,recOrbColorHex:0x0ea5e9,markOrbColorHex:0x22d3ee,recOrbScale:1,
+    trailTube:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineRadii:null,lineMat:null,lineCount:0,
+    dotsMesh:null,dotMat:null,dotColor:null,timeCopyDotColor:null,
+    waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,smoothedSpeedMps:0,
     lockState:'settling',settleSamples:[],lockedMatrix:null,lockQuality:null,refineSamples:[],relocPending:null,
     stillAnchor:null,stillSinceMs:null,stillSamples:[],lockFlashUntilMs:0,currentPose:null,
-    lastMatrix:null,lastOpticalMatrix:null,targetMatrix:null,displayMatrix:null,targetConfidence:1,lastAt:0,pendingJump:null,skipNextJumpGuardUntilMs:0,
-    handCoupled:false,coupledHand:null,measureModeApplied:false,measureSyncedPose:null,lastCoupledStepAtMs:0,pendingTrail:createCoupledTrailBuffer(),
+    lastMatrix:null,lastOpticalMatrix:null,targetMatrix:null,displayMatrix:null,targetConfidence:1,lastAt:0,lastOpticalAtMs:0,lastSpeedMps:0,lastApparentEdgePx:0,lastOpticalRmsPx:null,pendingJump:null,skipNextJumpGuardUntilMs:0,
+    handCoupled:false,coupledHand:null,coupledStepCount:0,measureModeApplied:false,measureSyncedPose:null,lastCoupledStepAtMs:0,pendingTrail:createCoupledTrailBuffer(),
     recentPoses:[],recording:false,lastRecLineMatrix:null,lastRecFrameMatrix:null,lastRecAtMs:0,
-    timeCopyHoldSince:null,timeCopyConsumed:false,recHoldSince:null,recHoldConsumed:false,recOrbPosL:[0,0,0],
+    markHoldSince:null,markHoldConsumed:false,recHoldSince:null,recHoldConsumed:false,recOrbPosL:[0,0,0],markOrbPosL:[0,0,0],
   };
   drawLiveBadge(entry,'settling',false);
   drawRecOrbPill(entry,false,false);
+  drawMarkOrbPill(entry,false);
   return entry;
 }
 
@@ -3570,23 +3727,35 @@ function syncCurrentPose(entry,matrix,atMs){
   return wp;
 }
 
-function appendLinePoint(entry,cx,cy,cz){
+function appendLinePoint(entry,cx,cy,cz,speedMps=0){
   ensureMovableTrailVisuals(entry);
-  if(entry.lineCount>=MAX_LINE_PTS){
+  const rawR=speedToTubeRadius(speedMps);
+  const fullRebuild=entry.lineCount>=MAX_LINE_PTS;
+  let idx;
+  if(fullRebuild){
     entry.rawLinePositions.copyWithin(0,3,MAX_LINE_PTS*3);
     entry.linePositions.copyWithin(0,3,MAX_LINE_PTS*3);
-    const i=(MAX_LINE_PTS-1)*3;
-    entry.rawLinePositions[i]=cx;entry.rawLinePositions[i+1]=cy;entry.rawLinePositions[i+2]=cz;
-    entry.linePositions[i]=cx;entry.linePositions[i+1]=cy;entry.linePositions[i+2]=cz;
+    entry.lineSpeeds.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineRadii.copyWithin(0,1,MAX_LINE_PTS);
+    idx=MAX_LINE_PTS-1;
   }else{
-    const i=entry.lineCount*3;
-    entry.rawLinePositions[i]=cx;entry.rawLinePositions[i+1]=cy;entry.rawLinePositions[i+2]=cz;
-    entry.linePositions[i]=cx;entry.linePositions[i+1]=cy;entry.linePositions[i+2]=cz;
-    entry.lineCount++;
+    idx=entry.lineCount++;
+  }
+  const i=idx*3;
+  entry.rawLinePositions[i]=cx;entry.rawLinePositions[i+1]=cy;entry.rawLinePositions[i+2]=cz;
+  entry.linePositions[i]=cx;entry.linePositions[i+1]=cy;entry.linePositions[i+2]=cz;
+  entry.lineSpeeds[idx]=speedMps;
+  entry.lineRadii[idx]=rawR;
+  if(idx>=2){
+    const s0=speedToTubeRadius(entry.lineSpeeds[idx-2]);
+    const s1=speedToTubeRadius(entry.lineSpeeds[idx-1]);
+    entry.lineRadii[idx-1]=s0*0.25+s1*0.50+rawR*0.25;
   }
   smoothLineTail(entry.rawLinePositions,entry.linePositions,entry.lineCount,{maxDeviationM:0.012});
-  entry.centerLine.geometry.setDrawRange(0,entry.lineCount);
-  entry.lineAttr.needsUpdate=true;
+  entry.trailTube.syncFromPositions(entry.linePositions,entry.lineCount,{
+    radii:entry.lineRadii,
+    fromIndex:fullRebuild?0:Math.max(0,entry.lineCount-6),
+  });
 }
 
 function recordMovablePathPoint(entry,pose,atMs){
@@ -3597,16 +3766,29 @@ function recordMovablePathPoint(entry,pose,atMs){
     linePosMm=Math.hypot(...dl.slice(3))*1000;
   }
   // Guard against multi-frame synthetic interpolation bursts across a tracking jump.
-  if(entry.lastRecLineMatrix&&linePosMm>95&&entry.lastRecAtMs>0&&atMs-entry.lastRecAtMs<250){
+  const dtRecSec=entry.lastRecAtMs>0?Math.max(0.05,(atMs-entry.lastRecAtMs)/1000):0.2;
+  if(entry.lastRecLineMatrix&&linePosMm>Math.max(150,dtRecSec*2000)&&entry.lastRecAtMs>0&&atMs-entry.lastRecAtMs<250){
     entry.lastRecLineMatrix=pose.slice();
     entry.lastRecFrameMatrix=pose.slice();
     entry.lastRecAtMs=atMs;
+    entry.smoothedSpeedMps=0;
     return;
   }
   if(!entry.lastRecLineMatrix||linePosMm>=14){
+    let speedMps=0;
+    if(entry.lastRecLineMatrix){
+      const dtSec=(entry.lastRecAtMs>0&&atMs>entry.lastRecAtMs)?(atMs-entry.lastRecAtMs)/1000:0;
+      if(dtSec>=0.008){
+        const rawSpeed=Math.min(2.5,(linePosMm/1000)/dtSec);
+        entry.smoothedSpeedMps=entry.smoothedSpeedMps>0?(entry.smoothedSpeedMps*0.38+rawSpeed*0.62):rawSpeed;
+      }
+      speedMps=entry.smoothedSpeedMps;
+    }else{
+      entry.smoothedSpeedMps=0;
+    }
     entry.lastRecLineMatrix=pose.slice();
     entry.lastRecAtMs=atMs;
-    appendLinePoint(entry,pose[12],pose[13],pose[14]);
+    appendLinePoint(entry,pose[12],pose[13],pose[14],speedMps);
     let framePosMm=Infinity,frameAngDeg=Infinity;
     if(entry.lastRecFrameMatrix){
       const df=rigidVector(product(inverse(entry.lastRecFrameMatrix),pose));
@@ -3615,7 +3797,7 @@ function recordMovablePathPoint(entry,pose,atMs){
     }
     if(!entry.lastRecFrameMatrix||framePosMm>=48||(framePosMm>=18&&frameAngDeg>=28)){
       entry.lastRecFrameMatrix=pose.slice();
-      stampMovableWaypoint(entry.tagId,entry.edgeMm,pose,atMs,{silent:true,skipLine:true});
+      stampMovableWaypoint(entry.tagId,entry.edgeMm,pose,atMs,{silent:true,skipLine:true,speedMps});
     }
   }
 }
@@ -3649,7 +3831,7 @@ function recordHandsInL(frameInputs,world,xrTimeMs){
   }
 }
 
-function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targetXrTimeMs=null,decimate=1,apparentEdgePx=0,allowRefine=false,softFallback=false}={}){
+function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targetXrTimeMs=null,decimate=1,apparentEdgePx=0,rmsPx=null,nearHand=false,allowRefine=false,softFallback=false}={}){
   const conf=Number.isFinite(confidence)?Math.max(0,Math.min(1,confidence)):1;
   let entry=movableTools.get(tagId);
   if(conf<=0){
@@ -3657,15 +3839,23 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     if(entry?.displayMatrix)entry.lastAt=atMs;
     return;
   }
+  const farMode=Boolean(lastQualityState.longRangeActive);
   if(!entry){
-    if(conf<0.25||softFallback||apparentEdgePx<12)return;
+    const minPx=farMode?(softFallback?10:9):12;
+    if(conf<0.25||(!farMode&&softFallback)||apparentEdgePx<minPx)return;
     entry=createMovableTool(tagId,edgeMm);
     movableTools.set(tagId,entry);
   }
-  const prevLastAt=entry.lastAt??0;
-  const dtSinceLastMs=prevLastAt>0?Math.max(0,atMs-prevLastAt):Infinity;
+  const prevOpticalAt=entry.lastOpticalAtMs??0;
+  const dtSinceLastMs=prevOpticalAt>0?Math.max(0,atMs-prevOpticalAt):Infinity;
   entry.lastAt=atMs;
+  entry.lastOpticalAtMs=atMs;
+  entry.lastApparentEdgePx=apparentEdgePx;
+  entry.lastOpticalRmsPx=rmsPx;
   entry.targetConfidence=conf;
+  if(Number.isFinite(lastXrTime)&&Number.isFinite(targetXrTimeMs)){
+    perfTracker.recordOpticalLag(Math.max(0,lastXrTime-targetXrTimeMs));
+  }
 
   // Check 90 Hz hand-tracking coupling first so picking up a locked tag immediately follows the hand at ~0 ms latency.
   let coupRes={mode:'free',event:null};
@@ -3705,6 +3895,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
 
   // While hand-coupled, 90 Hz hand prediction drives displayMatrix directly so we never pull the tag backward to the ~140 ms lagged optical frame.
   if(coupRes.mode==='coupled'){
+    tagPredictor.reset(tagId);
     entry.handCoupled=true;
     entry.coupledHand=coupRes.handedness;
     entry.lockState='moving';
@@ -3756,7 +3947,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     entry.lastMatrix=lFromTag.slice();
     entry.targetMatrix=lFromTag.slice();
     if(!entry.displayMatrix)entry.displayMatrix=lFromTag.slice();
-    const needed=(conf<0.75||apparentEdgePx<18)?3:2;
+    const needed=(conf<0.75||apparentEdgePx<18||softFallback)?3:2;
     if(entry.settleSamples.length>=needed){
       const mean=meanRigid(entry.settleSamples.map(s=>s.matrix));
       const invM=inverse(mean);
@@ -3774,6 +3965,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         entry.settleSamples=[];
         entry.relocPending=null;
         entry.lockFlashUntilMs=atMs+450;
+        tagPredictor.reset(tagId);
         syncCurrentPose(entry,mean,atMs);
         if(!entry.recording)drawLiveBadge(entry,'locked',false);
         if(wasNeverLocked){
@@ -3834,8 +4026,29 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         entry.relocPending=null;
         return;
       }
+      const staleLocked=dtSinceLastMs>=700;
+      const cleanFastUnlock=
+        (nearHand&&posMm>=16&&posMm<=180&&conf>=0.50)||
+        (!softFallback&&Number.isFinite(rmsPx)&&rmsPx<=1.25&&posMm>=18&&posMm<=180&&conf>=0.65)||
+        (staleLocked&&!softFallback&&Number.isFinite(rmsPx)&&rmsPx<=1.10&&apparentEdgePx>=14&&conf>=0.65);
+      const mirrorFlipLikely=posMm<24&&angDeg>20;
+      if(cleanFastUnlock&&!mirrorFlipLikely){
+        entry.lockState='moving';
+        entry.relocPending=null;
+        entry.refineSamples=[];
+        entry.pendingJump=null;
+        entry.lastMatrix=lFromTag.slice();
+        entry.targetMatrix=lFromTag.slice();
+        if(staleLocked&&posMm>180)entry.displayMatrix=lFromTag.slice();
+        entry.stillAnchor=lFromTag.slice();
+        entry.stillSinceMs=atMs;
+        entry.stillSamples=[lFromTag.slice()];
+        if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
+        if(!entry.recording)drawLiveBadge(entry,'moving',entry.handCoupled);
+        return;
+      }
       // Single-frame outlier / IPPE mirror-flip guard: require a 2nd consecutive frame within velocity-scaled tolerance of relocPending.
-      if(entry.relocPending&&atMs-entry.relocPending.atMs<=650){
+      if(entry.relocPending&&atMs-entry.relocPending.atMs<=1500){
         const dp=rigidVector(product(inverse(entry.relocPending.matrix),lFromTag));
         const pPosMm=Math.hypot(...dp.slice(3))*1000;
         const pAngDeg=Math.hypot(...dp.slice(0,3))*180/Math.PI;
@@ -3881,10 +4094,18 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
   }
   entry.skipNextJumpGuardUntilMs=0;
 
-  const nextPose=(entry.targetMatrix&&conf<0.999)?blendRigid(entry.targetMatrix,lFromTag,conf):lFromTag.slice();
+  const effBlend=conf>=0.55?Math.max(0.82,conf):conf;
+  const nextPose=(entry.targetMatrix&&effBlend<0.999)?blendRigid(entry.targetMatrix,lFromTag,effBlend):lFromTag.slice();
   entry.lastMatrix=nextPose.slice();
   entry.targetMatrix=nextPose.slice();
   if(!entry.displayMatrix)entry.displayMatrix=nextPose.slice();
+  if(!entry.handCoupled&&Number.isFinite(targetXrTimeMs)){
+    const vel=tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
+    if(vel){
+      entry.lastSpeedMps=vel.speedMps;
+      if(vel.speedMps>0.01)perfTracker.recordTagSpeed(vel.speedMps,false);
+    }
+  }
 
   // Rolling pre-touch pose ring buffer.
   if(conf>=0.30){
@@ -3919,6 +4140,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
           entry.lastMatrix=locked.slice();
           entry.stillAnchor=null;entry.stillSinceMs=null;entry.stillSamples=[];
           entry.lockFlashUntilMs=atMs+400;
+          tagPredictor.reset(tagId);
           syncCurrentPose(entry,locked,atMs);
           if(!entry.recording)drawLiveBadge(entry,'locked',false);
         }
@@ -3958,6 +4180,7 @@ function setTagRecording(entry,active,now){
   entry.recOrbColorHex=active?0xef4444:0x0ea5e9;
   recOrbBatch.setColor(entry.recOrbSlot,entry.recOrbColorHex);
   if(active){
+    entry.smoothedSpeedMps=0;
     const startPose=(entry.handCoupled&&entry.lastOpticalMatrix)?entry.lastOpticalMatrix.slice():getPreTouchPose(entry,now);
     if(startPose){
       entry.lastRecLineMatrix=startPose.slice();
@@ -3973,6 +4196,7 @@ function setTagRecording(entry,active,now){
     playModeTick('scan');
     showHudToast(`● RECORDING #${entry.tagId} PATH`,'#ef4444',1800);
   }else{
+    entry.smoothedSpeedMps=0;
     entry.lastRecLineMatrix=null;
     entry.lastRecFrameMatrix=null;
     entry.lastRecAtMs=0;
@@ -4003,21 +4227,23 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
           axesBatch.setPose(entry.axesSlot,entry.currentPose.matrix,0.055);
           axesBatch.setVisible(entry.axesSlot,true);
           drawLiveBadge(entry,'measure',false);
-          const k=waypointIdKey(entry.currentPose);
-          const showBadge=!(hoveredWaypoint===entry.currentPose||hoveredWaypoint2===entry.currentPose||pinnedPoints.has(k));
-          entry.badgeVisible=showBadge;
-          badgeMesh.setQuad(entry.badgeSlot,localZOffset(entry.currentPose.matrix,0.036),0.060,0.018,showBadge);
+          const faceEdge=Math.max(0.008,entry.edgeMm/1000-0.0006);
+          entry.faceVisible=true;
+          tagFaceMesh.setOrientedQuad(entry.faceSlot,entry.currentPose.matrix,faceEdge,faceEdge,0.0009,true);
         }else{
           entry.visible=false;
-          entry.badgeVisible=false;
+          entry.faceVisible=false;
           frameBatch.setVisible(entry.frameSlot,false);
           axesBatch.setVisible(entry.axesSlot,false);
-          badgeMesh.setQuadVisible(entry.badgeSlot,false);
+          tagFaceMesh.setQuadVisible(entry.faceSlot,false);
         }
         entry.recOrbVisible=false;
         recOrbBatch.setVisible(entry.recOrbSlot,false);
         badgeMesh.setQuadVisible(entry.recPillSlot,false);
-        entry.timeCopyHoldSince=null;entry.timeCopyConsumed=false;
+        entry.markOrbVisible=false;
+        recOrbBatch.setVisible(entry.markOrbSlot,false);
+        badgeMesh.setQuadVisible(entry.markPillSlot,false);
+        entry.markHoldSince=null;entry.markHoldConsumed=false;
         entry.recHoldSince=null;entry.recHoldConsumed=false;
         entry.measureSyncedPose=entry.currentPose;
         entry.measureModeApplied=true;
@@ -4036,11 +4262,12 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       entry.pendingTrail.discard();
       entry.pendingJump=null;
       entry.skipNextJumpGuardUntilMs=now+900;
-      const keepRendered=pred.reason==='pinch-opened'||pred.reason==='optical-timeout';
+      const keepRendered=pred.reason==='pinch-opened'&&(pred.opticalAgeMs??Infinity)<=240;
       const snapPose=keepRendered
         ?(entry.displayMatrix||pred.lastOpticalPose||entry.lastOpticalMatrix)
-        :(pred.lastOpticalPose||entry.lastOpticalMatrix||entry.displayMatrix);
-      // Freeze target at the release spot (or grounded optical pose on watchdog/timeout release) and seed stillness timer.
+        :(pred.lastOpticalPose||entry.lastOpticalMatrix||entry.lockedMatrix||entry.displayMatrix);
+      tagPredictor.reset(entry.tagId);
+      // Freeze target at the release spot (or snap back to grounded optical pose on timeout/watchdog release so tags never float off in mid-air).
       if(snapPose){
         entry.displayMatrix=snapPose.slice();
         entry.targetMatrix=snapPose.slice();
@@ -4054,6 +4281,7 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     const isCoupled=Boolean(pred?.coupled&&pred.lFromTag);
     entry.handCoupled=isCoupled;
     entry.coupledHand=isCoupled?pred.handedness:null;
+    if(!isCoupled)entry.coupledStepCount=0;
     if(isCoupled){
       entry.lockState='moving';
       entry.lastAt=now;
@@ -4065,10 +4293,17 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       ):0;
       if(!entry.displayMatrix||!wasCoupled||dtGap>280||jumpM>0.065){
         entry.displayMatrix=pred.lFromTag.slice();
+        entry.coupledStepCount=1;
       }else{
-        // Ultra-snappy 90 Hz hand following (~0 ms trailing while suppressing 1 mm micro-jitter).
-        const alpha=1-Math.exp(-dt*42);
+        // Ultra-snappy 90 Hz hand following (~0 ms trailing while suppressing sub-mm jitter).
+        const alpha=1-Math.exp(-dt*95);
         entry.displayMatrix=blendRigid(entry.displayMatrix,pred.lFromTag,alpha);
+        entry.coupledStepCount=(entry.coupledStepCount||0)+1;
+        if(dt>0.004&&jumpM<0.065){
+          const rawSpd=Math.min(2.5,jumpM/dt);
+          entry.lastSpeedMps=entry.coupledStepCount<=2?rawSpd:(entry.lastSpeedMps*0.65+rawSpd*0.35);
+          if(entry.coupledStepCount>=3)perfTracker.recordTagSpeed(entry.lastSpeedMps,true);
+        }
       }
       entry.lastCoupledStepAtMs=now;
       entry.targetMatrix=entry.displayMatrix.slice();
@@ -4094,15 +4329,18 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     }
     const alive=isCoupled||hasLocked||hasEverLocked||Boolean(entry.displayMatrix&&(now-entry.lastAt<1200));
     entry.visible=alive;
-    entry.badgeVisible=alive;
+    entry.faceVisible=alive;
     if(!alive){
       frameBatch.setVisible(entry.frameSlot,false);
       axesBatch.setVisible(entry.axesSlot,false);
-      badgeMesh.setQuadVisible(entry.badgeSlot,false);
+      tagFaceMesh.setQuadVisible(entry.faceSlot,false);
       entry.recOrbVisible=false;
       recOrbBatch.setVisible(entry.recOrbSlot,false);
       badgeMesh.setQuadVisible(entry.recPillSlot,false);
-      entry.timeCopyHoldSince=null;entry.timeCopyConsumed=false;
+      entry.markOrbVisible=false;
+      recOrbBatch.setVisible(entry.markOrbSlot,false);
+      badgeMesh.setQuadVisible(entry.markPillSlot,false);
+      entry.markHoldSince=null;entry.markHoldConsumed=false;
       entry.recHoldSince=null;entry.recHoldConsumed=false;
       if(wasCoupled)drawLiveBadge(entry,entry.recording?'rec':entry.lockState,false);
       continue;
@@ -4115,11 +4353,16 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       if(entry.lockState==='locked'&&entry.lockedMatrix){
         // 100% rigid — zero wobble, zero drift.
         entry.displayMatrix=entry.lockedMatrix;
-      }else if(entry.targetMatrix){
-        const conf=entry.targetConfidence??1;
-        const speed=entry.lockState==='moving'?(20.0*Math.max(0.45,conf)):12.0;
-        const alpha=1-Math.exp(-dt*speed);
-        entry.displayMatrix=blendRigid(entry.displayMatrix,entry.targetMatrix,alpha);
+      }else{
+        const predTarget=(entry.lockState==='moving'&&Number.isFinite(xrTimeMs))
+          ?(tagPredictor.predict(entry.tagId,xrTimeMs)||entry.targetMatrix)
+          :entry.targetMatrix;
+        if(predTarget){
+          const conf=entry.targetConfidence??1;
+          const speed=entry.lockState==='moving'?(38.0*Math.max(0.6,conf)):14.0;
+          const alpha=1-Math.exp(-dt*speed);
+          entry.displayMatrix=entry.displayMatrix?blendRigid(entry.displayMatrix,predTarget,alpha):predTarget.slice();
+        }
       }
     }
 
@@ -4127,7 +4370,8 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     frameBatch.setVisible(entry.frameSlot,true);
     axesBatch.setPose(entry.axesSlot,entry.displayMatrix,0.055);
     axesBatch.setVisible(entry.axesSlot,true);
-    badgeMesh.setQuad(entry.badgeSlot,localZOffset(entry.displayMatrix,0.036),0.060,0.018,true);
+    const faceEdge=Math.max(0.008,entry.edgeMm/1000-0.0006);
+    tagFaceMesh.setOrientedQuad(entry.faceSlot,entry.displayMatrix,faceEdge,faceEdge,0.0009,true);
 
     // Brief green confirmation flash right after locking into place.
     const flashing=now<entry.lockFlashUntilMs;
@@ -4151,25 +4395,38 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
 
   const REC_START_HOLD_MS=650;
   const REC_STOP_HOLD_MS=350;
-  const TIMECOPY_HOLD_MS=550;
+  const MARK_HOLD_MS=400;
 
   for(const entry of movableTools.values()){
     if(!entry.visible||!entry.displayMatrix)continue;
     const tx=entry.displayMatrix[12],ty=entry.displayMatrix[13],tz=entry.displayMatrix[14];
-    // [● REC / ■ STOP] button hovers 6.8 cm above the tag along viewer UP (clear of grabbing fingers).
+    // [● REC / ■ STOP] sits 6.8 cm above the tag; [⏱ MARK] sits 6.8 cm below anywhere in 3D space (tabletop fallback only if flat on wood).
     const ox=tx+upL[0]*0.068,oy=ty+upL[1]*0.068,oz=tz+upL[2]*0.068;
+    let mx=tx-upL[0]*0.068,my=ty-upL[1]*0.068,mz=tz-upL[2]*0.068;
+    if(Math.abs(tz)<0.032&&Math.abs(entry.displayMatrix[10])>0.85&&mz<0.012){
+      let hx=-upL[0],hy=-upL[1],hLen=Math.hypot(hx,hy);
+      if(hLen<0.25){
+        const vp=frameInputs.viewerPosL;
+        hx=(vp?.[0]??0)-tx;hy=(vp?.[1]??0)-ty;hLen=Math.hypot(hx,hy);
+      }
+      if(hLen>1e-4){hx/=hLen;hy/=hLen;}else{hx=0;hy=-1;}
+      mx=tx+hx*0.068;my=ty+hy*0.068;mz=Math.max(0.014,tz+0.010);
+    }
     entry.recOrbPosL=[ox,oy,oz];
+    entry.markOrbPosL=[mx,my,mz];
 
-    let minTagDist=Infinity,minOrbDist=Infinity;
+    let minTagDist=Infinity,minOrbDist=Infinity,minMarkDist=Infinity;
     for(const pr of probes){
-      // Never let the hand currently carrying this tag trigger an accidental Time-Copy or REC poke.
+      // Never let the hand currently carrying this tag trigger an accidental MARK or REC poke.
       const carryingThis=pr.kind==='hand'&&tagHandCoupler.isHandCarrying(pr.handedness,entry.tagId);
       if(carryingThis)continue;
       const dt=Math.hypot(tx-pr.pos[0],ty-pr.pos[1],tz-pr.pos[2]);
       if(dt<minTagDist)minTagDist=dt;
       const doOrb=Math.hypot(ox-pr.pos[0],oy-pr.pos[1],oz-pr.pos[2]);
       if(doOrb<minOrbDist)minOrbDist=doOrb;
-      recordProbeProximity(pr.probeId,Math.min(dt,doOrb));
+      const doMark=Math.hypot(mx-pr.pos[0],my-pr.pos[1],mz-pr.pos[2]);
+      if(doMark<minMarkDist)minMarkDist=doMark;
+      recordProbeProximity(pr.probeId,Math.min(dt,doOrb,doMark));
     }
 
     const showOrb=entry.recording||entry.handCoupled||((entry.lockState==='locked'||entry.currentPose)&&(minTagDist<0.18||minOrbDist<0.14));
@@ -4191,9 +4448,28 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       badgeMesh.setQuadVisible(entry.recPillSlot,false);
     }
 
-    // 1. [● REC / ■ STOP] button poke (3.0 cm hit zone, 650 ms start / 350 ms stop, > 4.8 cm release).
+    const showMark=!entry.recording&&Boolean(entry.displayMatrix)&&(entry.handCoupled||minTagDist<0.22||minMarkDist<0.16);
+    entry.markOrbVisible=showMark;
+    const markHot=showMark&&minMarkDist<0.042;
+    const markScale=markHot?1.35:1.0;
+    const markHex=markHot?0xfef08a:0x22d3ee;
+    if(showMark){
+      recOrbBatch.setPoint(entry.markOrbSlot,mx,my,mz,markScale);
+      if(entry.markOrbColorHex!==markHex){
+        entry.markOrbColorHex=markHex;
+        recOrbBatch.setColor(entry.markOrbSlot,markHex);
+      }
+      recOrbBatch.setVisible(entry.markOrbSlot,true);
+      drawMarkOrbPill(entry,markHot);
+      badgeMesh.setQuad(entry.markPillSlot,entry.markOrbPosL,0.072,0.032,true);
+    }else{
+      recOrbBatch.setVisible(entry.markOrbSlot,false);
+      badgeMesh.setQuadVisible(entry.markPillSlot,false);
+    }
+
+    // 1. [● REC / ■ STOP] top pill poke (3.0 cm hit zone, 650 ms start / 350 ms stop, > 4.8 cm release).
     if(showOrb&&minOrbDist<0.030){
-      entry.timeCopyHoldSince=null;
+      entry.markHoldSince=null;
       if(!entry.recHoldConsumed){
         if(entry.recHoldSince==null)entry.recHoldSince=now;
         const holdTargetMs=entry.recording?REC_STOP_HOLD_MS:REC_START_HOLD_MS;
@@ -4219,39 +4495,38 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       if(minOrbDist>0.048)entry.recHoldConsumed=false;
     }
 
-    // 2. Time-Copy Long-Press (0.55 s on locked tag, < 4.8 cm, clear of REC button, SCAN mode only).
-    const canTimeCopy=!entry.recording&&!entry.handCoupled&&(entry.lockState==='locked'||Boolean(entry.currentPose));
-    if(canTimeCopy&&minTagDist<0.048&&minOrbDist>=0.052){
-      if(!entry.timeCopyConsumed){
-        drawLiveBadge(entry,'near',false);
-        if(entry.timeCopyHoldSince==null)entry.timeCopyHoldSince=now;
-        const prog=Math.min(1,(now-entry.timeCopyHoldSince)/TIMECOPY_HOLD_MS);
-        const tagW=lPointToWorld(world,tx,ty,tz);
+    // 2. [⏱ MARK] bottom pill poke (3.0 cm hit zone, 400 ms hold, > 4.8 cm release — works in mid-air or on table without blocking side grips).
+    if(showMark&&minMarkDist<0.030){
+      if(!entry.markHoldConsumed){
+        drawLiveBadge(entry,'near',entry.handCoupled);
+        if(entry.markHoldSince==null)entry.markHoldSince=now;
+        const prog=Math.min(1,(now-entry.markHoldSince)/MARK_HOLD_MS);
+        const markW=lPointToWorld(world,mx,my,mz);
         pinLoadSprite.visible=true;
-        pinLoadSprite.position.set(tagW[0],tagW[1]+0.032,tagW[2]);
-        const sc=0.034+prog*0.012;
+        pinLoadSprite.position.set(markW[0],markW[1]+0.026,markW[2]);
+        const sc=0.032+prog*0.010;
         pinLoadSprite.scale.set(sc,sc,1);
         pinLoadMat.opacity=1;
         drawPinLoader(prog,'#22d3ee','⏱',false);
         liveTouchLoaderActive=true;
         if(prog>=1){
-          entry.timeCopyConsumed=true;
-          entry.timeCopyHoldSince=null;
+          entry.markHoldConsumed=true;
+          entry.markHoldSince=null;
           liveTouchLoaderActive=false;
-          const snapshotPose=(entry.lockedMatrix||entry.currentPose?.matrix||entry.displayMatrix).slice();
+          const snapshotPose=((entry.lockState==='locked'&&entry.lockedMatrix)?entry.lockedMatrix:entry.displayMatrix).slice();
           stampMovableWaypoint(entry.tagId,entry.edgeMm,snapshotPose,now,{skipLine:true,isTimeCopy:true});
           drawLiveBadge(entry,entry.lockState,entry.handCoupled);
         }
       }
     }else{
-      entry.timeCopyHoldSince=null;
-      if(minTagDist>0.065)entry.timeCopyConsumed=false;
+      entry.markHoldSince=null;
+      if(minMarkDist>0.048)entry.markHoldConsumed=false;
       if(!entry.recording)drawLiveBadge(entry,entry.lockState,entry.handCoupled);
     }
   }
 }
 
-function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=false,isTimeCopy=false}={}){
+function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=false,isTimeCopy=false,speedMps=null}={}){
   let entry=movableTools.get(tagId);
   if(!entry){entry=createMovableTool(tagId,edgeMm);movableTools.set(tagId,entry);}
   ensureMovableTrailVisuals(entry);
@@ -4267,26 +4542,34 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
   const clock=new Date().toTimeString().slice(0,8);
   const wp={
     tagId,edgeMm,index:entry.waypointCount,isTimeCopy,timeCopyIndex,
+    speedMps:Number.isFinite(speedMps)?speedMps:null,
     matrix:lFromTag.slice(),centerL:[cx,cy,cz],
     xMm:cx*1000,yMm:cy*1000,zMm:cz*1000,tiltDeg,atMs,
     elapsedS:Math.max(0,(atMs-entry.firstAtMs)/1000),clock,
   };
+  const dotR=isTimeCopy?PATHLINE_DEFAULTS.timeCopyDotRadiusM:PATHLINE_DEFAULTS.waypointDotRadiusM;
+  const dotCol=isTimeCopy?entry.timeCopyDotColor:entry.dotColor;
   if(entry.waypoints.length>=MAX_TRAIL_WAYPOINTS){
     entry.waypoints.shift();
     entry.waypoints.push(wp);
     for(let i=0;i<entry.waypoints.length;i++){
-      _tmpMat4.fromArray(entry.waypoints[i].matrix);
-      entry.framesMesh.setMatrixAt(i,_tmpMat4);
+      const w=entry.waypoints[i];
+      const r=w.isTimeCopy?PATHLINE_DEFAULTS.timeCopyDotRadiusM:PATHLINE_DEFAULTS.waypointDotRadiusM;
+      _tmpMat4.makeScale(r,r,r).setPosition(w.centerL[0],w.centerL[1],w.centerL[2]);
+      entry.dotsMesh.setMatrixAt(i,_tmpMat4);
+      entry.dotsMesh.setColorAt(i,w.isTimeCopy?entry.timeCopyDotColor:entry.dotColor);
     }
   }else{
     const idx=entry.waypoints.length;
     entry.waypoints.push(wp);
-    _tmpMat4.fromArray(wp.matrix);
-    entry.framesMesh.setMatrixAt(idx,_tmpMat4);
+    _tmpMat4.makeScale(dotR,dotR,dotR).setPosition(cx,cy,cz);
+    entry.dotsMesh.setMatrixAt(idx,_tmpMat4);
+    entry.dotsMesh.setColorAt(idx,dotCol);
   }
-  entry.framesMesh.count=entry.waypoints.length;
-  entry.framesMesh.instanceMatrix.needsUpdate=true;
-  if(!skipLine)appendLinePoint(entry,cx,cy,cz);
+  entry.dotsMesh.count=entry.waypoints.length;
+  entry.dotsMesh.instanceMatrix.needsUpdate=true;
+  if(entry.dotsMesh.instanceColor)entry.dotsMesh.instanceColor.needsUpdate=true;
+  if(!skipLine)appendLinePoint(entry,cx,cy,cz,Number.isFinite(speedMps)?speedMps:0);
   if(!silent){
     const flashPos=root.visible?lPointToWorld(root.matrix.elements,cx,cy,cz):null;
     if(flashPos)triggerPinFlash(flashPos,isTimeCopy?'#22d3ee':'#22c55e','✓');
@@ -4297,48 +4580,68 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
       showHudToast(`✓ LOCKED #${tagId} · PT #${wp.index}`,entry.theme.css,1500);
     }
   }
-  pushDiagEvent({type:isTimeCopy?'tag-time-copy':'tag-stamped',tagId,edgeMm,index:wp.index,timeCopyIndex,atPerformanceMs:performance.now(),xMm:wp.xMm,yMm:wp.yMm,zMm:wp.zMm});
+  pushDiagEvent({type:isTimeCopy?'tag-time-copy':'tag-stamped',tagId,edgeMm,index:wp.index,timeCopyIndex,speedMps:wp.speedMps,atPerformanceMs:performance.now(),xMm:wp.xMm,yMm:wp.yMm,zMm:wp.zMm});
   return wp;
 }
 
 function disposeMovableEntry(e){
   if(e.frameSlot>=0)frameBatch.free(e.frameSlot);
   if(e.axesSlot>=0)axesBatch.free(e.axesSlot);
-  if(e.badgeSlot>=0){badgeMesh.clearSlot(e.badgeSlot);badgeAtlas.release(e.badgeSlot);}
+  if(e.faceSlot>=0){tagFaceMesh.clearSlot(e.faceSlot);tagFaceAtlas.release(e.faceSlot);}
   if(e.recOrbSlot>=0)recOrbBatch.free(e.recOrbSlot);
   if(e.recPillSlot>=0){badgeMesh.clearSlot(e.recPillSlot);badgeAtlas.release(e.recPillSlot);}
-  if(e.centerLine){
-    extraRoot.remove(e.centerLine);
-    e.centerLine.geometry.dispose();
+  if(e.markOrbSlot>=0)recOrbBatch.free(e.markOrbSlot);
+  if(e.markPillSlot>=0){badgeMesh.clearSlot(e.markPillSlot);badgeAtlas.release(e.markPillSlot);}
+  if(e.trailTube){
+    extraRoot.remove(e.trailTube.mesh);
+    e.trailTube.dispose();
     e.lineMat?.dispose?.();
     e.rawLinePositions=null;
+    e.linePositions=null;
+    e.lineSpeeds=null;
+    e.lineRadii=null;
   }
-  if(e.framesMesh){
-    extraRoot.remove(e.framesMesh);
-    e.frameMat?.dispose?.();
-    e.framesMesh.dispose?.();
+  if(e.dotsMesh){
+    extraRoot.remove(e.dotsMesh);
+    e.dotMat?.dispose?.();
+    e.dotsMesh.dispose?.();
   }
 }
 
-function clearMovableTrails(){
+function clearAllUserItems(){
+  const hadItems=userItemCount()>0||extraPending.size>0;
   hideWaypointInspector();
   clearPins();
   tagHandCoupler.reset();
+  tagPredictor.reset();
+  focusSweepCounter=0;
+  liveTouchLoaderActive=false;
+  pinLoadSprite.visible=false;
   for(const e of movableTools.values())disposeMovableEntry(e);
+  for(const extra of placedExtras.values()){
+    if(extra.frameSlot>=0)frameBatch.free(extra.frameSlot);
+    if(extra.axesSlot>=0)axesBatch.free(extra.axesSlot);
+    if(extra.faceSlot>=0){tagFaceMesh.clearSlot(extra.faceSlot);tagFaceAtlas.release(extra.faceSlot);}
+  }
   movableTools=new Map();
-  showHudToast('↺ TAGS & PINS CLEARED','#f59e0b');
+  placedExtras=new Map();
+  extraPending=new Map();
+  if(hadItems)playModeTick('unpin');
+  showHudToast(hadItems?'↺ CLEARED ALL TAGS & TRAILS':'NOTHING TO CLEAR','#f59e0b');
 }
 
 function clearExtras(){
   hideWaypointInspector();
   clearPins();
   tagHandCoupler.reset();
+  tagPredictor.reset();
+  focusSweepCounter=0;
   handHistory.clear();
   for(const e of movableTools.values())disposeMovableEntry(e);
   for(const extra of placedExtras.values()){
     if(extra.frameSlot>=0)frameBatch.free(extra.frameSlot);
     if(extra.axesSlot>=0)axesBatch.free(extra.axesSlot);
-    if(extra.badgeSlot>=0){badgeMesh.clearSlot(extra.badgeSlot);badgeAtlas.release(extra.badgeSlot);}
+    if(extra.faceSlot>=0){tagFaceMesh.clearSlot(extra.faceSlot);tagFaceAtlas.release(extra.faceSlot);}
   }
   for(const vis of perimeterTagVisuals.values()){
     if(vis.frameSlot>=0)frameBatch.free(vis.frameSlot);
@@ -4708,12 +5011,12 @@ function calibrationMotionChecklist(){
   };
 }
 
-function resolveUnassignedTagPose(raw,K,{minEdgePx=10,minAreaPx=100,maxRmsPx=1.5,minCosView=0,maxDepthM=Infinity,scaleRmsFactor=0}={}){
+function resolveUnassignedTagPose(raw,K,{minEdgePx=10,minAreaPx=100,maxRmsPx=1.5,minCosView=0,maxDepthM=Infinity,scaleRmsFactor=0,softFallbackMaxRms=0.55}={}){
   const capRms=scaleRmsFactor>0?Math.min(maxRmsPx,Math.max(0.50,minEdgePx*scaleRmsFactor)):maxRmsPx;
-  const effMaxRms=raw.softFallback?Math.min(capRms,0.55):capRms;
+  const effMaxRms=raw.softFallback?Math.min(capRms,softFallbackMaxRms):capRms;
   if(raw.pose&&Number.isFinite(raw.rmsPx)&&Number.isFinite(raw.minEdgePx)&&Number.isFinite(raw.edgeMm)){
     const effRmsLimit=scaleRmsFactor>0
-      ?Math.min(maxRmsPx,Math.max(0.50,raw.minEdgePx*scaleRmsFactor),raw.softFallback?0.55:Infinity)
+      ?Math.min(maxRmsPx,Math.max(0.50,raw.minEdgePx*scaleRmsFactor),raw.softFallback?softFallbackMaxRms:Infinity)
       :effMaxRms;
     const cosView=Number.isFinite(raw.cosView)?raw.cosView:1;
     const depthM=Number.isFinite(raw.depthM)?raw.depthM:(raw.pose.t?.[2]??0);
@@ -4732,7 +5035,7 @@ function resolveUnassignedTagPose(raw,K,{minEdgePx=10,minAreaPx=100,maxRmsPx=1.5
   const solved=solveSingleTagPose(raw,K,{minEdgePx,minAreaPx,maxRmsPx,minCosView,maxDepthM});
   if(!solved)return null;
   const solvedRmsLimit=scaleRmsFactor>0
-    ?Math.min(maxRmsPx,Math.max(0.50,solved.minEdgePx*scaleRmsFactor),raw.softFallback?0.55:Infinity)
+    ?Math.min(maxRmsPx,Math.max(0.50,solved.minEdgePx*scaleRmsFactor),raw.softFallback?softFallbackMaxRms:Infinity)
     :effMaxRms;
   if(solved.rmsPx>solvedRmsLimit)return null;
   return {...solved,softFallback:Boolean(raw.softFallback)};
@@ -4817,23 +5120,31 @@ function observeExtraTags(observation,sample,assoc){
   const staticMaxRms=1.45+0.55*staticGate.confidence;
   const carriedMaxRms=1.45+0.55*Math.max(staticGate.confidence,carriedGate.confidence);
   const perimeterMaxRms=Math.min(2.2,staticMaxRms+0.25);
+  const farMode=Boolean(lastQualityState.longRangeActive);
+  const steadyBoost=lastQualityState.tier!=='fluid'&&!hasActiveMovableTag(atMs);
   const valid=[];
   for(const raw of all){
     if(counts.get(raw.id)!==1)continue;
     const perimeter=isPerimeterTag(raw.id);
     const movable=isMovableTag(raw.id);
     if(!movable&&staticGate.frozen)continue;
+    const existingMov=movable?movableTools.get(raw.id):null;
+    const isTrackedMoving=Boolean(existingMov&&(existingMov.handCoupled||existingMov.recording||existingMov.lockState==='moving'));
     const solved=resolveUnassignedTagPose(
       raw,
       K,
       perimeter
-        ?{minEdgePx:9,minAreaPx:72,maxRmsPx:perimeterMaxRms,minCosView:0.22,maxDepthM:2.2,scaleRmsFactor:0.08}
-        :{minEdgePx:11,minAreaPx:110,maxRmsPx:movable?carriedMaxRms:staticMaxRms,minCosView:0.30,maxDepthM:1.95,scaleRmsFactor:0.055},
+        ?{minEdgePx:farMode?8:(steadyBoost?8.5:9),minAreaPx:farMode?64:72,maxRmsPx:perimeterMaxRms,minCosView:0.22,maxDepthM:farMode?3.2:(steadyBoost?2.6:2.2),scaleRmsFactor:0.08}
+        :{
+          minEdgePx:farMode?9:(steadyBoost?10:11),minAreaPx:farMode?80:(steadyBoost?92:110),
+          maxRmsPx:movable?carriedMaxRms:staticMaxRms,minCosView:0.30,maxDepthM:farMode?3.5:(steadyBoost?2.6:1.95),
+          scaleRmsFactor:isTrackedMoving?0.085:0.055,softFallbackMaxRms:isTrackedMoving?1.45:0.55,
+        },
     );
     if(!solved)continue;
-    const {edgeMm,pose,minEdgePx,softFallback}=solved;
+    const {edgeMm,pose,minEdgePx,rmsPx,softFallback}=solved;
     const lFromTag=product(lFromCamera,cvToGL(pose));
-    valid.push({tagId:raw.id,edgeMm,lFromTag,apparentEdgePx:minEdgePx,movable,perimeter,softFallback});
+    valid.push({tagId:raw.id,edgeMm,lFromTag,apparentEdgePx:minEdgePx,rmsPx,movable,perimeter,softFallback});
   }
 
   // Always observe perimeter markers (353-359) while SCAN is active and staticGate allows.
@@ -4882,6 +5193,8 @@ function observeExtraTags(observation,sample,assoc){
         targetXrTimeMs:assoc.targetXrTimeMs,
         decimate:sample.decimate??1,
         apparentEdgePx:v.apparentEdgePx,
+        rmsPx:v.rmsPx,
+        nearHand,
         allowRefine:!useCarried&&lastQualityState.allowRefine&&staticGate.confidence>=0.72,
         softFallback:v.softFallback,
       });
@@ -5285,7 +5598,7 @@ function renderRightHud(now,as,an,cs){
   const camActive=cs.running||cs.starting;
   const detText=lastSampleStats?.detectMs!=null?` · det ${Math.round(lastSampleStats.detectMs)}ms`:'';
   const ppText=lastSampleStats?.preprocessMs!=null?` · pp ${Math.round(lastSampleStats.preprocessMs)}ms`:'';
-  const decText=`d${cs.decimate??1}`;
+  const decText=`d${cs.decimate??1}${lastQualityState.longRangeActive?'·EXP1':''}`;
   const camLabel=camActive?`● CAM ON (${decText}${ppText}${detText})`:'○ CAM OFF · NATIVE XR ONLY';
   c.fillStyle=camActive?'#dc2626':'#15803d';c.fillRect(0,0,512,46);
   c.fillStyle='#ffffff';c.font='bold 20px system-ui';c.textAlign='center';c.fillText(camLabel,256,30);c.textAlign='left';
@@ -5362,9 +5675,12 @@ function renderRightHud(now,as,an,cs){
   const auditState=audit.state();
   const fStat=perimeterFence?.status()??'idle';
   const fText=fStat==='active'?`${perimeterFence.dynamicCount()}/7`:(fStat==='offered'?'TL ready':'off');
+  const tb=perfTracker.snapshot().trackingBenchmark;
+  const lagText=tb?.opticalLagMs?.p50!=null?` · Lag ${Math.round(tb.opticalLagMs.p50)}ms`:'';
+  const spdText=tb?.maxSpeedMmPerSec>0?` · Peak ${Math.round(tb.maxSpeedMmPerSec)}mm/s`:'';
   const line3=auditState.samples
     ?`Audit (${auditState.samples}×, read-only): med ${auditState.positionDifferenceMm.median.toFixed(1)}mm · p95 ${auditState.positionDifferenceMm.p95.toFixed(1)}mm`
-    :`Tracked frames: ${an.posesTracked} · Missing: ${an.posesMissing} · Fence: ${fText}`;
+    :`Frames ${an.posesTracked}/${an.posesMissing} · Fence ${fText}${lagText}${spdText}`;
 
   c.fillStyle='#e2e8f0';c.font='16px ui-monospace,monospace';c.fillText(line1,18,346);
   c.fillStyle='#94a3b8';c.font='15px ui-monospace,monospace';c.fillText(line2,18,374);
@@ -5572,6 +5888,7 @@ function finalizeDiagnostics(){
     frameTiming:perfSnap.frameTiming,
     hud:perfSnap.hud,
     anchorStability:perfSnap.anchorStability,
+    trackingBenchmark:perfSnap.trackingBenchmark,
     adaptiveQuality:{mode:adaptiveQuality.getMode(),...adaptiveQuality.stats()},
     compositor:{
       frameRate:session?.frameRate??null,
@@ -5607,9 +5924,9 @@ function clean(s){
   if(session!==s)return;
   finalizeDiagnostics();
   space?.removeEventListener?.('reset',reset);
-  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
+  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
   hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;perimeterOfferSuppressed=false;
-  modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';
+  modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';
   modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
   session=null;space=null;floorSpace=null;profile=null;extraScanActive=false;lastMotionState=null;lastObs=null;lastObsAtMs=0;reanchorConfirmUntil=0;resetAnchorStability();
   hasPrevViewerPose=false;smoothedHeadAngDegS=0;smoothedHeadLinMS=0;appliedFoveation=null;
@@ -5633,7 +5950,7 @@ function clean(s){
 }
 
 function reset(){
-  epoch++;history=[];obsBuffer.clear();tagHandCoupler.reset();handHistory.clear();resetAnchorStability();clearTrail();
+  epoch++;history=[];obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;handHistory.clear();resetAnchorStability();clearTrail();
   anchor.resetReference(space,context(),performance.now());
   if(!anchor.state().created){profile=null;extraScanActive=false;clearExtras();assistant.reset();assistant.begin();}
 }
@@ -5667,7 +5984,7 @@ async function toggleExtraScan(){
   const now=performance.now();
   if(extraScanActive){
     extraScanActive=false;history=[];obsBuffer.clear();capture.stop();
-    tagHandCoupler.reset();handHistory.clear();
+    tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;handHistory.clear();
     liveTouchLoaderActive=false;
     for(const e of movableTools.values()){
       e.pendingTrail.discard();
@@ -5690,7 +6007,10 @@ async function toggleExtraScan(){
       e.recOrbVisible=false;
       recOrbBatch.setVisible(e.recOrbSlot,false);
       badgeMesh.setQuadVisible(e.recPillSlot,false);
-      e.timeCopyHoldSince=null;e.timeCopyConsumed=false;
+      e.markOrbVisible=false;
+      recOrbBatch.setVisible(e.markOrbSlot,false);
+      badgeMesh.setQuadVisible(e.markPillSlot,false);
+      e.markHoldSince=null;e.markHoldConsumed=false;
       e.recHoldSince=null;e.recHoldConsumed=false;
     }
     syncStaticTagBadges();
@@ -5698,12 +6018,12 @@ async function toggleExtraScan(){
     status('MEASURE mode · camera OFF (90 FPS)');
     showHudToast('■ MEASURE MODE · 90 FPS','#22c55e');
   }else{
-    extraScanActive=true;obsBuffer.clear();tagHandCoupler.reset();handHistory.clear();
+    extraScanActive=true;obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;handHistory.clear();
     for(const e of movableTools.values()){
       if(e.currentPose)drawLiveBadge(e,e.lockState);
     }
     playModeTick('scan');
-    status('SCAN mode ON · Auto-Lock + Follow, Long-Press 0.55s = Time-Copy, [● REC] = path');
+    status('SCAN mode ON · Auto-Lock + Follow, [⏱ MARK] = Time-Copy, [● REC] = path');
     showHudToast('● SCAN MODE · AUTO-LOCK','#22d3ee');
     if(!await capture.start()){
       extraScanActive=false;
@@ -5713,10 +6033,19 @@ async function toggleExtraScan(){
   }
 }
 
+function hasActiveMovableTag(now=performance.now()){
+  for(const entry of movableTools.values()){
+    if((entry.handCoupled||entry.recording||entry.lockState==='moving')&&(entry.handCoupled||entry.recording||now-(entry.lastOpticalAtMs||0)<=2500)){
+      return true;
+    }
+  }
+  return false;
+}
+
 function buildScanPriorRois(){
-  if(!extraScanActive||!profile?.viewerFromCameraGL){scanPulseCounter=0;return undefined;}
+  if(!extraScanActive||!profile?.viewerFromCameraGL)return undefined;
   const K=lastObs?.cameraModel||profile?.K;
-  if(!K){scanPulseCounter=0;return undefined;}
+  if(!K)return undefined;
   let latest=null;
   for(let i=history.length-1;i>=Math.max(0,history.length-8);i--){
     const h=history[i];
@@ -5725,6 +6054,9 @@ function buildScanPriorRois(){
 
   let rois=[];
   if(latest){
+    const farMode=Boolean(lastQualityState.longRangeActive);
+    const steadyBoost=lastQualityState.tier!=='fluid'&&!hasActiveMovableTag();
+    const maxPriorDist=farMode?3.2:(steadyBoost?2.4:1.85);
     const pointsL=[];
     const locked=[];
     for(const entry of movableTools.values()){
@@ -5732,9 +6064,9 @@ function buildScanPriorRois(){
       if(!m)continue;
       const pt=[m[12],m[13],m[14]];
       if(entry.handCoupled||entry.recording||entry.lockState!=='locked'){
-        pointsL.push({pos:pt,halfPx:68,minDistM:0.35,maxDistM:1.85});
+        pointsL.push({pos:pt,halfPx:68,minDistM:0.35,maxDistM:maxPriorDist});
       }else{
-        locked.push({pos:pt,halfPx:52,minDistM:0.55,maxDistM:1.85});
+        locked.push({pos:pt,halfPx:52,minDistM:0.55,maxDistM:maxPriorDist});
       }
     }
     if(Number.isFinite(lastXrTime)){
@@ -5747,7 +6079,7 @@ function buildScanPriorRois(){
     for(const item of locked)pointsL.push(item);
     const verts=perimeterFence?.orderedVertices?.()??[];
     for(const v of verts){
-      if(v?.pos)pointsL.push({pos:v.pos,halfPx:52,minDistM:0.55,maxDistM:1.85});
+      if(v?.pos)pointsL.push({pos:v.pos,halfPx:52,minDistM:0.55,maxDistM:maxPriorDist});
     }
     if(pointsL.length){
       rois=projectPriorRois({
@@ -5763,19 +6095,91 @@ function buildScanPriorRois(){
     }
   }
 
-  if(smoothedHeadAngDegS<22){
-    scanPulseCounter++;
-    if(scanPulseCounter%4===0){
-      rois.push([
-        Math.max(0,Math.round(K.cx-220)),
-        Math.max(0,Math.round(K.cy-180)),
-        Math.min(K.width,Math.round(K.cx+220)),
-        Math.min(K.height,Math.round(K.cy+180)),
-      ]);
-    }
-  }else{
-    scanPulseCounter=0;
+  if(smoothedHeadAngDegS<22&&(scanPulseCounter%4===3)){
+    rois.push([
+      Math.max(0,Math.round(K.cx-220)),
+      Math.max(0,Math.round(K.cy-180)),
+      Math.min(K.width,Math.round(K.cx+220)),
+      Math.min(K.height,Math.round(K.cy+180)),
+    ]);
   }
+  return rois.length?rois:undefined;
+}
+
+function buildScanFocusRois(){
+  if(!extraScanActive||!profile?.viewerFromCameraGL)return undefined;
+  const K=lastObs?.cameraModel||profile?.K;
+  if(!K)return undefined;
+  let latest=null;
+  for(let i=history.length-1;i>=Math.max(0,history.length-8);i--){
+    const h=history[i];
+    if(h&&!h.emulatedPosition&&h.worldFromAnchor&&h.worldFromViewer){latest=h;break;}
+  }
+  if(!latest)return undefined;
+
+  const now=performance.now();
+  const lFromCam=product(inverse(latest.worldFromAnchor),product(latest.worldFromViewer,profile.viewerFromCameraGL));
+  const camPosL=[lFromCam[12],lFromCam[13],lFromCam[14]];
+  const farMode=Boolean(lastQualityState.longRangeActive);
+  // Awareness of the last full-frame detectMs breaks any self-triggering stale->full-frame death spiral.
+  const staleBudgetMs=Math.max(340,(lastSampleStats?.detectMs||0)+180);
+  const candidates=[];
+  let hasRecording=false,hasAnyActive=false,hasFreshActive=false;
+
+  for(const entry of movableTools.values()){
+    const moving=entry.lockState==='moving';
+    const isActive=entry.handCoupled||entry.recording||moving;
+    const isClose=(entry.lastApparentEdgePx||0)>=26;
+    if(!isActive&&!isClose)continue;
+    if(isActive){
+      hasAnyActive=true;
+      if(entry.recording)hasRecording=true;
+    }
+    if(!(entry.lastOpticalAtMs>0)||now-entry.lastOpticalAtMs>staleBudgetMs)continue;
+    if(isActive)hasFreshActive=true;
+    const m=entry.displayMatrix||entry.targetMatrix||entry.lockedMatrix;
+    if(!m)continue;
+    let pos=[m[12],m[13],m[14]];
+    if(entry.handCoupled&&entry.lastOpticalMatrix&&entry.displayMatrix){
+      const om=entry.lastOpticalMatrix,dm=entry.displayMatrix;
+      if(Math.hypot(dm[12]-om[12],dm[13]-om[13],dm[14]-om[14])<=0.25){
+        pos=[(om[12]+dm[12])*0.5,(om[13]+dm[13])*0.5,(om[14]+dm[14])*0.5];
+      }
+    }
+    const distToCameraM=Math.hypot(pos[0]-camPosL[0],pos[1]-camPosL[1],pos[2]-camPosL[2]);
+    const spd=Math.max(entry.lastSpeedMps||0,tagPredictor.speedOf(entry.tagId)?.speedMps||0);
+    const halfPx=Math.min(230,Math.max(115,Math.round((entry.lastApparentEdgePx||48)*2.4+Math.min(110,spd*140))));
+    candidates.push({
+      tagId:entry.tagId,
+      pos,
+      halfPx,
+      minDistM:0.20,
+      maxDistM:farMode?2.4:1.75,
+      recording:entry.recording,
+      handCoupled:entry.handCoupled,
+      moving,
+      apparentEdgePx:entry.lastApparentEdgePx||0,
+      distToCameraM,
+    });
+  }
+
+  if(hasAnyActive&&!hasFreshActive)return undefined;
+  const chosen=prioritizeFocusCandidates(candidates,{maxCount:2});
+  if(!chosen.length)return undefined;
+  // Pure check: focusSweepCounter only advances on real completed observations in onObservation.
+  const sweepEvery=hasRecording?10:(hasAnyActive?7:5);
+  if(focusSweepCounter>=sweepEvery)return undefined;
+
+  const rois=projectPriorRois({
+    pointsL:chosen,
+    worldFromAnchor:latest.worldFromAnchor,
+    worldFromViewer:latest.worldFromViewer,
+    viewerFromCameraGL:profile.viewerFromCameraGL,
+    K,
+    width:K.width,
+    height:K.height,
+    maxRois:chosen.length,
+  });
   return rois.length?rois:undefined;
 }
 
@@ -5822,12 +6226,16 @@ try{
         };
       }
       const fast=Boolean(extraScanActive&&$('fastScan')?.checked);
-      if(!fast)scanPulseCounter=0;
-      const priorRois=fast?buildScanPriorRois():undefined;
+      if(!fast){scanPulseCounter=0;focusSweepCounter=0;}
+      const activeMoving=fast&&hasActiveMovableTag();
+      const focusRois=fast?buildScanFocusRois():undefined;
+      const priorRois=(fast&&!focusRois)?buildScanPriorRois():undefined;
+      const effDecimate=focusRois?2:(activeMoving?2:(fast?q.scanDecimate:1));
+      const effMaxHz=focusRois?28:(activeMoving?Math.max(10,q.scanMaxHz):(fast?q.scanMaxHz:5));
       return {
         horizontalFovDeg:65,printScale:1,maxLongEdge:1280,experimentalCalibration:profile,
-        decimate:fast?q.scanDecimate:1,maxHz:fast?q.scanMaxHz:5,detectMode:fast?q.detectMode:'full',trackRefIds:null,solveUnassigned:Boolean(profile),
-        priorRois,
+        decimate:effDecimate,maxHz:effMaxHz,detectMode:fast?q.detectMode:'full',trackRefIds:null,solveUnassigned:Boolean(profile),
+        priorRois,focusRois,
       };
     },
     onError:e=>{diagnostics?.errors.push({at:performance.now(),message:e.message});status(e.message);},
@@ -5849,11 +6257,20 @@ try{
       lastSampleStats={
         serial:sample.serial,decimate:sample.decimate,detectMode:sample.detectMode??null,
         coarseMs:sample.coarseMs??null,roiMs:sample.roiMs??null,roiCount:sample.roiCount??null,priorRoiCount:sample.priorRoiCount??0,
+        focusRoiCount:sample.focusRoiCount??0,focusHit:Boolean(sample.focusHit),
         detectMs:sample.detectMs,readbackMs:sample.mainThreadReadbackMs,
         preprocessMs:sample.workerPreprocessMs,poseFitMs:sample.poseFitMs,captureLagMs:lag,capturedInRvfc:sample.capturedInRvfc,
         readbackMode:sample.readbackMode,metadataMediaTimeDeltaS:sample.metadataMediaTimeDeltaS,
         mode:curPhase!=='ready'?'calibrating':(extraScanActive?'scan':'measure'),
       };
+      if(extraScanActive){
+        if((sample.focusRoiCount??0)>0&&sample.focusHit)focusSweepCounter++;
+        else focusSweepCounter=0;
+        if((sample.focusRoiCount??0)===0&&smoothedHeadAngDegS<22)scanPulseCounter++;
+        else if(smoothedHeadAngDegS>=22)scanPulseCounter=0;
+      }else{
+        focusSweepCounter=0;scanPulseCounter=0;
+      }
       if(diagnostics){
         if(diagnostics.samples.length<340)diagnostics.samples.push(lastSampleStats);
         else{diagnostics.samples.splice(40,1);diagnostics.samples.push(lastSampleStats);}
@@ -6041,12 +6458,13 @@ try{
       }
 
       session=acquired;sessionId=`quest-${++sessionCount}`;epoch=0;history=[];obsBuffer.clear();clearExtras();clearTrail();resetSpatialPortals();audit.reset();
-      hold={sinceMs:null,progress:0,fire:false};extraScanActive=false;reanchorConfirmUntil=0;scanPulseCounter=0;
+      hold={sinceMs:null,progress:0,fire:false};extraScanActive=false;reanchorConfirmUntil=0;scanPulseCounter=0;focusSweepCounter=0;tagPredictor.reset();
       adaptiveQuality.setMode(currentQualityMode());
+      adaptiveQuality.setLongRange(currentLongRangeEnabled());
       adaptiveQuality.reset();
       appliedFoveation=null;lastQualityState=adaptiveQuality.state();
       hasPrevViewerPose=false;smoothedHeadAngDegS=0;smoothedHeadLinMS=0;rightMidPinchSince=null;perimeterOfferSuppressed=false;
-      lastModePillKey='';modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';
+      lastModePillKey='';modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';
       modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
       hudPanelsVisible=false;hudDragState=null;resetHudCache();perfTracker.reset();
       leftFistToggle.reset();leftFistFlashUntil=0;leftFistFlashPos=null;leftFistFlashToScan=false;
@@ -6083,6 +6501,7 @@ try{
           // Priority 1b: Pinch/Trigger while hovering the anchored [◈ FENCE] / [■ MEASURE / ● SCAN] / [ ? ] buttons.
           if(hoveredModeInfo){toggleModeHelp(now);return;}
           if(hoveredModeFence){togglePerimeterFence(now);return;}
+          if(hoveredModeClear&&userItemCount()>0){clearAllUserItems();return;}
           if(hoveredModeMain){toggleExtraScan();return;}
           // Priority 2: Controller Trigger pins/unpins immediately with ✓ confirmation burst; bare-hand pinch uses the 350 ms radial loader.
           if(hoveredWaypoint){
@@ -6168,7 +6587,8 @@ try{
       }
       for(let i=0;i<16;i++)_prevViewerPoseBuf[i]=vm[i];
       hasPrevViewerPose=true;prevViewerPoseMs=now;
-      lastQualityState=adaptiveQuality.update({angDegPerSec:smoothedHeadAngDegS,linMPerSec:smoothedHeadLinMS,nowMs:now});
+      const avgFps=fpsHistory.length>=10?fpsHistory.reduce((a,b)=>a+b,0)/fpsHistory.length:null;
+      lastQualityState=adaptiveQuality.update({angDegPerSec:smoothedHeadAngDegS,linMPerSec:smoothedHeadLinMS,nowMs:now,xrFps:avgFps});
       if(lastQualityState.foveation!==appliedFoveation){
         appliedFoveation=lastQualityState.foveation;
         try{renderer.xr.setFoveation?.(appliedFoveation);}catch{}
@@ -6238,13 +6658,13 @@ try{
     updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now);
     updateSpatialPortals(frameInputs,world,anPhase,asPhase,now,pose);
 
-    // Controller A/X (button 4): short press toggles HUD panels; hold 0.8 s clears stamps & pins.
+    // Controller A/X (button 4): short press toggles HUD panels; hold 0.8 s clears all user tags, trails & pins.
     const axPressed=frameInputs.axPressed;
     if(axPressed){
       if(axHoldSince==null){axHoldSince=now;axLongFired=false;}
       else if(!axLongFired&&now-axHoldSince>=800){
         axLongFired=true;
-        clearMovableTrails();
+        clearAllUserItems();
       }
     }else{
       if(axHoldSince!=null&&!axLongFired){
@@ -6259,7 +6679,7 @@ try{
     // • Left Index+Thumb stays 100% free for the Meta Quest OS menu everywhere.
     // • Direct 1-Handed Switch (SCAN <-> MEASURE): Hardened Frontal Left Fist Hold (0.85 s, strict curl + thumb tuck + centered view,
     //   suppressed near tags/menus). While SCAN is active, the left hand is tinted green (MEASURE = reddish).
-    // • Wrist Menus (Left: HUD / ✕ PINS / ↺ CLEAR ALL; Right: Q: AUTO/FLUID/CRISP / ↺ RECALIBRATE) are active ONLY in MEASURE mode
+    // • Wrist Menus (Left: HUD / ↺ CLEAR ALL; Right: Q: AUTO/FLUID/CRISP / ↺ RECALIBRATE) are active ONLY in MEASURE mode
     //   and completely hidden/disabled in SCAN mode so nothing gets in the way while scanning or recording.
     let ringShown=false,labelsShown=false,gazeShown=false,leftFistActiveForCursor=false;
     fingerBadgeIdx.sprite.visible=false;
@@ -6480,41 +6900,27 @@ try{
           drawFistProgressBadge(1,leftFistFlashToScan,true);
         }
 
-        // 3. Left Menu Ring (✕ PINS) & Pinky (↺ CLEAR ALL) ONLY work while in MEASURE mode with Wrist Menu open.
+        // 3. Left Menu Pinky (↺ CLEAR ALL) ONLY works while in MEASURE mode with Wrist Menu open (keeps Perimeter Fence intact).
         const dIndex=jDist(jt,ji);
         let activeFinger=null;
         const allowMenuPinch=inView&&now>=leftHandCooldownUntil&&dIndex>0.035&&leftMenuOpen;
-        const dRing=allowMenuPinch?jDist(jt,jr):Infinity;
         const dPinky=allowMenuPinch?jDist(jt,jp):Infinity;
-        if(dRing<PINCH_DIST&&dRing<=dPinky){
-          leftPinkyPinchSince=null;activeFinger='ring';
-          if(leftRingPinchSince==null)leftRingPinchSince=now;
-          const p=Math.min(1,(now-leftRingPinchSince)/HOLD_MS);
-          showRingAt(jt,jr,0xe879f9,p);
-          if(p>=1){
-            leftRingPinchSince=null;leftHandCooldownUntil=now+1200;
-            const hadPins=pinnedPoints.size>0;
-            clearPins();
-            playModeTick('unpin');
-            showHudToast(hadPins?'✕ PINNED BOXES CLEARED':'NO PINNED BOXES','#e879f9',1600);
-          }
-        }else if(dPinky<PINCH_DIST){
-          leftRingPinchSince=null;activeFinger='pinky';
+        if(dPinky<PINCH_DIST){
+          activeFinger='pinky';
           if(leftPinkyPinchSince==null)leftPinkyPinchSince=now;
           const p=Math.min(1,(now-leftPinkyPinchSince)/HOLD_MS);
           showRingAt(jt,jp,0xf59e0b,p);
-          if(p>=1){leftPinkyPinchSince=null;leftHandCooldownUntil=now+1200;playModeTick('unpin');clearMovableTrails();}
+          if(p>=1){leftPinkyPinchSince=null;leftHandCooldownUntil=now+1200;clearAllUserItems();}
         }else{
-          leftRingPinchSince=null;leftPinkyPinchSince=null;
+          leftPinkyPinchSince=null;
         }
+        leftRingPinchSince=null;
 
         if(leftMenuOpen){
           const pHudL=placePill(fingerBadgeIdx,ji,canScan,hudPanelsVisible?'HUD OFF':'HUD ON','#c084fc',wristPillPokeId==='l-hud');
-          const pRing=placePill(fingerBadgeRing,jr,canScan,'✕ PINS','#e879f9',activeFinger==='ring'||wristPillPokeId==='l-ring');
           const pPinky=placePill(fingerBadgePinky,jp,canScan,'↺ CLEAR ALL','#fbbf24',activeFinger==='pinky'||wristPillPokeId==='l-pinky');
           if(pHudL)openPills.push({id:'l-hud',probeId:'hand:right',pos:pHudL,poker:rightIdxPos,color:0xc084fc,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;hudPanelsVisible=!hudPanelsVisible;if(hudPanelsVisible)resetHudCache();else hudDragState=null;playModeTick('pin');showHudToast(hudPanelsVisible?'HUD SHOWN':'HUD HIDDEN','#c084fc',1400);}});
-          if(pRing)openPills.push({id:'l-ring',probeId:'hand:right',pos:pRing,poker:rightIdxPos,color:0xe879f9,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;const hadPins=pinnedPoints.size>0;clearPins();playModeTick('unpin');showHudToast(hadPins?'✕ PINNED BOXES CLEARED':'NO PINNED BOXES','#e879f9',1600);}});
-          if(pPinky)openPills.push({id:'l-pinky',probeId:'hand:right',pos:pPinky,poker:rightIdxPos,color:0xf59e0b,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;playModeTick('unpin');clearMovableTrails();}});
+          if(pPinky)openPills.push({id:'l-pinky',probeId:'hand:right',pos:pPinky,poker:rightIdxPos,color:0xf59e0b,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;clearAllUserItems();}});
         }
       }else{
         leftFistToggle.update({pose:null,inView:false,enabled:false,nowMs:now});
@@ -6570,7 +6976,7 @@ try{
         const indexOpen=jDist(jt,ji)>0.035;
         const intentional=rightMenuOpen&&inView&&indexOpen&&now>=rightHandCooldownUntil;
         const dRightMid=intentional?jDist(jt,jm):Infinity;
-        const dRightRing=Infinity;
+        const dRightRing=intentional?jDist(jt,jr):Infinity;
         const dRightPinky=intentional?jDist(jt,jp):Infinity;
         let rightActive=null;
         if(dRightMid<PINCH_DIST&&dRightMid<=dRightRing&&dRightMid<=dRightPinky){
@@ -6581,6 +6987,15 @@ try{
           if(p>=1){
             rightMidPinchSince=null;rightHandCooldownUntil=now+1000;
             cycleAdaptiveQualityMode();
+          }
+        }else if(dRightRing<PINCH_DIST&&dRightRing<=dRightPinky){
+          rightMidPinchSince=null;rightPinkyPinchSince=null;rightActive='ring';
+          if(rightRingPinchSince==null)rightRingPinchSince=now;
+          const p=Math.min(1,(now-rightRingPinchSince)/HOLD_MS);
+          showRingAt(jt,jr,0x22d3ee,p);
+          if(p>=1){
+            rightRingPinchSince=null;rightHandCooldownUntil=now+1000;
+            toggleLongRangeMode();
           }
         }else if(dRightPinky<PINCH_DIST){
           rightMidPinchSince=null;rightRingPinchSince=null;rightActive='pinky';
@@ -6596,9 +7011,13 @@ try{
         }
         if(rightMenuOpen){
           const qText=`Q: ${adaptiveQuality.getMode().toUpperCase()}`;
+          const farOn=adaptiveQuality.getLongRange();
+          const rText=farOn?'RANGE: EXP 1.0':'RANGE: AUTO 1.5';
           const pQual=placePill(fingerBadgeRightMid,jm,true,qText,'#38bdf8',rightActive==='mid'||wristPillPokeId==='r-qual');
+          const pRange=placePill(fingerBadgeRightRing,jr,true,rText,farOn?'#22d3ee':'#94a3b8',rightActive==='ring'||wristPillPokeId==='r-range');
           const pRecal=placePill(fingerBadgeRightPinky,jp,true,'↺ RECALIBRATE','#fbbf24',rightActive==='pinky'||wristPillPokeId==='r-recal');
           if(pQual)openPills.push({id:'r-qual',probeId:'hand:left',pos:pQual,poker:leftIdxPos,color:0x38bdf8,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;cycleAdaptiveQualityMode();}});
+          if(pRange)openPills.push({id:'r-range',probeId:'hand:left',pos:pRange,poker:leftIdxPos,color:0x22d3ee,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;toggleLongRangeMode();}});
           if(pRecal)openPills.push({id:'r-recal',probeId:'hand:left',pos:pRecal,poker:leftIdxPos,color:0xf59e0b,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+1400;triggerRecalibrate();}});
         }
       }else{
@@ -6714,6 +7133,7 @@ try{
     hold=nextExitHold(hold,xrExitPressed(session.inputSources).held,now);
     if(hold.fire)end();
     if(root.visible){
+      if(frameBatch.activeCount()>0)frameShimmerUniforms.uTime.value=now*0.001;
       frameBatch.commit();
       overlayFrameBatch.commit();
       rodBatch.commit();
@@ -6724,6 +7144,7 @@ try{
       recOrbBatch.commit();
       axesBatch.commit();
       badgeMesh.updateBillboards(frameInputs.viewerRightL,frameInputs.viewerUpL);
+      tagFaceMesh.commit();
     }
     const renderStart=performance.now();
     const cpuMs=renderStart-now;

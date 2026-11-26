@@ -24,14 +24,22 @@ export const ADAPTIVE_QUALITY_DEFAULTS = Object.freeze({
   fluidDetectMode: 'two-stage',
   refinedDetectMode: 'two-stage',
   crispDetectMode: 'two-stage',
+  longRangeFluidScanDecimate: 2,
+  longRangeFluidScanMaxHz: 12,
+  longRangeRefinedScanDecimate: 1,
+  longRangeRefinedScanMaxHz: 6,
+  longRangeCrispScanDecimate: 1,
+  longRangeCrispScanMaxHz: 6,
+  longRangeMinFps: 78,
+  longRangeBackoffFps: 72,
 });
 
-function tierConfig(cfg, tier, activeMode = 'auto') {
+function tierConfig(cfg, tier, activeMode = 'auto', longRangeActive = false) {
   if (tier === 'crisp') {
     return {
       foveation: activeMode === 'crisp' ? 0.0 : cfg.crispFoveation,
-      scanDecimate: cfg.crispScanDecimate,
-      scanMaxHz: cfg.crispScanMaxHz,
+      scanDecimate: longRangeActive ? cfg.longRangeCrispScanDecimate : cfg.crispScanDecimate,
+      scanMaxHz: longRangeActive ? cfg.longRangeCrispScanMaxHz : cfg.crispScanMaxHz,
       detectMode: cfg.crispDetectMode,
       allowRefine: true,
     };
@@ -39,24 +47,26 @@ function tierConfig(cfg, tier, activeMode = 'auto') {
   if (tier === 'refined') {
     return {
       foveation: cfg.refinedFoveation,
-      scanDecimate: cfg.refinedScanDecimate,
-      scanMaxHz: cfg.refinedScanMaxHz,
+      scanDecimate: longRangeActive ? cfg.longRangeRefinedScanDecimate : cfg.refinedScanDecimate,
+      scanMaxHz: longRangeActive ? cfg.longRangeRefinedScanMaxHz : cfg.refinedScanMaxHz,
       detectMode: cfg.refinedDetectMode,
       allowRefine: true,
     };
   }
   return {
     foveation: cfg.fluidFoveation,
-    scanDecimate: cfg.fluidScanDecimate,
-    scanMaxHz: cfg.fluidScanMaxHz,
+    scanDecimate: longRangeActive ? cfg.longRangeFluidScanDecimate : cfg.fluidScanDecimate,
+    scanMaxHz: longRangeActive ? cfg.longRangeFluidScanMaxHz : cfg.fluidScanMaxHz,
     detectMode: cfg.fluidDetectMode,
     allowRefine: false,
   };
 }
 
-export function createAdaptiveQualityController({ mode = 'auto', ...opts } = {}) {
+export function createAdaptiveQualityController({ mode = 'auto', longRange = false, ...opts } = {}) {
   const cfg = { ...ADAPTIVE_QUALITY_DEFAULTS, ...opts };
   let activeMode = ADAPTIVE_QUALITY_MODES.includes(mode) ? mode : 'auto';
+  let longRangeEnabled = Boolean(longRange);
+  let perfAllowsLongRange = true;
   let tier = activeMode === 'crisp' ? 'crisp' : 'fluid';
   let stillSinceMs = null;
   let transitions = 0;
@@ -70,13 +80,17 @@ export function createAdaptiveQualityController({ mode = 'auto', ...opts } = {})
     scanMaxHz: cfg.fluidScanMaxHz,
     detectMode: cfg.fluidDetectMode,
     allowRefine: false,
+    longRange: longRangeEnabled,
+    longRangeActive: longRangeEnabled && perfAllowsLongRange,
     changed: false,
   };
 
   function applyTier(nextTier) {
     const prevTier = tier;
+    const prevLongRangeActive = current.longRangeActive;
+    const longRangeActive = longRangeEnabled && perfAllowsLongRange && nextTier !== 'fluid';
     tier = nextTier;
-    const tc = tierConfig(cfg, tier, activeMode);
+    const tc = tierConfig(cfg, tier, activeMode, longRangeActive);
     current.mode = activeMode;
     current.tier = tier;
     current.foveation = tc.foveation;
@@ -84,8 +98,10 @@ export function createAdaptiveQualityController({ mode = 'auto', ...opts } = {})
     current.scanMaxHz = tc.scanMaxHz;
     current.detectMode = tc.detectMode;
     current.allowRefine = tc.allowRefine;
-    current.changed = prevTier !== tier;
-    if (current.changed) transitions++;
+    current.longRange = longRangeEnabled;
+    current.longRangeActive = longRangeActive;
+    current.changed = prevTier !== tier || prevLongRangeActive !== longRangeActive;
+    if (prevTier !== tier) transitions++;
   }
 
   applyTier(activeMode === 'crisp' ? 'crisp' : 'fluid');
@@ -106,8 +122,19 @@ export function createAdaptiveQualityController({ mode = 'auto', ...opts } = {})
     return current;
   }
 
+  function setLongRange(enabled) {
+    const next = Boolean(enabled);
+    const lrChanged = longRangeEnabled !== next;
+    longRangeEnabled = next;
+    if (next) perfAllowsLongRange = true;
+    applyTier(tier);
+    if (lrChanged) current.changed = true;
+    return current;
+  }
+
   function reset() {
     stillSinceMs = null;
+    perfAllowsLongRange = true;
     transitions = 0;
     tierFrames.fluid = 0;
     tierFrames.refined = 0;
@@ -117,7 +144,12 @@ export function createAdaptiveQualityController({ mode = 'auto', ...opts } = {})
     transitions = 0;
   }
 
-  function update({ angDegPerSec = 0, linMPerSec = 0, nowMs = 0 } = {}) {
+  function update({ angDegPerSec = 0, linMPerSec = 0, nowMs = 0, xrFps = null } = {}) {
+    if (longRangeEnabled && Number.isFinite(xrFps) && xrFps > 0) {
+      if (perfAllowsLongRange && xrFps < cfg.longRangeBackoffFps) perfAllowsLongRange = false;
+      else if (!perfAllowsLongRange && xrFps >= cfg.longRangeMinFps) perfAllowsLongRange = true;
+    }
+
     if (activeMode === 'fluid') {
       applyTier('fluid');
       tierFrames[tier]++;
@@ -153,12 +185,16 @@ export function createAdaptiveQualityController({ mode = 'auto', ...opts } = {})
   return {
     setMode,
     getMode: () => activeMode,
+    setLongRange,
+    getLongRange: () => longRangeEnabled,
     reset,
     update,
     state: () => ({ ...current }),
     stats: () => ({
       mode: activeMode,
       tier,
+      longRange: longRangeEnabled,
+      longRangeActive: longRangeEnabled && perfAllowsLongRange && tier !== 'fluid',
       transitions,
       tierFrames: { ...tierFrames },
     }),

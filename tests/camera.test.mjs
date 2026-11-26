@@ -406,3 +406,40 @@ test('createReferenceCamera accepts pre-solved worker observations and passes K/
     cam.dispose();
   });
 });
+
+test('createReferenceCamera forwards focusRois when provided and records focusRoiCount and focusHit',async()=>{
+  await withBrowserMocks(async({getWorker})=>{
+    const track={readyState:'live',muted:false,label:'Quest RGB',stop(){},getSettings:()=>({deviceId:'cam1',resizeMode:'none'}),addEventListener(){}};
+    Object.defineProperty(globalThis,'navigator',{value:{
+      userAgent:'QuestMock/1.0',
+      mediaDevices:{
+        getSupportedConstraints:()=>({resizeMode:true}),
+        enumerateDevices:async()=>[],
+        getUserMedia:async()=>({getVideoTracks:()=>[track],getTracks:()=>[track]}),
+      },
+    },configurable:true,writable:true});
+    const video=makeMockVideo({withRvfc:true});
+    const observations=[];
+    const expectedFocus=[[320,240,560,480]];
+    const cam=createReferenceCamera({
+      video,geometry:rig,
+      getSettings:()=>({horizontalFovDeg:65,printScale:1,maxLongEdge:1280,experimentalCalibration:null,maxHz:28,detectMode:'two-stage',focusRois:expectedFocus}),
+      getContext:()=>({sessionId:'s1',spaceEpoch:0}),
+      onObservation:(obs,sample)=>observations.push({obs,sample}),
+    });
+    await cam.start();
+    video.currentTime=1.0;
+    video.fireRvfc(1000,{mediaTime:1.0,presentedFrames:1,captureTime:992});
+    const worker=getWorker();
+    const frameMsg=worker.messages[1];
+    assert.deepEqual(frameMsg.focusRois,expectedFocus);
+    worker.onmessage({data:{
+      type:'detections',serial:frameMsg.serial,markers:[],
+      frameEvidence:{fresh:true,pixelsChanged:true},preprocessMs:2,detectMs:8,roiCount:1,focusHit:true,
+    }});
+    assert.equal(observations.length,1);
+    assert.equal(observations[0].sample.focusRoiCount,1);
+    assert.equal(observations[0].sample.focusHit,true);
+    cam.dispose();
+  });
+});

@@ -149,6 +149,33 @@ export function projectPriorRois({
   return merged;
 }
 
+/**
+ * Prioritize Focus-ROI candidates so active targets (recording / hand-coupled, then moving)
+ * drop resting background tags and are ordered closest-to-camera first.
+ */
+export function prioritizeFocusCandidates(candidates, { maxCount = 2 } = {}) {
+  if (!Array.isArray(candidates) || candidates.length === 0 || maxCount <= 0) return [];
+  const withTier = [];
+  let hasActive = false;
+  for (const c of candidates) {
+    if (!c) continue;
+    const tier = (c.recording || c.handCoupled) ? 0 : (c.moving ? 1 : 2);
+    if (tier <= 1) hasActive = true;
+    withTier.push({ item: c, tier });
+  }
+  const pool = hasActive ? withTier.filter(x => x.tier <= 1) : withTier;
+  pool.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier - b.tier;
+    const da = Number.isFinite(a.item.distToCameraM) ? a.item.distToCameraM : Infinity;
+    const db = Number.isFinite(b.item.distToCameraM) ? b.item.distToCameraM : Infinity;
+    if (da !== db) return da - db;
+    const pa = Number.isFinite(a.item.apparentEdgePx) ? a.item.apparentEdgePx : 0;
+    const pb = Number.isFinite(b.item.apparentEdgePx) ? b.item.apparentEdgePx : 0;
+    return pb - pa;
+  });
+  return pool.slice(0, maxCount).map(x => x.item);
+}
+
 export function createAprilTagDetector(wasm, decimate = 1) {
   if (!wasm?.cwrap || !VALID_DECIMATES.includes(decimate)) throw new TypeError('Invalid AprilTag runtime/options');
   const init = wasm.cwrap('atagjs_init', 'number', []);
@@ -350,6 +377,23 @@ export function createAprilTagDetector(wasm, decimate = 1) {
         }
       }
       const roiMs = performance.now() - tRoi;
+      for (const cm of coarseMarkers) {
+        const ctr = markerCenterXY(cm);
+        if (!ctr) continue;
+        const alreadyRefined = refined.some((rm) => {
+          if (rm.id !== cm.id) return false;
+          const rCtr = markerCenterXY(rm);
+          return rCtr && Math.hypot(rCtr[0] - ctr[0], rCtr[1] - ctr[1]) <= 14;
+        });
+        if (!alreadyRefined) {
+          refined.push({
+            ...cm,
+            corners: Array.isArray(cm.corners) ? cm.corners.map(p => ({ ...p })) : cm.corners,
+            center: cm.center ? { ...cm.center } : cm.center,
+            softFallback: true,
+          });
+        }
+      }
       return {
         markers: deduplicateMarkers(refined),
         coarseMs,
@@ -398,6 +442,74 @@ export function createAprilTagDetector(wasm, decimate = 1) {
     return { ...fb, trackedHit: false };
   }
 
+  function detectFocusRois(gray, width, height, focusRois, {
+    maxRois = 4,
+    maxTotalAreaFrac = 0.48,
+    fallbackOpts = {},
+  } = {}) {
+    validateGrayFrame(gray, width, height);
+    let boxes = sanitizePriorRois(focusRois, width, height, maxRois);
+    if (boxes.length > 0) {
+      boxes = mergeRoiBoxes(boxes, 16, { maxMergedArea: 240000 });
+      if (boxes.length > maxRois) boxes.length = maxRois;
+      let totalArea = 0;
+      for (const b of boxes) totalArea += (b[2] - b[0]) * (b[3] - b[1]);
+      if (totalArea > 0 && totalArea <= maxTotalAreaFrac * width * height) {
+        const prevDec = currentDecimate;
+        const prevRef = currentRefineEdges;
+        const markers = [];
+        let roiMs = 0;
+        try {
+          setOptions({ decimate: 1, refineEdges: 1 });
+          const t0 = performance.now();
+          const missedBoxes = [];
+          for (const box of boxes) {
+            const [x0, y0, x1, y1] = box;
+            const rw = x1 - x0;
+            const rh = y1 - y0;
+            const buf = copyRoi(gray, width, x0, y0, rw, rh);
+            const roiMarkers = offsetMarkers(rawDetect(buf, rw, rh), x0, y0);
+            if (roiMarkers.length > 0) {
+              for (const m of roiMarkers) markers.push(m);
+            } else {
+              missedBoxes.push(box);
+            }
+          }
+          if (missedBoxes.length > 0) {
+            // decimate=1.5 + refineEdges=0 (~0.2 ms) averages motion-blur ringing and rescues +1-2 px heavier blur.
+            setOptions({ decimate: 1.5, refineEdges: 0 });
+            for (const [x0, y0, x1, y1] of missedBoxes) {
+              const rw = x1 - x0;
+              const rh = y1 - y0;
+              const buf = copyRoi(gray, width, x0, y0, rw, rh);
+              const roiMarkers = offsetMarkers(rawDetect(buf, rw, rh), x0, y0);
+              for (const m of roiMarkers) {
+                m.softFallback = true;
+                markers.push(m);
+              }
+            }
+          }
+          roiMs = performance.now() - t0;
+        } finally {
+          setOptions({ decimate: prevDec, refineEdges: prevRef });
+        }
+        if (markers.length > 0) {
+          return {
+            markers: deduplicateMarkers(markers),
+            coarseMs: 0,
+            roiMs,
+            roiCount: boxes.length,
+            focusHit: true,
+          };
+        }
+        const fb = detectTwoStage(gray, width, height, fallbackOpts);
+        return { ...fb, roiMs: fb.roiMs + roiMs, focusHit: false };
+      }
+    }
+    const fb = detectTwoStage(gray, width, height, fallbackOpts);
+    return { ...fb, focusHit: false };
+  }
+
   return {
     setDecimate(next) {
       setOptions({ decimate: next });
@@ -409,5 +521,6 @@ export function createAprilTagDetector(wasm, decimate = 1) {
     },
     detectTwoStage,
     detectTrackedRoi,
+    detectFocusRois,
   };
 }

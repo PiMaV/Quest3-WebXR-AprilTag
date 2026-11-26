@@ -6,28 +6,30 @@ import {isRigidPose} from './anchor.mjs';
 import {composeRigid,inverse,matToQuat,product,quatSlerp,rigidVector} from './runtime.mjs';
 
 export const HAND_COUPLING_DEFAULTS=Object.freeze({
-  attachRadiusM:0.16,
-  maxLeverArmM:0.25,
+  attachRadiusM:0.30,
+  maxLeverArmM:0.42,
+  maxTagsPerHand:4,
   pinchGripDistM:0.065,
   pinchApertureMaxM:0.045,
   pinchConfirmDeltas:1,
+  coMovingConfirmDeltas:1,
   wandConfirmDeltas:2,
   minExcitePosM:0.022,
   minExciteAngDeg:12,
-  lockPosBaseM:0.015,
-  lockPosLeverSlope:0.03,
-  lockAngDeg:12,
+  lockPosBaseM:0.018,
+  lockPosLeverSlope:0.07,
+  lockAngDeg:16,
   lockStaticRatio:0.35,
   minMotionRatio:0.55,
   maxMotionRatio:1.65,
   minOpticalConfidence:0.35,
   adaptAlpha:0.25,
-  watchdogPosBaseM:0.022,
-  watchdogPosLeverSlope:0.04,
-  watchdogAngDeg:18,
+  watchdogPosBaseM:0.025,
+  watchdogPosLeverSlope:0.08,
+  watchdogAngDeg:22,
   watchdogStationaryMinHandM:0.025,
   watchdogStationaryMaxRatio:0.35,
-  watchdogPullMarginM:0.06,
+  watchdogPullMarginM:0.08,
   pinchReleaseDeltaM:0.025,
   pinchReleasePullM:0.022,
   handLostTimeoutMs:120,
@@ -317,11 +319,12 @@ export function createTagHandCoupler(options={}){
     return st;
   }
 
-  function isHandOccupiedByOther(handedness,tagId){
+  function countHandCoupledOthers(handedness,tagId){
+    let count=0;
     for(const other of states.values()){
-      if(other.tagId!==tagId&&other.mode==='coupled'&&other.handedness===handedness)return true;
+      if(other.tagId!==tagId&&other.mode==='coupled'&&other.handedness===handedness)count++;
     }
-    return false;
+    return count;
   }
 
   function release(st,reason,opticalPose=null){
@@ -371,8 +374,8 @@ export function createTagHandCoupler(options={}){
       const posLimit=cfg.watchdogPosBaseM+cfg.watchdogPosLeverSlope*st.leverArmM;
       const curDist=minAnchorDistance(hSample,tagPos);
       const pullLimit=st.lockGripDistM!=null
-        ?Math.min(cfg.attachRadiusM+0.03,st.lockGripDistM+cfg.watchdogPullMarginM)
-        :Math.max(cfg.attachRadiusM+0.03,st.leverArmM+0.05);
+        ?Math.min(cfg.attachRadiusM+0.05,st.lockGripDistM+cfg.watchdogPullMarginM)
+        :Math.max(cfg.attachRadiusM+0.05,st.leverArmM+0.06);
       const handPulledAway=curDist>pullLimit;
       let tagStationary=false;
       if(st.lastOpticalTagPose){
@@ -425,7 +428,8 @@ export function createTagHandCoupler(options={}){
     let hasAnyCandidate=false;
 
     for(const handedness of HANDS){
-      if(isHandOccupiedByOther(handedness,tagId)){
+      const otherOnHand=countHandCoupledOthers(handedness,tagId);
+      if(otherOnHand>=cfg.maxTagsPerHand){
         st.candidates[handedness]=null;
         continue;
       }
@@ -476,7 +480,7 @@ export function createTagHandCoupler(options={}){
       const pureRotPosOk=posExcited||(
         expectedMove.posM<cfg.minExcitePosM&&
         tagMove.posM<cfg.minExcitePosM&&
-        rigidErr.posM<=Math.min(0.012,lockPosLimit)
+        rigidErr.posM<=Math.min(0.016+0.04*leverArmM,lockPosLimit)
       );
       const angRatioOk=!angExcited||(
         rigidErr.angDeg<=cfg.lockStaticRatio*Math.min(tagMove.angDeg,expectedMove.angDeg)
@@ -493,7 +497,7 @@ export function createTagHandCoupler(options={}){
 
       if(coherent){
         const isPinch=gripDist<=cfg.pinchGripDistM&&hSample.pinchDistM!=null&&hSample.pinchDistM<=cfg.pinchApertureMaxM;
-        const needed=isPinch?cfg.pinchConfirmDeltas:cfg.wandConfirmDeltas;
+        const needed=isPinch?cfg.pinchConfirmDeltas:(otherOnHand>0?cfg.coMovingConfirmDeltas:cfg.wandConfirmDeltas);
         const nextConfirm=(prev.confirmCount||0)+1;
         if(nextConfirm>=needed){
           const score=rigidErr.posM+rigidErr.angDeg*0.001+gripDist*0.05;
@@ -579,20 +583,22 @@ export function createTagHandCoupler(options={}){
       return {coupled:false,mode:st?.mode??'free',handedness:null,gripKind:null,lFromTag:null,released:false,reason:null};
     }
 
+    const opticalAgeMs=Math.max(0,nowXrTimeMs-st.lastOpticalXrMs);
+
     if(nowXrTimeMs-st.lastOpticalXrMs>cfg.opticalStaleTimeoutMs){
       const rel=release(st,'optical-timeout');
-      return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
+      return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,opticalAgeMs,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
     }
 
     const latest=handHistory.latest(st.handedness,nowXrTimeMs,cfg.handLostTimeoutMs);
     if(!latest){
       const rel=release(st,'hand-tracking-lost');
-      return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
+      return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,opticalAgeMs,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
     }
 
     if(latest.frameKind!==st.frameKind){
       const rel=release(st,'hand-frame-changed');
-      return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
+      return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,opticalAgeMs,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
     }
 
     const predicted=product(latest.lFromHand,st.handFromTag);
@@ -605,7 +611,7 @@ export function createTagHandCoupler(options={}){
       );
       if(driftM>cfg.maxUnconfirmedDriftM){
         const rel=release(st,'unconfirmed-drift');
-        return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
+        return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,opticalAgeMs,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
       }
     }
 
@@ -618,7 +624,7 @@ export function createTagHandCoupler(options={}){
         const pulled=st.lockFingerDistM==null||fingerDist>st.lockFingerDistM+cfg.pinchReleasePullM;
         if(pulled||latest.pinchDistM>st.lockPinchDistM+cfg.pinchReleaseDeltaM*1.8){
           const rel=release(st,'pinch-opened');
-          return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
+          return {coupled:false,mode:'free',handedness:null,gripKind:null,lFromTag:null,opticalAgeMs,released:true,reason:rel.reason,prevHand:rel.handedness,lastOpticalPose:rel.lastOpticalPose};
         }
       }
     }
@@ -629,7 +635,7 @@ export function createTagHandCoupler(options={}){
       handedness:st.handedness,
       gripKind:st.gripKind,
       lFromTag:predicted,
-      opticalAgeMs:Math.max(0,nowXrTimeMs-st.lastOpticalXrMs),
+      opticalAgeMs,
       released:false,
       reason:null,
     };

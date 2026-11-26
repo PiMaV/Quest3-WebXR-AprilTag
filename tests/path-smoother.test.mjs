@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fuseCommittedTrailSegment,smoothLineTail} from '../src/path-smoother.mjs';
+import {fuseCommittedTrailSegment,smoothLineTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius} from '../src/path-smoother.mjs';
 import {isRigidPose} from '../src/anchor.mjs';
 import {vectorRigid} from '../src/runtime.mjs';
 
@@ -67,4 +67,27 @@ test('smoothLineTail cancels sawtooth Nyquist ripple, pins endpoints, bounds cor
   const cIdx=2*3;
   const dev=Math.hypot(outC[cIdx]-rawC[cIdx],outC[cIdx+1]-rawC[cIdx+1],outC[cIdx+2]-rawC[cIdx+2]);
   assert.ok(dev<=0.012+1e-6,`corner deviation ${dev} exceeded 12 mm cap`);
+});
+
+test('speedToTubeRadius maps speed monotonically between clamped bounds and guards non-finite inputs',()=>{
+  const minR=SPEED_RADIUS_DEFAULTS.minRadiusM;
+  const maxR=SPEED_RADIUS_DEFAULTS.maxRadiusM;
+  assert.equal(speedToTubeRadius(0),minR);
+  assert.equal(speedToTubeRadius(-1.5),minR);
+  assert.equal(speedToTubeRadius(NaN),minR);
+  assert.equal(speedToTubeRadius(Infinity),minR);
+
+  const mid=speedToTubeRadius(SPEED_RADIUS_DEFAULTS.refSpeedMps*0.5);
+  assert.ok(mid>minR&&mid<maxR,`mid speed radius ${mid} must lie strictly inside (${minR}, ${maxR})`);
+  assert.equal(speedToTubeRadius(SPEED_RADIUS_DEFAULTS.refSpeedMps),maxR);
+  assert.equal(speedToTubeRadius(10.0),maxR);
+
+  assert.equal(SPEED_RADIUS_DEFAULTS.refSpeedMps,0.55);
+  const r50=speedToTubeRadius(0.05);
+  const r250=speedToTubeRadius(0.25);
+  const r500=speedToTubeRadius(0.50);
+  assert.ok(r50<r250&&r250<r500&&r500<maxR);
+  assert.ok(maxR/minR>5,'0..550 mm/s envelope must provide >5x tube diameter contrast');
+
+  assert.equal(speedToTubeRadius(0.5,{minRadiusM:0.001,maxRadiusM:0.005,refSpeedMps:1.0,exponent:1.0}),0.003);
 });

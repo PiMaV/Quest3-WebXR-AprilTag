@@ -322,3 +322,218 @@ export function createAxesBatch(maxAxes, { renderOrder = 0 } = {}) {
     dispose,
   };
 }
+
+/**
+ * Single-draw-call pre-allocated volumetric 3D polyline tube with parallel-transport
+ * frames and per-sample radii (e.g., velocity-modulated path thickness).
+ */
+export function createPathTubeMesh(maxPoints, material, {
+  radius = 0.0014,
+  sides = 5,
+  renderOrder = 0,
+  name = '',
+} = {}) {
+  const cap = Math.max(2, maxPoints | 0);
+  const segSides = Math.max(3, Math.min(12, sides | 0));
+  const defaultRadius = Number.isFinite(radius) && radius > 1e-5 ? radius : 0.0014;
+
+  const positions = new Float32Array(cap * segSides * 3);
+  const ringNormals = new Float32Array(cap * 3);
+  const totalIndices = (cap - 1) * segSides * 6;
+  const indices = (cap * segSides <= 65535)
+    ? new Uint16Array(totalIndices)
+    : new Uint32Array(totalIndices);
+
+  let idxOff = 0;
+  for (let i = 0; i < cap - 1; i++) {
+    const r0 = i * segSides;
+    const r1 = (i + 1) * segSides;
+    for (let s = 0; s < segSides; s++) {
+      const sn = (s + 1) % segSides;
+      const a = r0 + s;
+      const b = r0 + sn;
+      const c = r1 + sn;
+      const d = r1 + s;
+      indices[idxOff++] = a;
+      indices[idxOff++] = b;
+      indices[idxOff++] = c;
+      indices[idxOff++] = a;
+      indices[idxOff++] = c;
+      indices[idxOff++] = d;
+    }
+  }
+
+  const cosTable = new Float32Array(segSides);
+  const sinTable = new Float32Array(segSides);
+  for (let s = 0; s < segSides; s++) {
+    const ang = (s / segSides) * Math.PI * 2;
+    cosTable[s] = Math.cos(ang);
+    sinTable[s] = Math.sin(ang);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  const posAttr = new THREE.BufferAttribute(positions, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute('position', posAttr);
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.setDrawRange(0, 0);
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = renderOrder;
+  if (name) mesh.name = name;
+
+  let activePoints = 0;
+
+  function syncFromPositions(linePositions, count, { radii = null, fromIndex = 0 } = {}) {
+    const n = Math.max(0, Math.min(cap, count | 0));
+    activePoints = n;
+    if (n < 2 || !linePositions) {
+      geometry.setDrawRange(0, 0);
+      return 0;
+    }
+
+    const start = Math.max(0, Math.min(n - 1, fromIndex | 0));
+    let prevTx = 1, prevTy = 0, prevTz = 0;
+    if (start > 0) {
+      const pPrev = (start - 1) * 3;
+      const pNext = Math.min(n - 1, start + 1) * 3;
+      const dtx = linePositions[pNext] - linePositions[pPrev];
+      const dty = linePositions[pNext + 1] - linePositions[pPrev + 1];
+      const dtz = linePositions[pNext + 2] - linePositions[pPrev + 2];
+      const dLen = Math.hypot(dtx, dty, dtz);
+      if (dLen > 1e-6) {
+        prevTx = dtx / dLen;
+        prevTy = dty / dLen;
+        prevTz = dtz / dLen;
+      }
+    }
+
+    for (let i = start; i < n; i++) {
+      const pOff = i * 3;
+      const px = linePositions[pOff];
+      const py = linePositions[pOff + 1];
+      const pz = linePositions[pOff + 2];
+
+      let tx, ty, tz;
+      if (i === 0) {
+        tx = linePositions[3] - px;
+        ty = linePositions[4] - py;
+        tz = linePositions[5] - pz;
+      } else if (i === n - 1) {
+        tx = px - linePositions[pOff - 3];
+        ty = py - linePositions[pOff - 2];
+        tz = pz - linePositions[pOff - 1];
+      } else {
+        tx = linePositions[pOff + 3] - linePositions[pOff - 3];
+        ty = linePositions[pOff + 4] - linePositions[pOff - 2];
+        tz = linePositions[pOff + 5] - linePositions[pOff - 1];
+      }
+      let tLen = Math.hypot(tx, ty, tz);
+      if (tLen < 1e-6 && i > 0) {
+        tx = px - linePositions[pOff - 3];
+        ty = py - linePositions[pOff - 2];
+        tz = pz - linePositions[pOff - 1];
+        tLen = Math.hypot(tx, ty, tz);
+      }
+      if (tLen >= 1e-6) {
+        tx /= tLen;
+        ty /= tLen;
+        tz /= tLen;
+      } else {
+        tx = prevTx;
+        ty = prevTy;
+        tz = prevTz;
+      }
+
+      let nx, ny, nz;
+      if (i > 0) {
+        const prevNOff = (i - 1) * 3;
+        const pnx = ringNormals[prevNOff];
+        const pny = ringNormals[prevNOff + 1];
+        const pnz = ringNormals[prevNOff + 2];
+        // Project previous normal onto the plane orthogonal to current tangent (parallel transport).
+        const dotTN = tx * pnx + ty * pny + tz * pnz;
+        nx = pnx - dotTN * tx;
+        ny = pny - dotTN * ty;
+        nz = pnz - dotTN * tz;
+        const nLen = Math.hypot(nx, ny, nz);
+        if (nLen >= 1e-4) {
+          nx /= nLen;
+          ny /= nLen;
+          nz /= nLen;
+        } else {
+          const rx = Math.abs(tz) < 0.9 ? 0 : 1;
+          const ry = 0;
+          const rz = Math.abs(tz) < 0.9 ? 1 : 0;
+          nx = ry * tz - rz * ty;
+          ny = rz * tx - rx * tz;
+          nz = rx * ty - ry * tx;
+          const fbLen = Math.hypot(nx, ny, nz) || 1;
+          nx /= fbLen;
+          ny /= fbLen;
+          nz /= fbLen;
+        }
+      } else {
+        const rx = Math.abs(tz) < 0.9 ? 0 : 1;
+        const ry = 0;
+        const rz = Math.abs(tz) < 0.9 ? 1 : 0;
+        nx = ry * tz - rz * ty;
+        ny = rz * tx - rx * tz;
+        nz = rx * ty - ry * tx;
+        const fbLen = Math.hypot(nx, ny, nz) || 1;
+        nx /= fbLen;
+        ny /= fbLen;
+        nz /= fbLen;
+      }
+
+      ringNormals[pOff] = nx;
+      ringNormals[pOff + 1] = ny;
+      ringNormals[pOff + 2] = nz;
+      prevTx = tx;
+      prevTy = ty;
+      prevTz = tz;
+
+      // Binormal B = T x N
+      const bx = ty * nz - tz * ny;
+      const by = tz * nx - tx * nz;
+      const bz = tx * ny - ty * nx;
+
+      const rawR = radii ? radii[i] : defaultRadius;
+      const r = Number.isFinite(rawR) && rawR > 1e-5 ? rawR : defaultRadius;
+
+      const vBase = i * segSides * 3;
+      for (let s = 0; s < segSides; s++) {
+        const c = cosTable[s] * r;
+        const sn = sinTable[s] * r;
+        const vOff = vBase + s * 3;
+        positions[vOff] = px + nx * c + bx * sn;
+        positions[vOff + 1] = py + ny * c + by * sn;
+        positions[vOff + 2] = pz + nz * c + bz * sn;
+      }
+    }
+
+    geometry.setDrawRange(0, (n - 1) * segSides * 6);
+    posAttr.needsUpdate = true;
+    return n - 1;
+  }
+
+  function clear() {
+    activePoints = 0;
+    geometry.setDrawRange(0, 0);
+  }
+
+  function dispose() {
+    geometry.dispose();
+  }
+
+  return {
+    mesh,
+    capacity: cap,
+    sides: segSides,
+    syncFromPositions,
+    clear,
+    activeSegments: () => Math.max(0, activePoints - 1),
+    dispose,
+  };
+}

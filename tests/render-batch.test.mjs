@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from '../vendor/three/three.module.js';
-import { createInstancedPool, createAxesBatch } from '../src/render-batch.mjs';
-import { createBadgeAtlas, createBillboardAtlasMesh } from '../src/ui-atlas.mjs';
+import { createInstancedPool, createAxesBatch, createPathTubeMesh } from '../src/render-batch.mjs';
+import { createBadgeAtlas, createBillboardAtlasMesh, createOrientedAtlasMesh } from '../src/ui-atlas.mjs';
 
 test('createInstancedPool packs active visible instances, handles colors, rods, and reuses freed slots', () => {
   const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -194,5 +194,110 @@ test('createBillboardAtlasMesh orients quads against viewerRight/viewerUp in a s
   bb.clear();
   assert.equal(bb.mesh.geometry.drawRange.count, 0);
   bb.dispose();
+  atlas.dispose();
+});
+
+test('createPathTubeMesh builds continuous variable-radius tube with incremental tail sync and clear()', () => {
+  const mat = new THREE.MeshBasicMaterial({ color: 0x22d3ee });
+  const tube = createPathTubeMesh(16, mat, { radius: 0.002, sides: 5, renderOrder: 4, name: 'test-tube' });
+  assert.equal(tube.mesh.renderOrder, 4);
+  assert.equal(tube.mesh.geometry.drawRange.count, 0);
+
+  const pts = new Float32Array(16 * 3);
+  const radii = new Float32Array(16);
+  // 0 -> 1 -> 2 (straight +X) -> 3 (90 deg +Y) -> 4 (180 deg -Y reversal)
+  const coords = [
+    [0, 0, 0, 0.001],
+    [0.05, 0, 0, 0.002],
+    [0.10, 0, 0, 0.003],
+    [0.10, 0.05, 0, 0.0025],
+    [0.10, 0.01, 0, 0.0015],
+  ];
+  for (let i = 0; i < coords.length; i++) {
+    pts[i * 3] = coords[i][0];
+    pts[i * 3 + 1] = coords[i][1];
+    pts[i * 3 + 2] = coords[i][2];
+    radii[i] = coords[i][3];
+  }
+
+  // Count = 1 produces 0 segments
+  assert.equal(tube.syncFromPositions(pts, 1, { radii }), 0);
+  assert.equal(tube.mesh.geometry.drawRange.count, 0);
+
+  // Build first 3 points, then incremental update for points 3..4
+  assert.equal(tube.syncFromPositions(pts, 3, { radii, fromIndex: 0 }), 2);
+  assert.equal(tube.mesh.geometry.drawRange.count, 2 * 5 * 6);
+  assert.equal(tube.syncFromPositions(pts, 5, { radii, fromIndex: 2 }), 4);
+  assert.equal(tube.mesh.geometry.drawRange.count, 4 * 5 * 6);
+  assert.equal(tube.activeSegments(), 4);
+
+  const pos = tube.mesh.geometry.attributes.position.array;
+  for (let i = 0; i < 5 * 5 * 3; i++) {
+    assert.ok(Number.isFinite(pos[i]), `vertex float ${i} must be finite`);
+  }
+  // Ring 2 vertices should sit at radius ~0.003 around (0.10, 0, 0)
+  const v20x = pos[2 * 5 * 3], v20y = pos[2 * 5 * 3 + 1], v20z = pos[2 * 5 * 3 + 2];
+  const dist2 = Math.hypot(v20x - 0.10, v20y, v20z);
+  assert.ok(Math.abs(dist2 - 0.003) < 1e-5, `expected ring radius 0.003, got ${dist2}`);
+
+  tube.clear();
+  assert.equal(tube.mesh.geometry.drawRange.count, 0);
+  assert.equal(tube.activeSegments(), 0);
+  tube.dispose();
+  mat.dispose();
+});
+
+test('createOrientedAtlasMesh places quads flat on rotated 3D frames and skips clean commits', () => {
+  const deps = makeMockAtlasDeps();
+  const atlas = createBadgeAtlas({
+    width: 256,
+    height: 256,
+    cellW: 128,
+    cellH: 128,
+    createCanvas: deps.createCanvas,
+    createTexture: deps.createTexture,
+  });
+  const meshBatch = createOrientedAtlasMesh(atlas, 4, { renderOrder: 6, depthTest: true });
+  assert.equal(meshBatch.mesh.renderOrder, 6);
+  assert.equal(meshBatch.commit(), 0);
+
+  const s0 = atlas.acquire();
+  const s1 = atlas.acquire();
+  atlas.draw(s0, 'id301', () => {});
+  atlas.draw(s1, 'id302', () => {});
+
+  // 90 deg rotation around X: local +X -> +X, local +Y -> +Z, local +Z (normal) -> -Y
+  const matRotX90 = [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0.5, 0.6, 0.2, 1];
+  meshBatch.setOrientedQuad(s0, matRotX90, 0.02, 0.02, 0.001, true);
+  meshBatch.setOrientedQuad(s1, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], 0.02, 0.02, 0.001, false);
+
+  assert.equal(meshBatch.commit(), 1);
+  assert.equal(meshBatch.mesh.geometry.drawRange.count, 6);
+  assert.equal(deps.fakeTexture.needsUpdate, true);
+
+  const pos = meshBatch.mesh.geometry.attributes.position.array;
+  // Center shifted along normal (-Y) by 0.001 -> y = 0.599; v0 = center - 0.01*X - 0.01*Z = (0.49, 0.599, 0.19)
+  assert.ok(Math.abs(pos[0] - 0.49) < 1e-5);
+  assert.ok(Math.abs(pos[1] - 0.599) < 1e-5);
+  assert.ok(Math.abs(pos[2] - 0.19) < 1e-5);
+  // v2 = center + 0.01*X + 0.01*Z = (0.51, 0.599, 0.21)
+  assert.ok(Math.abs(pos[6] - 0.51) < 1e-5);
+  assert.ok(Math.abs(pos[7] - 0.599) < 1e-5);
+  assert.ok(Math.abs(pos[8] - 0.21) < 1e-5);
+
+  // Unchanged inputs skip dirty rewrite
+  const posVersion = meshBatch.mesh.geometry.attributes.position.version;
+  meshBatch.setOrientedQuad(s0, matRotX90, 0.02, 0.02, 0.001, true);
+  assert.equal(meshBatch.commit(), 1);
+  assert.equal(meshBatch.mesh.geometry.attributes.position.version, posVersion);
+
+  meshBatch.setQuadVisible(s1, true);
+  assert.equal(meshBatch.commit(), 2);
+  meshBatch.clearSlot(s0);
+  assert.equal(meshBatch.commit(), 1);
+
+  meshBatch.clear();
+  assert.equal(meshBatch.mesh.geometry.drawRange.count, 0);
+  meshBatch.dispose();
   atlas.dispose();
 });

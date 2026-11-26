@@ -216,7 +216,7 @@ export function evaluateCarriedJumpGuard({
   const angDeg=Math.hypot(d[0],d[1],d[2])*180/Math.PI;
   const dtMs=Number.isFinite(dtSinceLastMs)?Math.max(0,dtSinceLastMs):Infinity;
   const dtSec=Number.isFinite(dtMs)?Math.min(0.6,Math.max(0.05,dtMs/1000)):0.2;
-  const jumpPosLimit=Math.max(confidence<0.75?85:150,dtSec*1600);
+  const jumpPosLimit=Math.max(confidence<0.75?110:180,dtSec*2200);
   const jumpAngLimit=Math.max(confidence<0.75?24:36,dtSec*180);
   const isJump=dtMs<500&&(posMm>jumpPosLimit||angDeg>jumpAngLimit);
   const isMirrorFlip=dtMs<650&&posMm<22&&angDeg>18;
@@ -233,7 +233,7 @@ export function evaluateCarriedJumpGuard({
     const pPosMm=Math.hypot(prevD[3],prevD[4],prevD[5])*1000;
     const pAngDeg=Math.hypot(prevD[0],prevD[1],prevD[2])*180/Math.PI;
     const dtPendingSec=Math.min(0.6,Math.max(0.05,(atMs-pendingJump.atMs)/1000));
-    if(pPosMm<=Math.max(60,dtPendingSec*1400)&&pAngDeg<=Math.max(18,dtPendingSec*160)){
+    if(pPosMm<=Math.max(85,dtPendingSec*2000)&&pAngDeg<=Math.max(18,dtPendingSec*160)){
       return {accept:true,nextPendingJump:null,reason:'confirmed'};
     }
   }

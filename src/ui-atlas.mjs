@@ -329,3 +329,166 @@ export function createBillboardAtlasMesh(atlas, maxQuads = atlas.capacity, { ren
     dispose,
   };
 }
+
+/**
+ * Render all active atlas quads oriented flat in each slot's own 3D rigid frame
+ * (e.g., tag ID tiles aligned directly onto AprilTag matrices) in a single draw call.
+ */
+export function createOrientedAtlasMesh(
+  atlas,
+  maxQuads = atlas.capacity,
+  { renderOrder = 6, depthTest = true, depthWrite = false } = {},
+) {
+  const cap = Math.max(1, Math.min(maxQuads | 0, atlas.capacity));
+  const positions = new Float32Array(cap * 4 * 3);
+  const uvs = new Float32Array(cap * 4 * 2);
+  const indices = new Uint16Array(cap * 6);
+  for (let i = 0; i < cap; i++) {
+    const v = i * 4;
+    const idx = i * 6;
+    indices[idx] = v;
+    indices[idx + 1] = v + 1;
+    indices[idx + 2] = v + 2;
+    indices[idx + 3] = v;
+    indices[idx + 4] = v + 2;
+    indices[idx + 5] = v + 3;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  const posAttr = new THREE.BufferAttribute(positions, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  const uvAttr = new THREE.BufferAttribute(uvs, 2);
+  uvAttr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute('position', posAttr);
+  geometry.setAttribute('uv', uvAttr);
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.setDrawRange(0, 0);
+
+  const material = new THREE.MeshBasicMaterial({
+    map: atlas.texture,
+    transparent: true,
+    depthTest,
+    depthWrite,
+    side: THREE.DoubleSide,
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = renderOrder;
+
+  const slotCorners = new Float32Array(cap * 12);
+  const slotHasQuad = new Uint8Array(cap);
+  const slotVisible = new Uint8Array(cap);
+
+  let dirty = false;
+  let lastCount = 0;
+
+  function setOrientedQuad(slot, mat4OrArray16, widthM, heightM = widthM, zOff = 0.0009, visible = true) {
+    if (slot < 0 || slot >= cap) return;
+    const m = mat4OrArray16?.elements ?? mat4OrArray16;
+    if (!m || m.length < 16) return;
+    const hw = widthM * 0.5;
+    const hh = heightM * 0.5;
+    const ox = m[12] + m[8] * zOff;
+    const oy = m[13] + m[9] * zOff;
+    const oz = m[14] + m[10] * zOff;
+    const rx = m[0] * hw, ry = m[1] * hw, rz = m[2] * hw;
+    const ux = m[4] * hh, uy = m[5] * hh, uz = m[6] * hh;
+
+    const c0x = ox - rx - ux, c0y = oy - ry - uy, c0z = oz - rz - uz;
+    const c1x = ox + rx - ux, c1y = oy + ry - uy, c1z = oz + rz - uz;
+    const c2x = ox + rx + ux, c2y = oy + ry + uy, c2z = oz + rz + uz;
+    const c3x = ox - rx + ux, c3y = oy - ry + uy, c3z = oz - rz + uz;
+
+    const cOff = slot * 12;
+    const v = visible ? 1 : 0;
+    if (
+      slotHasQuad[slot] &&
+      slotVisible[slot] === v &&
+      Math.abs(slotCorners[cOff] - c0x) < 1e-6 &&
+      Math.abs(slotCorners[cOff + 1] - c0y) < 1e-6 &&
+      Math.abs(slotCorners[cOff + 2] - c0z) < 1e-6 &&
+      Math.abs(slotCorners[cOff + 6] - c2x) < 1e-6 &&
+      Math.abs(slotCorners[cOff + 7] - c2y) < 1e-6 &&
+      Math.abs(slotCorners[cOff + 8] - c2z) < 1e-6
+    ) {
+      return;
+    }
+
+    slotCorners[cOff] = c0x; slotCorners[cOff + 1] = c0y; slotCorners[cOff + 2] = c0z;
+    slotCorners[cOff + 3] = c1x; slotCorners[cOff + 4] = c1y; slotCorners[cOff + 5] = c1z;
+    slotCorners[cOff + 6] = c2x; slotCorners[cOff + 7] = c2y; slotCorners[cOff + 8] = c2z;
+    slotCorners[cOff + 9] = c3x; slotCorners[cOff + 10] = c3y; slotCorners[cOff + 11] = c3z;
+    slotHasQuad[slot] = 1;
+    slotVisible[slot] = v;
+    dirty = true;
+  }
+
+  function setQuadVisible(slot, visible) {
+    if (slot < 0 || slot >= cap) return;
+    const v = visible ? 1 : 0;
+    if (slotVisible[slot] === v) return;
+    slotVisible[slot] = v;
+    dirty = true;
+  }
+
+  function clearSlot(slot) {
+    if (slot < 0 || slot >= cap) return;
+    if (!slotHasQuad[slot] && !slotVisible[slot]) return;
+    slotHasQuad[slot] = 0;
+    slotVisible[slot] = 0;
+    dirty = true;
+  }
+
+  function clear() {
+    slotHasQuad.fill(0);
+    slotVisible.fill(0);
+    geometry.setDrawRange(0, 0);
+    lastCount = 0;
+    dirty = false;
+  }
+
+  function commit() {
+    atlas.flush();
+    if (!dirty) return lastCount;
+    let count = 0;
+    for (let s = 0; s < cap; s++) {
+      if (!slotHasQuad[s] || !slotVisible[s]) continue;
+      const uv = atlas.uvRect(s);
+      if (!uv) continue;
+      const cOff = s * 12;
+      const vOff = count * 12;
+      positions.set(slotCorners.subarray(cOff, cOff + 12), vOff);
+
+      const uOff = count * 8;
+      uvs[uOff] = uv.u0; uvs[uOff + 1] = uv.vBot;
+      uvs[uOff + 2] = uv.u1; uvs[uOff + 3] = uv.vBot;
+      uvs[uOff + 4] = uv.u1; uvs[uOff + 5] = uv.vTop;
+      uvs[uOff + 6] = uv.u0; uvs[uOff + 7] = uv.vTop;
+      count++;
+    }
+    geometry.setDrawRange(0, count * 6);
+    posAttr.needsUpdate = true;
+    uvAttr.needsUpdate = true;
+    lastCount = count;
+    dirty = false;
+    return count;
+  }
+
+  function dispose() {
+    geometry.dispose();
+    material.dispose();
+  }
+
+  return {
+    mesh,
+    capacity: cap,
+    setOrientedQuad,
+    setQuadVisible,
+    clearSlot,
+    clear,
+    commit,
+    activeCount: () => lastCount,
+    dispose,
+  };
+}

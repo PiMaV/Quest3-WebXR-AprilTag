@@ -13,7 +13,8 @@ export {buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrai
 export {FIST_GESTURE_DEFAULTS,classifyFistPose,createFistToggleController} from './hand-gesture.mjs';
 export {createPerfTracker} from './perf-stats.mjs';
 export {ADAPTIVE_QUALITY_MODES,ADAPTIVE_QUALITY_DEFAULTS,createAdaptiveQualityController} from './adaptive-quality.mjs';
-export {createInstancedPool,createAxesBatch} from './render-batch.mjs';
-export {createBadgeAtlas,createBillboardAtlasMesh} from './ui-atlas.mjs';
-export {projectPriorRois} from './detector.mjs';
-export {fuseCommittedTrailSegment,smoothLineTail} from './path-smoother.mjs';
+export {createInstancedPool,createAxesBatch,createPathTubeMesh} from './render-batch.mjs';
+export {createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh} from './ui-atlas.mjs';
+export {projectPriorRois,prioritizeFocusCandidates} from './detector.mjs';
+export {fuseCommittedTrailSegment,smoothLineTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius} from './path-smoother.mjs';
+export {TAG_PREDICTOR_DEFAULTS,createTagMotionPredictor} from './tag-predictor.mjs';

@@ -54,14 +54,14 @@ worldFromL = worldFromViewer(captureTime + timeOffsetMs) × viewerFromCameraGL �
 - **Startup:** **Prepare camera** → **Enter AR** → follow the orbital reticle (calibrate once or verify cached profile) → hold the 3-tag L-angle steady for 5 frames to lock. Optional debug HUD panels start `OFF` (`HUD ON/OFF` in the Wrist Menu or Controller `A/X`).
 - **`SCAN` mode (camera ON · red hand tint):**
   - **M.E.S.S. ID convention (`tag36h11`):** Only the first 50 IDs per 100-block (`x00–x49`) are free user-assignable AprilTags (e.g. `200–249` at 12 mm, `300–349` at 20 mm); IDs from `x50` upward (`x50–x99`, e.g. `250–299` and `350–399`) are reserved M.E.S.S. system/reference ranges (L-angles `350–352` / `370–372`, perimeter pieces `353–359`).
-  - Reserved perimeter markers (`353–359`, activated via `TL`, labeled `YL`, `TL`, `XT`, `TR`, `YR`, `BR`, `XB`) build a 20 cm clockwise table fence; free 20 mm tags (`300–349`) auto-lock and follow via 90 Hz hand-tracking coupling inside thicker shimmering frames; other detected tags with defined edge classes (such as free 12 mm tags `200–249`) place static locked markers scaled by ID class (`requiredTagEdgeMm`) with their ID rendered flat on the tag matrix.
-  - Hold a fingertip `0.55 s` on a locked tag for a **Time-Copy** snapshot (point marker); hold **`[● REC]`** (`0.65 s` start / `0.35 s` stop) above a tag to record a velocity-thickness-modulated 3D pathline with waypoint dots.
-  - Switch to `MEASURE`: floating **`[■ MEASURE]`** button on the L-angle, frontal **Left Fist Hold (`0.85 s`)**, or Controller Grip.
+  - Reserved perimeter markers (`353–359`, activated via `TL`, labeled `YL`, `TL`, `XT`, `TR`, `YR`, `BR`, `XB`) build a 20 cm clockwise table fence; free 20 mm tags (`300–349`) auto-lock and follow via **multi-tag rigid ruler 90 Hz hand coupling** (supports gripping two rigidly mounted tags simultaneously under rotation up to `~0.42 m` lever arm, snapping back to the optical pose on timeout/drift so tags never drift off in mid-air), **proximity-prioritized Focus-ROI tracking** (`20–28 Hz` on the closest active targets with `decimate = 1.5` motion-blur retry), and damped 6DOF optical lead prediction inside thicker shimmering frames; other detected tags with defined edge classes (such as free 12 mm tags `200–249`) place static locked markers scaled by ID class (`requiredTagEdgeMm`) with their ID rendered flat on the tag matrix.
+  - Hold a fingertip `0.40 s` on the bottom **`[⏱ MARK]`** pill below any tag (in mid-air or flat on the table, kept clear of left/right grabbing fingers) for a **Time-Copy** point marker at its live 3D pose; hold **`[● REC]`** (`0.65 s` start / `0.35 s` stop) above a tag to record a velocity-modulated 3D pathline (`0–550 mm/s` thickness scale) with waypoint dots.
+  - Switch modes or reset user data on the anchored L-angle bar: **`[■ MEASURE / ● SCAN]`**, **`[◈ FENCE]`**, **`[↺ CLEAR ALL]`** (clears user-scanned tags, trails, time-copies & pins while keeping the Perimeter Fence active), or use frontal **Left Fist Hold (`0.85 s`)** / Controller Grip.
 - **`MEASURE` mode (camera OFF · 90 FPS · green hand tint):**
   - Pure native WebXR anchor tracking — low power and free of optical stutter.
   - Hover any locked tag, Time-Copy, or path point with your index fingertip to reveal the full 3D tag square, orientation plane, speed (`mm/s`), and `X / Y / Z / Floor`.
   - **Index + Thumb Pinch** (left or right hand) or hover card **`[📌]`** orb pins/unpins points for live pairwise 3D distance rails (`mm`, `ΔZ`, `Δt`).
-  - **Gated Wrist Menu** (`1.2 s` steady frontal palm gaze or tap inner Wrist-Dot, `120 ms`): `✕ PINS`, `↺ CLEAR ALL`, `HUD ON/OFF`, `Q: AUTO/FLUID/CRISP`, `RANGE: STD/FAR` (opt-in FPS-guarded `decimate = 1`), and `↺ RECALIBRATE`.
+  - **Gated Wrist Menu** (`1.2 s` steady frontal palm gaze or tap inner Wrist-Dot, `120 ms`): `↺ CLEAR ALL` (preserves Perimeter Fence), `HUD ON/OFF`, `Q: AUTO/FLUID/CRISP`, `RANGE: AUTO 1.5 / EXP 1.0` (Auto caps at `decimate = 1.5` when steady and locks to `decimate = 2` whenever moving/active; `EXP 1.0` enables idle-only `decimate = 1` above `78 FPS`), and `↺ RECALIBRATE`.
 - **Re-anchor & Exit:** `1× Trigger` on tracking loss (`lost` / `failed`), `2× Trigger (≤ 1.5 s)` while `tracking` (controller); hold **Left Thumbstick** or **`B`/`Y`** (`1.4 s`) to exit AR.
 
 ---
@@ -96,13 +96,15 @@ Core calibration, pose, anchor, hand-coupling, and runtime modules under `src/` 
 
 | Module | Responsibility |
 |---|---|
-| `src/camera.mjs` + `src/detector-worker.js` | `getUserMedia`, atomic `requestVideoFrameCallback` capture, off-thread `VideoFrame` / `ImageBitmap` readback, AprilTag 36h11 WASM |
+| `src/camera.mjs` + `src/detector-worker.js` | `getUserMedia`, atomic `requestVideoFrameCallback` capture, off-thread `VideoFrame` / `ImageBitmap` readback, AprilTag 36h11 WASM, Focus-ROI near-tracking (`detectFocusRois`) |
 | `src/rig.mjs` | Planar rig validation, homography + Gauss-Newton PnP (`fitPlanarPose`), strict-majority subset consensus, `requiredTagEdgeMm` |
 | `src/solver.mjs` + `src/calibration-worker.mjs` | Pseudo-Huber Schur-complement intrinsic BA, multi-seed hand-eye + `timeOffsetMs` solver, 80/20 holdout validation |
 | `src/assistant.mjs` + `src/profile.mjs` | Guided cold-start / cached-profile verification state machine, SHA-256 `localStorage` cache, `createObservationBuffer` |
 | `src/anchor.mjs` | 5-view stability collector, synchronous `frame.createAnchor`, explicit `reanchor()`, zero optical fallback |
 | `src/runtime.mjs` | Zero-dependency column-major 4×4 rigid-transform & quaternion math, SLERP pose interpolation |
-| `src/hand-coupling.mjs` + `src/hand-gesture.mjs` | 90 Hz rigid-palm hand-tracking coupling for movable tags (`300–349`) and scale-invariant fist/wrist gestures |
+| `src/hand-coupling.mjs` + `src/hand-gesture.mjs` | 90 Hz rigid-palm & multi-tag ruler hand-tracking coupling for movable tags (`300–349`) and scale-invariant fist/wrist gestures |
+| `src/tag-predictor.mjs` | Damped 6DOF optical velocity/lead prediction for uncoupled moving AprilTags |
+| `src/perf-stats.mjs` | Zero-alloc frame timing, optical lag (`opticalLagMs`), and `mm/s` speed telemetry (`trackingBenchmark`) |
 | `src/anchor-audit.mjs` | Strictly read-only optical comparison against native anchor pose (`usedToCorrectAnchor: false`) |
 | `src/tool-scan.mjs` + `src/perimeter-fence.mjs` | Multi-view 6DOF registration for loose plates and clockwise 20 cm perimeter fence (`353–359`) |
 | `src/ui-atlas.mjs` + `src/render-batch.mjs` | Optional Three.js instanced/atlas rendering helpers for `examples/quest.mjs` |

@@ -152,6 +152,7 @@ test('pinched 20 mm card couples accurately despite 140 ms camera lag and releas
   assert.equal(rel.coupled,false);
   assert.equal(rel.released,true);
   assert.equal(rel.reason,'pinch-opened');
+  assert.equal(rel.opticalAgeMs,1511-1154);
 });
 
 test('18 cm wand/stick couples in wand mode, ignores thumb wiggle, adapts softly, and releases via optical watchdog',()=>{
@@ -211,6 +212,7 @@ test('hand-tracking dropout (>120 ms) and optical stale timeout (>900 ms) releas
   assert.equal(lost.coupled,false);
   assert.equal(lost.released,true);
   assert.equal(lost.reason,'hand-tracking-lost');
+  assert.equal(lost.opticalAgeMs,1350-1140);
 
   // Re-lock and test optical stale timeout (>900 ms without optical confirmation while hand keeps moving).
   for(let t=2000;t<=3100;t+=20){
@@ -222,6 +224,7 @@ test('hand-tracking dropout (>120 ms) and optical stale timeout (>900 ms) releas
   assert.equal(stale.coupled,false);
   assert.equal(stale.released,true);
   assert.equal(stale.reason,'optical-timeout');
+  assert.equal(stale.opticalAgeMs,3080-2140);
 });
 
 test('hand moving 50 mm near a barely moving tag (6-8 mm or 6 deg PnP jitter) never couples',()=>{
@@ -242,29 +245,63 @@ test('hand moving 50 mm near a barely moving tag (6-8 mm or 6 deg PnP jitter) ne
   assert.equal(coupler.isHandCarrying('right',302),false);
 });
 
-test('one-tag-per-hand exclusivity prevents two nearby tags from coupling to the same hand',()=>{
+test('multi-tag rigid ruler couples both distal tags simultaneously with rotation while ignoring stationary nearby tag and respecting maxTagsPerHand',()=>{
   const hh=createHandHistory();
   const coupler=createTagHandCoupler();
-  const off311=vectorRigid([0,0,0,0.012,0.065,0]);
-  const off310=vectorRigid([0,0,0,0.012,0.145,0]);
+  // Ruler gripped in middle: tag #311 at -12 cm, tag #310 at +12 cm along ruler axis (plus ~6 cm grip offset)
+  const off311=vectorRigid([0,0,0,-0.12,0.06,0.01]);
+  const off310=vectorRigid([0,0,0,+0.12,0.06,0.01]);
+  const staticTableTag=vectorRigid([0,0,0,0.18,0.10,0.0]);
 
-  for(let t=1000;t<=1240;t+=40){
-    const x=0.10+0.0005*(t-1000);
-    hh.push(makeHandAt(vectorRigid([0,0,0,x,0.10,0.20]),t,'right',{pinchGapM:0.016}));
+  for(let t=1000;t<=1320;t+=20){
+    const dt=(t-1000)/1000;
+    const x=0.10+0.35*dt;
+    const yaw=0.45*dt;
+    hh.push(makeHandAt(vectorRigid([0,0,yaw,x,0.10,0.20]),t,'right',{pinchGapM:0.055}));
   }
 
-  // First delta: #311 (pinch) locks onto right hand.
-  coupler.observeOptical({tagId:311,lFromTag:product(hh.sampleAt('right',1000).lFromHand,off311),targetXrTimeMs:1000,confidence:1,handHistory:hh});
-  const lock311=coupler.observeOptical({tagId:311,lFromTag:product(hh.sampleAt('right',1080).lFromHand,off311),targetXrTimeMs:1080,confidence:1,handHistory:hh});
-  assert.equal(lock311.mode,'coupled');
-  assert.equal(lock311.handedness,'right');
+  // First wand tag (#311) needs 2 coherent deltas; co-moving #310 locks in 1 delta once #311 is coupled.
+  const t0=1000,t1=1080,t2=1160;
+  const h0=hh.sampleAt('right',t0).lFromHand;
+  const h1=hh.sampleAt('right',t1).lFromHand;
+  const h2=hh.sampleAt('right',t2).lFromHand;
 
-  // Nearby #310 also moves identically in the same hand's radius -> must be blocked while right carries #311.
-  coupler.observeOptical({tagId:310,lFromTag:product(hh.sampleAt('right',1000).lFromHand,off310),targetXrTimeMs:1000,confidence:1,handHistory:hh});
-  const try310=coupler.observeOptical({tagId:310,lFromTag:product(hh.sampleAt('right',1080).lFromHand,off310),targetXrTimeMs:1080,confidence:1,handHistory:hh});
-  assert.notEqual(try310.mode,'coupled');
-  assert.equal(coupler.isHandCarrying('right',310),false);
+  coupler.observeOptical({tagId:311,lFromTag:product(h0,off311),targetXrTimeMs:t0,confidence:1,handHistory:hh});
+  coupler.observeOptical({tagId:310,lFromTag:product(h0,off310),targetXrTimeMs:t0,confidence:1,handHistory:hh});
+  coupler.observeOptical({tagId:312,lFromTag:staticTableTag,targetXrTimeMs:t0,confidence:1,handHistory:hh});
+
+  coupler.observeOptical({tagId:311,lFromTag:product(h1,off311),targetXrTimeMs:t1,confidence:1,handHistory:hh});
+  coupler.observeOptical({tagId:310,lFromTag:product(h1,off310),targetXrTimeMs:t1,confidence:1,handHistory:hh});
+  coupler.observeOptical({tagId:312,lFromTag:staticTableTag,targetXrTimeMs:t1,confidence:1,handHistory:hh});
+
+  const lock311=coupler.observeOptical({tagId:311,lFromTag:product(h2,off311),targetXrTimeMs:t2,confidence:1,handHistory:hh});
+  const lock310=coupler.observeOptical({tagId:310,lFromTag:product(h2,off310),targetXrTimeMs:t2,confidence:1,handHistory:hh});
+  const stay312=coupler.observeOptical({tagId:312,lFromTag:staticTableTag,targetXrTimeMs:t2,confidence:1,handHistory:hh});
+
+  assert.equal(lock311.mode,'coupled');
+  assert.equal(lock310.mode,'coupled');
+  assert.notEqual(stay312.mode,'coupled');
   assert.equal(coupler.isHandCarrying('right',311),true);
+  assert.equal(coupler.isHandCarrying('right',310),true);
+  assert.equal(coupler.isHandCarrying('right',312),false);
+
+  // Predict both ruler tags at t=1320 (160 ms ahead of camera) -> both within < 1 mm!
+  const latestH=hh.latest('right',1320).lFromHand;
+  for(const [id,off] of [[311,off311],[310,off310]]){
+    const pred=coupler.predict(id,hh,1320);
+    assert.equal(pred.coupled,true);
+    const truth=product(latestH,off);
+    const errMm=Math.hypot(pred.lFromTag[12]-truth[12],pred.lFromTag[13]-truth[13],pred.lFromTag[14]-truth[14])*1000;
+    assert.ok(errMm<1.0,`ruler tag ${id} error ${errMm.toFixed(2)} mm >= 1 mm`);
+  }
+
+  // Explicit maxTagsPerHand: 1 enforces single-tag exclusivity.
+  const singleCoupler=createTagHandCoupler({maxTagsPerHand:1});
+  singleCoupler.observeOptical({tagId:311,lFromTag:product(h0,off311),targetXrTimeMs:t0,confidence:1,handHistory:hh});
+  singleCoupler.observeOptical({tagId:311,lFromTag:product(h1,off311),targetXrTimeMs:t1,confidence:1,handHistory:hh});
+  assert.equal(singleCoupler.observeOptical({tagId:311,lFromTag:product(h2,off311),targetXrTimeMs:t2,confidence:1,handHistory:hh}).mode,'coupled');
+  singleCoupler.observeOptical({tagId:310,lFromTag:product(h0,off310),targetXrTimeMs:t0,confidence:1,handHistory:hh});
+  assert.notEqual(singleCoupler.observeOptical({tagId:310,lFromTag:product(h1,off310),targetXrTimeMs:t1,confidence:1,handHistory:hh}).mode,'coupled');
 });
 
 test('single nudge then pull-away in open-hand wand mode resets confirmation and never locks',()=>{
@@ -373,6 +410,7 @@ test('unconfirmed drift cap releases when hand shoots > 22 cm away without optic
   assert.equal(rel.coupled,false);
   assert.equal(rel.released,true);
   assert.equal(rel.reason,'unconfirmed-drift');
+  assert.equal(rel.opticalAgeMs,1180-1080);
   assert.ok(rel.lastOpticalPose);
   assert.ok(Math.hypot(rel.lastOpticalPose[12]-tag1[12],rel.lastOpticalPose[13]-tag1[13],rel.lastOpticalPose[14]-tag1[14])<1e-9);
 });

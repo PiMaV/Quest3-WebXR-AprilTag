@@ -108,3 +108,28 @@ export function smoothLineTail(rawPositions, outPositions, count, {
     outPositions[o + 2] = sz;
   }
 }
+
+export const SPEED_RADIUS_DEFAULTS = Object.freeze({
+  minRadiusM: 0.00065, // 1.3 mm diameter at standstill / turning points
+  maxRadiusM: 0.0034,  // 6.8 mm diameter at >= 550 mm/s
+  refSpeedMps: 0.55,   // calibrated to Quest 3 ~500+ mm/s handheld tracking envelope
+  exponent: 1.15,
+});
+
+/**
+ * Map instantaneous tangential path speed (m/s) to a smooth volumetric tube radius (m).
+ */
+export function speedToTubeRadius(speedMps, {
+  minRadiusM = SPEED_RADIUS_DEFAULTS.minRadiusM,
+  maxRadiusM = SPEED_RADIUS_DEFAULTS.maxRadiusM,
+  refSpeedMps = SPEED_RADIUS_DEFAULTS.refSpeedMps,
+  exponent = SPEED_RADIUS_DEFAULTS.exponent,
+} = {}) {
+  const minR = Number.isFinite(minRadiusM) && minRadiusM > 0 ? minRadiusM : SPEED_RADIUS_DEFAULTS.minRadiusM;
+  const maxR = Number.isFinite(maxRadiusM) && maxRadiusM >= minR ? maxRadiusM : minR;
+  const refV = Number.isFinite(refSpeedMps) && refSpeedMps > 1e-4 ? refSpeedMps : SPEED_RADIUS_DEFAULTS.refSpeedMps;
+  const exp = Number.isFinite(exponent) && exponent > 0 ? exponent : SPEED_RADIUS_DEFAULTS.exponent;
+  const v = Number.isFinite(speedMps) && speedMps > 0 ? speedMps : 0;
+  const norm = Math.max(0, Math.min(1, v / refV));
+  return minR + (maxR - minR) * Math.pow(norm, exp);
+}

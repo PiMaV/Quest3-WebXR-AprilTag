@@ -51,6 +51,7 @@ export function createReferenceCamera({video,geometry,getSettings,getContext,onO
       if(Number.isFinite(data.coarseMs)) sample.coarseMs=data.coarseMs;
       if(Number.isFinite(data.roiMs)) sample.roiMs=data.roiMs;
       if(Number.isFinite(data.roiCount)) sample.roiCount=data.roiCount;
+      if('focusHit' in data) sample.focusHit=Boolean(data.focusHit);
       sample.receivedAtPerformanceMs=performance.now();sample.detectMs=data.detectMs;delete sample.timeout;
       try {
         let observation;
@@ -142,8 +143,10 @@ export function createReferenceCamera({video,geometry,getSettings,getContext,onO
     const printScale=settings.printScale??1;
     const solveUnassigned=Boolean(settings.solveUnassigned);
     const priorRois=Array.isArray(settings.priorRois)&&settings.priorRois.length?settings.priorRois:undefined;
+    const focusRois=Array.isArray(settings.focusRois)&&settings.focusRois.length?settings.focusRois:undefined;
     sample.priorRoiCount=priorRois?priorRois.length:0;
-    const extraMsg=priorRois?{priorRois}:null;
+    sample.focusRoiCount=focusRois?focusRois.length:0;
+    const extraMsg=(priorRois||focusRois)?{...(priorRois?{priorRois}:null),...(focusRois?{focusRois}:null)}:null;
     const sendMainCanvas=(mode='main-canvas')=>{
       if(canvas.width!==width||canvas.height!==height) {canvas.width=width;canvas.height=height;}
       ctx.drawImage(video,0,0,width,height);
