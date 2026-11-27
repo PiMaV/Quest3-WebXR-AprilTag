@@ -4,9 +4,12 @@ import { readFileSync } from 'node:fs';
 import {
   FENCE_HEIGHT_M,
   PERIMETER_MARKERS,
+  PERIMETER_OUTSIDE_HYSTERESIS_M,
   isPerimeterTag,
   perimeterRole,
   projectPointToTablePlane,
+  signedDistanceToPolygonXY,
+  evaluatePerimeterOutside,
   createPerimeterFence,
 } from '../src/perimeter-fence.mjs';
 
@@ -244,4 +247,87 @@ test('discoveredMarkers exposes yaw-aligned table poses before activation and wr
   // Reset clears discoveredMarkers cleanly
   fence.reset();
   assert.deepEqual(fence.discoveredMarkers(), []);
+});
+
+test('signedDistanceToPolygonXY, evaluatePerimeterOutside, and fence.isOutsideXY enforce 2D XY bounds with hysteresis', () => {
+  const square = [
+    [0, 0],
+    [0, 1],
+    [1, 1],
+    [1, 0],
+  ];
+  const insideRes = signedDistanceToPolygonXY(0.5, 0.5, square);
+  assert.equal(insideRes.inside, true);
+  assert.ok(Math.abs(insideRes.signedDistanceM - (-0.5)) < 1e-9);
+
+  const edgeRes = signedDistanceToPolygonXY(0.5, 0, square);
+  assert.equal(edgeRes.inside, true);
+  assert.equal(edgeRes.signedDistanceM, 0);
+
+  const outsideRes = signedDistanceToPolygonXY(1.05, 0.5, square);
+  assert.equal(outsideRes.inside, false);
+  assert.ok(Math.abs(outsideRes.signedDistanceM - 0.05) < 1e-9);
+
+  // Concave L-shaped polygon
+  const concave = [
+    [0, 0],
+    [0, 1],
+    [1, 1],
+    [1, 0.5],
+    [0.5, 0.5],
+    [0.5, 0],
+  ];
+  assert.equal(signedDistanceToPolygonXY(0.25, 0.75, concave).inside, true);
+  const notch = signedDistanceToPolygonXY(0.75, 0.25, concave);
+  assert.equal(notch.inside, false);
+  assert.ok(Math.abs(notch.signedDistanceM - 0.25) < 1e-9);
+
+  // Z-invariant XY check + hysteresis (+8 mm enter, +2 mm exit)
+  assert.equal(PERIMETER_OUTSIDE_HYSTERESIS_M.enterOutsideM, 0.008);
+  assert.equal(PERIMETER_OUTSIDE_HYSTERESIS_M.exitOutsideM, 0.002);
+  assert.equal(evaluatePerimeterOutside([0.5, 0.5, 0.35], square, { wasOutside: false }).outside, false);
+  assert.equal(evaluatePerimeterOutside([0.5, 0.5, -0.10], square, { wasOutside: false }).outside, false);
+  assert.equal(evaluatePerimeterOutside([1.006, 0.5, 0], square, { wasOutside: false }).outside, false);
+  assert.equal(evaluatePerimeterOutside([1.012, 0.5, 0], square, { wasOutside: false }).outside, true);
+  assert.equal(evaluatePerimeterOutside([1.005, 0.5, 0], square, { wasOutside: true }).outside, true);
+  assert.equal(evaluatePerimeterOutside([1.0015, 0.5, 0], square, { wasOutside: true }).outside, false);
+
+  // Live fence integration
+  const fence = createPerimeterFence(mainRig);
+  const cam = [0.3, 0.3, 0.8];
+  assert.deepEqual(fence.isOutsideXY([5, 5, 0]), {
+    active: false,
+    outside: false,
+    inside: true,
+    signedDistanceM: 0,
+    edgeDistanceM: 0,
+  });
+
+  fence.observe(353, translationMatrix(0.0175, 0.615, 0), cam, 100); // TL
+  fence.observe(354, translationMatrix(0.6175, 0.615, 0), cam, 110); // TR
+  fence.observe(355, translationMatrix(0.6175, 0.015, 0), cam, 120); // BR
+  // Offered, not active yet -> outside must stay false
+  assert.equal(fence.status(), 'offered');
+  assert.equal(fence.isOutsideXY([0.70, 0.30, 0.25]).active, false);
+  assert.equal(fence.isOutsideXY([0.70, 0.30, 0.25]).outside, false);
+
+  assert.equal(fence.activate(), true);
+  assert.equal(fence.isOutsideXY([0.30, 0.30, 0.45]).outside, false);
+  const out = fence.isOutsideXY([0.70, 0.30, 0.45]);
+  assert.equal(out.active, true);
+  assert.equal(out.outside, true);
+
+  // Expand perimeter right edge outward past x = 0.70 -> tag becomes inside again
+  fence.observe(354, translationMatrix(0.9175, 0.615, 0), cam, 1000);
+  fence.observe(355, translationMatrix(0.9175, 0.015, 0), cam, 1000);
+  for (let i = 0; i < 40; i++) fence.step(0.02);
+  assert.equal(fence.isOutsideXY([0.70, 0.30, 0.45]).outside, false);
+
+  // Deactivate / reset clears outside alerts immediately
+  assert.equal(fence.deactivate(), true);
+  assert.equal(fence.isOutsideXY([0.70, 0.30, 0.45]).outside, false);
+  assert.equal(fence.activate(), true);
+  assert.equal(fence.isOutsideXY([5.0, 5.0, 0.45]).outside, true);
+  fence.reset();
+  assert.equal(fence.isOutsideXY([5.0, 5.0, 0.45]).outside, false);
 });

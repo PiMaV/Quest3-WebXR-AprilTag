@@ -16,10 +16,12 @@ export interface InstancedPool {
   setRod(slot: number, ax: number, ay: number, az: number, bx: number, by: number, bz: number, radius?: number): void;
   setPoint(slot: number, x: number, y: number, z: number, scale?: number): void;
   setColor(slot: number, hexOrColor: number | { r: number; g: number; b: number }): void;
+  setAlert(slot: number, active: boolean): void;
   setVisible(slot: number, flag: boolean): void;
   clear(): void;
   commit(): number;
   activeCount(): number;
+  alertCount(): number;
   dispose(): void;
 }
 
@@ -126,7 +128,7 @@ export function createInstancedPool(
   geometry: unknown,
   material: unknown,
   capacity: number,
-  opts?: { renderOrder?: number; name?: string },
+  opts?: { renderOrder?: number; name?: string; alertAttribute?: boolean },
 ): InstancedPool;
 export function createAxesBatch(maxAxes: number, opts?: { renderOrder?: number }): AxesBatch;
 export function createPathTubeMesh(

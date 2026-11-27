@@ -15,9 +15,11 @@ const _tmpColor = new THREE.Color();
  * Manage a fixed-capacity THREE.InstancedMesh with O(1) slot allocation,
  * per-instance color pre-initialized at construction, and tight dirty-only packing.
  */
-export function createInstancedPool(geometry, material, capacity, { renderOrder = 0, name = '' } = {}) {
+export function createInstancedPool(geometry, material, capacity, { renderOrder = 0, name = '', alertAttribute = false } = {}) {
   const cap = Math.max(1, capacity | 0);
-  const mesh = new THREE.InstancedMesh(geometry, material, cap);
+  const ownGeo = Boolean(alertAttribute);
+  const meshGeo = ownGeo ? geometry.clone() : geometry;
+  const mesh = new THREE.InstancedMesh(meshGeo, material, cap);
   mesh.frustumCulled = false;
   mesh.count = 0;
   mesh.renderOrder = renderOrder;
@@ -31,6 +33,13 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
   const matrices = new Float32Array(cap * 16);
   const colors = new Float32Array(cap * 3);
   colors.fill(1);
+  const alerts = ownGeo ? new Float32Array(cap) : null;
+  const packedAlerts = ownGeo ? new Float32Array(cap) : null;
+  const alertAttr = ownGeo ? new THREE.InstancedBufferAttribute(packedAlerts, 1) : null;
+  if (alertAttr) {
+    alertAttr.setUsage(THREE.DynamicDrawUsage);
+    meshGeo.setAttribute('aAlert', alertAttr);
+  }
 
   const freeStack = new Int32Array(cap);
   let freeTop = cap;
@@ -40,6 +49,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
 
   let dirty = false;
   let lastCount = 0;
+  let lastAlertCount = 0;
 
   function alloc() {
     if (freeTop <= 0) return -1;
@@ -51,6 +61,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     colors[cOff] = 1;
     colors[cOff + 1] = 1;
     colors[cOff + 2] = 1;
+    if (alerts) alerts[slot] = 0;
     dirty = true;
     return slot;
   }
@@ -60,6 +71,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     allocated[slot] = 0;
     visible[slot] = 0;
     valid[slot] = 0;
+    if (alerts) alerts[slot] = 0;
     freeStack[freeTop++] = slot;
     dirty = true;
   }
@@ -69,6 +81,16 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     const src = mat4OrArray16?.elements ?? mat4OrArray16;
     if (!src || src.length < 16) return;
     const off = slot * 16;
+    if (valid[slot] === 1) {
+      let same = true;
+      for (let i = 0; i < 16; i++) {
+        if (!(Math.abs(matrices[off + i] - src[i]) <= 1e-6)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
     for (let i = 0; i < 16; i++) matrices[off + i] = src[i];
     valid[slot] = 1;
     dirty = true;
@@ -93,6 +115,16 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     _mat4.compose(_mid, _quat, _scale);
     const off = slot * 16;
     const el = _mat4.elements;
+    if (valid[slot] === 1) {
+      let same = true;
+      for (let i = 0; i < 16; i++) {
+        if (!(Math.abs(matrices[off + i] - el[i]) <= 1e-6)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
     for (let i = 0; i < 16; i++) matrices[off + i] = el[i];
     valid[slot] = 1;
     dirty = true;
@@ -101,6 +133,23 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
   function setPoint(slot, x, y, z, scale = 1) {
     if (slot < 0 || slot >= cap || !allocated[slot]) return;
     const off = slot * 16;
+    if (
+      valid[slot] === 1 &&
+      Math.abs(matrices[off] - scale) <= 1e-6 &&
+      matrices[off + 1] === 0 && matrices[off + 2] === 0 && matrices[off + 3] === 0 &&
+      matrices[off + 4] === 0 &&
+      Math.abs(matrices[off + 5] - scale) <= 1e-6 &&
+      matrices[off + 6] === 0 && matrices[off + 7] === 0 &&
+      matrices[off + 8] === 0 && matrices[off + 9] === 0 &&
+      Math.abs(matrices[off + 10] - scale) <= 1e-6 &&
+      matrices[off + 11] === 0 &&
+      Math.abs(matrices[off + 12] - x) <= 1e-6 &&
+      Math.abs(matrices[off + 13] - y) <= 1e-6 &&
+      Math.abs(matrices[off + 14] - z) <= 1e-6 &&
+      matrices[off + 15] === 1
+    ) {
+      return;
+    }
     matrices[off] = scale; matrices[off + 1] = 0; matrices[off + 2] = 0; matrices[off + 3] = 0;
     matrices[off + 4] = 0; matrices[off + 5] = scale; matrices[off + 6] = 0; matrices[off + 7] = 0;
     matrices[off + 8] = 0; matrices[off + 9] = 0; matrices[off + 10] = scale; matrices[off + 11] = 0;
@@ -120,6 +169,14 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     dirty = true;
   }
 
+  function setAlert(slot, active) {
+    if (slot < 0 || slot >= cap || !allocated[slot] || !alerts) return;
+    const v = active ? 1 : 0;
+    if (alerts[slot] === v) return;
+    alerts[slot] = v;
+    dirty = true;
+  }
+
   function setVisible(slot, vis) {
     if (slot < 0 || slot >= cap || !allocated[slot]) return;
     const v = vis ? 1 : 0;
@@ -132,10 +189,12 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     allocated.fill(0);
     visible.fill(0);
     valid.fill(0);
+    if (alerts) alerts.fill(0);
     freeTop = cap;
     for (let i = 0; i < cap; i++) freeStack[i] = cap - 1 - i;
     mesh.count = 0;
     lastCount = 0;
+    lastAlertCount = 0;
     dirty = false;
   }
 
@@ -144,6 +203,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     const dstM = mesh.instanceMatrix.array;
     const dstC = mesh.instanceColor?.array;
     let count = 0;
+    let alertCnt = 0;
     for (let s = 0; s < cap; s++) {
       if (!allocated[s] || !visible[s] || !valid[s]) continue;
       dstM.set(matrices.subarray(s * 16, s * 16 + 16), count * 16);
@@ -154,18 +214,26 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
         dstC[cDst + 1] = colors[cSrc + 1];
         dstC[cDst + 2] = colors[cSrc + 2];
       }
+      if (packedAlerts) {
+        const av = alerts[s];
+        packedAlerts[count] = av;
+        if (av > 0.5) alertCnt++;
+      }
       count++;
     }
     mesh.count = count;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    if (alertAttr) alertAttr.needsUpdate = true;
     lastCount = count;
+    lastAlertCount = alertCnt;
     dirty = false;
     return count;
   }
 
   function dispose() {
     mesh.dispose();
+    if (ownGeo) meshGeo.dispose();
   }
 
   return {
@@ -177,10 +245,12 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     setRod,
     setPoint,
     setColor,
+    setAlert,
     setVisible,
     clear,
     commit,
     activeCount: () => lastCount,
+    alertCount: () => lastAlertCount,
     dispose,
   };
 }
@@ -256,16 +326,42 @@ export function createAxesBatch(maxAxes, { renderOrder = 0 } = {}) {
     const m = mat4OrArray16?.elements ?? mat4OrArray16;
     if (!m || m.length < 16) return;
     const ox = m[12], oy = m[13], oz = m[14];
+    const x1 = ox + m[0] * axisLen, y1 = oy + m[1] * axisLen, z1 = oz + m[2] * axisLen;
+    const x2 = ox + m[4] * axisLen, y2 = oy + m[5] * axisLen, z2 = oz + m[6] * axisLen;
+    const x3 = ox + m[8] * axisLen, y3 = oy + m[9] * axisLen, z3 = oz + m[10] * axisLen;
     const o = slot * floatsPerAxis;
+    if (
+      valid[slot] === 1 &&
+      Math.abs(slotPos[o] - ox) <= 1e-6 &&
+      Math.abs(slotPos[o + 1] - oy) <= 1e-6 &&
+      Math.abs(slotPos[o + 2] - oz) <= 1e-6 &&
+      Math.abs(slotPos[o + 3] - x1) <= 1e-6 &&
+      Math.abs(slotPos[o + 4] - y1) <= 1e-6 &&
+      Math.abs(slotPos[o + 5] - z1) <= 1e-6 &&
+      Math.abs(slotPos[o + 6] - ox) <= 1e-6 &&
+      Math.abs(slotPos[o + 7] - oy) <= 1e-6 &&
+      Math.abs(slotPos[o + 8] - oz) <= 1e-6 &&
+      Math.abs(slotPos[o + 9] - x2) <= 1e-6 &&
+      Math.abs(slotPos[o + 10] - y2) <= 1e-6 &&
+      Math.abs(slotPos[o + 11] - z2) <= 1e-6 &&
+      Math.abs(slotPos[o + 12] - ox) <= 1e-6 &&
+      Math.abs(slotPos[o + 13] - oy) <= 1e-6 &&
+      Math.abs(slotPos[o + 14] - oz) <= 1e-6 &&
+      Math.abs(slotPos[o + 15] - x3) <= 1e-6 &&
+      Math.abs(slotPos[o + 16] - y3) <= 1e-6 &&
+      Math.abs(slotPos[o + 17] - z3) <= 1e-6
+    ) {
+      return;
+    }
     // X
     slotPos[o] = ox; slotPos[o + 1] = oy; slotPos[o + 2] = oz;
-    slotPos[o + 3] = ox + m[0] * axisLen; slotPos[o + 4] = oy + m[1] * axisLen; slotPos[o + 5] = oz + m[2] * axisLen;
+    slotPos[o + 3] = x1; slotPos[o + 4] = y1; slotPos[o + 5] = z1;
     // Y
     slotPos[o + 6] = ox; slotPos[o + 7] = oy; slotPos[o + 8] = oz;
-    slotPos[o + 9] = ox + m[4] * axisLen; slotPos[o + 10] = oy + m[5] * axisLen; slotPos[o + 11] = oz + m[6] * axisLen;
+    slotPos[o + 9] = x2; slotPos[o + 10] = y2; slotPos[o + 11] = z2;
     // Z
     slotPos[o + 12] = ox; slotPos[o + 13] = oy; slotPos[o + 14] = oz;
-    slotPos[o + 15] = ox + m[8] * axisLen; slotPos[o + 16] = oy + m[9] * axisLen; slotPos[o + 17] = oz + m[10] * axisLen;
+    slotPos[o + 15] = x3; slotPos[o + 16] = y3; slotPos[o + 17] = z3;
     valid[slot] = 1;
     dirty = true;
   }

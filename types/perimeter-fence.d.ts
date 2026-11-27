@@ -2,7 +2,15 @@ import type { Matrix4Array, RigDefinition, Vec3 } from './common.js';
 
 export const FENCE_HEIGHT_M: number;
 export const PERIMETER_TRIGGER_TAG_ID: number;
+export const PERIMETER_OUTSIDE_HYSTERESIS_M: Readonly<{ enterOutsideM: number; exitOutsideM: number }>;
 export const PERIMETER_MARKERS: ReadonlyArray<Readonly<{ id: number; role: string }>>;
+
+export interface PerimeterOutsideResult {
+  outside: boolean;
+  inside: boolean;
+  signedDistanceM: number;
+  edgeDistanceM: number;
+}
 
 export interface PerimeterVertex {
   id: number;
@@ -46,6 +54,10 @@ export interface PerimeterFence {
   orderedVertices(): PerimeterVertex[];
   discoveredMarkers(): PerimeterVertex[];
   dynamicCount(): number;
+  isOutsideXY(
+    posL: ArrayLike<number> | null | undefined,
+    opts?: { wasOutside?: boolean; enterOutsideM?: number; exitOutsideM?: number },
+  ): PerimeterOutsideResult & { active: boolean };
   version(): number;
   snapshot(): {
     status: 'idle' | 'offered' | 'active';
@@ -79,6 +91,16 @@ export function projectPointToTablePlane(
   },
 ): Vec3;
 export function polygonMetricsXY(vertices: Array<{ pos: Vec3 }>): { perimeterM: number; areaM2: number };
+export function signedDistanceToPolygonXY(
+  x: number,
+  y: number,
+  vertices: ReadonlyArray<{ pos?: ArrayLike<number> } | ArrayLike<number>>,
+): { inside: boolean; signedDistanceM: number; edgeDistanceM: number };
+export function evaluatePerimeterOutside(
+  posL: ArrayLike<number> | null | undefined,
+  vertices: ReadonlyArray<{ pos?: ArrayLike<number> } | ArrayLike<number>>,
+  opts?: { wasOutside?: boolean; enterOutsideM?: number; exitOutsideM?: number },
+): PerimeterOutsideResult;
 export function createPerimeterFence(
   rig: RigDefinition | null | undefined,
   opts?: {

@@ -368,3 +368,103 @@ test('createPathRibbonMesh builds 2-edge twist ribbon + border rails with heatma
   ribbon.dispose();
   mat.dispose();
 });
+
+test('createInstancedPool and createAxesBatch skip dirty uploads on repeated identical poses', () => {
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const pool = createInstancedPool(geo, mat, 4);
+  const s0 = pool.alloc();
+  const s1 = pool.alloc();
+  const s2 = pool.alloc();
+  const m = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.2, 0.3, 0.4, 1];
+  pool.setMatrix(s0, m);
+  pool.setPoint(s1, 1, 2, 3, 0.5);
+  pool.setRod(s2, 0, 0, 0, 0, 0, 0.4, 0.002);
+  assert.equal(pool.commit(), 3);
+
+  const vAfterFirst = pool.mesh.instanceMatrix.version;
+  pool.setMatrix(s0, m);
+  pool.setPoint(s1, 1, 2, 3, 0.5);
+  pool.setRod(s2, 0, 0, 0, 0, 0, 0.4, 0.002);
+  assert.equal(pool.commit(), 3);
+  assert.equal(pool.mesh.instanceMatrix.version, vAfterFirst, 'identical matrix/point/rod calls must not re-upload');
+
+  pool.setMatrix(s0, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.25, 0.3, 0.4, 1]);
+  assert.equal(pool.commit(), 3);
+  assert.ok(pool.mesh.instanceMatrix.version > vAfterFirst, 'changed matrix must upload');
+
+  const axes = createAxesBatch(2);
+  const a0 = axes.alloc();
+  const pose = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.1, 0.2, 0.3, 1];
+  axes.setPose(a0, pose, 0.05);
+  assert.equal(axes.commit(), 1);
+  const axesVer = axes.lines.geometry.attributes.position.version;
+  axes.setPose(a0, pose, 0.05);
+  assert.equal(axes.commit(), 1);
+  assert.equal(axes.lines.geometry.attributes.position.version, axesVer, 'identical axes pose must not re-upload');
+
+  axes.setPose(a0, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.15, 0.2, 0.3, 1], 0.05);
+  assert.equal(axes.commit(), 1);
+  assert.ok(axes.lines.geometry.attributes.position.version > axesVer, 'changed axes pose must upload');
+
+  axes.dispose();
+  pool.dispose();
+  geo.dispose();
+  mat.dispose();
+});
+
+test('createInstancedPool alertAttribute isolates shared geometry, packs aAlert cleanly, and resets on free/alloc/clear', () => {
+  const sharedGeo = new THREE.BoxGeometry(1, 1, 1);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const pool = createInstancedPool(sharedGeo, mat, 4, { alertAttribute: true, name: 'alert-test' });
+
+  assert.equal(sharedGeo.getAttribute('aAlert'), undefined, 'must not mutate caller shared geometry');
+  const aAlert = pool.mesh.geometry.getAttribute('aAlert');
+  assert.ok(aAlert, 'cloned mesh geometry must have aAlert attribute');
+
+  const s0 = pool.alloc();
+  const s1 = pool.alloc();
+  const s2 = pool.alloc();
+  const idMat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  pool.setMatrix(s0, idMat);
+  pool.setMatrix(s1, idMat);
+  pool.setMatrix(s2, idMat);
+  pool.setAlert(s0, true);
+  pool.setAlert(s1, false);
+  pool.setAlert(s2, true);
+  pool.setVisible(s1, false);
+
+  assert.equal(pool.commit(), 2);
+  assert.equal(pool.alertCount(), 2);
+  assert.equal(aAlert.array[0], 1);
+  assert.equal(aAlert.array[1], 1);
+
+  const alertVer = aAlert.version;
+  pool.setAlert(s0, true);
+  assert.equal(pool.commit(), 2);
+  assert.equal(aAlert.version, alertVer, 'no-op setAlert must not mark buffer dirty');
+
+  pool.setAlert(s0, false);
+  assert.equal(pool.commit(), 2);
+  assert.equal(pool.alertCount(), 1);
+  assert.equal(aAlert.array[0], 0);
+  assert.equal(aAlert.array[1], 1);
+  assert.ok(aAlert.version > alertVer);
+
+  pool.free(s2);
+  const s2Reused = pool.alloc();
+  assert.equal(s2Reused, s2);
+  pool.setMatrix(s2Reused, idMat);
+  assert.equal(pool.commit(), 2);
+  assert.equal(pool.alertCount(), 0, 'alert flag must reset on free/alloc');
+
+  pool.setAlert(s2Reused, true);
+  pool.commit();
+  assert.equal(pool.alertCount(), 1);
+  pool.clear();
+  assert.equal(pool.alertCount(), 0);
+
+  pool.dispose();
+  sharedGeo.dispose();
+  mat.dispose();
+});

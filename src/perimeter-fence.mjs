@@ -4,6 +4,10 @@
 
 export const FENCE_HEIGHT_M = 0.20;
 export const PERIMETER_TRIGGER_TAG_ID = 353;
+export const PERIMETER_OUTSIDE_HYSTERESIS_M = Object.freeze({
+  enterOutsideM: 0.008,
+  exitOutsideM: 0.002,
+});
 
 export const PERIMETER_MARKERS = Object.freeze([
   Object.freeze({ id: 358, role: 'YL' }),
@@ -126,6 +130,80 @@ export function polygonMetricsXY(vertices) {
   };
 }
 
+/**
+ * Evaluate exact 2D XY point-in-polygon membership and signed distance to the polygon
+ * boundary (negative inside, positive outside) using ray-casting + segment distance.
+ */
+export function signedDistanceToPolygonXY(x, y, vertices) {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Array.isArray(vertices) || vertices.length < 3) {
+    return { inside: true, signedDistanceM: 0, edgeDistanceM: 0 };
+  }
+  const n = vertices.length;
+  let inside = false;
+  let minDistSq = Infinity;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const va = vertices[j]?.pos ?? vertices[j];
+    const vb = vertices[i]?.pos ?? vertices[i];
+    if (!va || !vb) continue;
+    const ax = va[0], ay = va[1];
+    const bx = vb[0], by = vb[1];
+    if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) continue;
+
+    if (((ay > y) !== (by > y)) && (x < ((bx - ax) * (y - ay)) / (by - ay) + ax)) {
+      inside = !inside;
+    }
+
+    const abx = bx - ax;
+    const aby = by - ay;
+    const abLenSq = abx * abx + aby * aby;
+    let px = ax;
+    let py = ay;
+    if (abLenSq > 1e-12) {
+      const t = Math.max(0, Math.min(1, ((x - ax) * abx + (y - ay) * aby) / abLenSq));
+      px = ax + t * abx;
+      py = ay + t * aby;
+    }
+    const dx = x - px;
+    const dy = y - py;
+    const dSq = dx * dx + dy * dy;
+    if (dSq < minDistSq) minDistSq = dSq;
+  }
+  const edgeDistanceM = Number.isFinite(minDistSq) ? Math.sqrt(minDistSq) : 0;
+  if (edgeDistanceM <= 1e-9) {
+    return { inside: true, signedDistanceM: 0, edgeDistanceM: 0 };
+  }
+  return {
+    inside,
+    signedDistanceM: inside ? -edgeDistanceM : edgeDistanceM,
+    edgeDistanceM,
+  };
+}
+
+/**
+ * Evaluate whether a 3D L-frame tag center lies outside the XY perimeter polygon,
+ * applying hysteresis (enterOutsideM / exitOutsideM) to prevent boundary flicker.
+ */
+export function evaluatePerimeterOutside(posL, vertices, {
+  wasOutside = false,
+  enterOutsideM = PERIMETER_OUTSIDE_HYSTERESIS_M.enterOutsideM,
+  exitOutsideM = PERIMETER_OUTSIDE_HYSTERESIS_M.exitOutsideM,
+} = {}) {
+  const x = posL?.[0];
+  const y = posL?.[1];
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Array.isArray(vertices) || vertices.length < 3) {
+    return { outside: false, inside: true, signedDistanceM: 0, edgeDistanceM: 0 };
+  }
+  const res = signedDistanceToPolygonXY(x, y, vertices);
+  const threshold = wasOutside ? exitOutsideM : enterOutsideM;
+  const outside = res.signedDistanceM > threshold;
+  return {
+    outside,
+    inside: !outside,
+    signedDistanceM: res.signedDistanceM,
+    edgeDistanceM: res.edgeDistanceM,
+  };
+}
+
 export function createPerimeterFence(rig, {
   heightM = FENCE_HEIGHT_M,
   triggerTagId = PERIMETER_TRIGGER_TAG_ID,
@@ -139,6 +217,8 @@ export function createPerimeterFence(rig, {
   let active = false;
   let dirty = true;
   let stateVersion = 0;
+  const cachedPolyXY = [];
+  let cachedPolyVer = -1;
 
   function isActive() {
     return active;
@@ -377,6 +457,27 @@ export function createPerimeterFence(rig, {
     return markers.size;
   }
 
+  function syncCachedPolyXY() {
+    if (cachedPolyVer === stateVersion) return cachedPolyXY;
+    cachedPolyXY.length = 0;
+    cachedPolyXY.push(anchors.origin.pos, anchors.yArm.pos);
+    for (const spec of PERIMETER_MARKERS) {
+      const m = markers.get(spec.id);
+      if (m) cachedPolyXY.push(m.currentPos);
+    }
+    cachedPolyXY.push(anchors.xArm.pos);
+    cachedPolyVer = stateVersion;
+    return cachedPolyXY;
+  }
+
+  function isOutsideXY(posL, opts = {}) {
+    if (!active) {
+      return { active: false, outside: false, inside: true, signedDistanceM: 0, edgeDistanceM: 0 };
+    }
+    const res = evaluatePerimeterOutside(posL, syncCachedPolyXY(), opts);
+    return { active: true, ...res };
+  }
+
   function snapshot() {
     const verts = orderedVertices();
     const { perimeterM, areaM2 } = polygonMetricsXY(verts);
@@ -416,6 +517,7 @@ export function createPerimeterFence(rig, {
     orderedVertices,
     discoveredMarkers,
     dynamicCount,
+    isOutsideXY,
     version: () => stateVersion,
     snapshot,
   };

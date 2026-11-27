@@ -89,12 +89,15 @@ function warmupSceneShaders(r,scn,cam){
   const tmpSprite=new THREE.Sprite(tmpSpriteMat);
   scn.add(tmpInst,tmpAxes,tmpLine,tmpSprite);
   const prevFrameCount=frameBatch.mesh.count;
+  const prevAlertGlowCount=alertGlowBatch.mesh.count;
   if(prevFrameCount===0)frameBatch.mesh.count=1;
+  if(prevAlertGlowCount===0)alertGlowBatch.mesh.count=1;
   try{
     r.compile(scn,cam);
     shadersWarmed=true;
   }catch{}
   frameBatch.mesh.count=prevFrameCount;
+  alertGlowBatch.mesh.count=prevAlertGlowCount;
   scn.remove(tmpInst,tmpAxes,tmpLine,tmpSprite);
   tmpInst.dispose();tmpGeo.dispose();tmpInstMat.dispose();
   tmpAxes.geometry.dispose();tmpAxes.material.dispose();
@@ -1089,20 +1092,20 @@ function setTagOriginDot(dotMesh,matrix,edgeMm){
 
 const frameShimmerUniforms={uTime:{value:0}};
 const frameBatchMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.92,side:THREE.DoubleSide});
-frameBatchMat.customProgramCacheKey=()=>'tag-frame-shimmer-v1';
+frameBatchMat.customProgramCacheKey=()=>'tag-frame-shimmer-v2';
 frameBatchMat.onBeforeCompile=shader=>{
   shader.uniforms.uTime=frameShimmerUniforms.uTime;
   shader.vertexShader=shader.vertexShader
-    .replace('#include <common>','#include <common>\nvarying vec2 vFrameUv;\nvarying float vFramePhase;')
+    .replace('#include <common>','#include <common>\nattribute float aAlert;\nvarying vec2 vFrameUv;\nvarying float vFramePhase;\nvarying float vFrameAlert;')
     .replace(
       '#include <begin_vertex>',
-      '#include <begin_vertex>\nvFrameUv = position.xy / 0.0124;\n#ifdef USE_INSTANCING\nvFramePhase = dot(instanceMatrix[3].xyz, vec3(19.37, 43.13, 27.91));\n#else\nvFramePhase = 0.0;\n#endif',
+      '#include <begin_vertex>\nvFrameUv = position.xy / 0.0124;\n#ifdef USE_INSTANCING\nvFramePhase = dot(instanceMatrix[3].xyz, vec3(19.37, 43.13, 27.91));\nvFrameAlert = aAlert;\n#else\nvFramePhase = 0.0;\nvFrameAlert = 0.0;\n#endif',
     );
   shader.fragmentShader=shader.fragmentShader
-    .replace('#include <common>','#include <common>\nuniform float uTime;\nvarying vec2 vFrameUv;\nvarying float vFramePhase;')
+    .replace('#include <common>','#include <common>\nuniform float uTime;\nvarying vec2 vFrameUv;\nvarying float vFramePhase;\nvarying float vFrameAlert;')
     .replace(
       '#include <color_fragment>',
-      '#include <color_fragment>\nfloat ang = atan(vFrameUv.y, vFrameUv.x);\nfloat sweep = pow(0.5 + 0.5 * sin(ang * 2.0 - uTime * 2.4 + vFramePhase), 6.0);\nfloat corner = smoothstep(0.60, 0.96, min(abs(vFrameUv.x), abs(vFrameUv.y)));\nfloat twinkle = corner * pow(0.5 + 0.5 * sin(uTime * 4.0 + vFramePhase * 2.3 + ang * 4.0), 4.0);\nfloat glint = clamp(sweep * 0.40 + twinkle * 0.60, 0.0, 0.80);\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), glint * 0.68);\ndiffuseColor.a = min(1.0, diffuseColor.a + glint * 0.14);',
+      '#include <color_fragment>\nif (vFrameAlert > 0.5) {\n  float alarmWave = 0.5 + 0.5 * sin(uTime * 11.5);\n  float alarmFlash = pow(alarmWave, 1.8);\n  diffuseColor.rgb = mix(vec3(0.88, 0.05, 0.05), vec3(1.0, 0.36, 0.30), alarmFlash);\n  diffuseColor.a = mix(0.88, 1.0, alarmFlash);\n} else {\n  float ang = atan(vFrameUv.y, vFrameUv.x);\n  float sweep = pow(0.5 + 0.5 * sin(ang * 2.0 - uTime * 2.4 + vFramePhase), 6.0);\n  float corner = smoothstep(0.60, 0.96, min(abs(vFrameUv.x), abs(vFrameUv.y)));\n  float twinkle = corner * pow(0.5 + 0.5 * sin(uTime * 4.0 + vFramePhase * 2.3 + ang * 4.0), 4.0);\n  float glint = clamp(sweep * 0.40 + twinkle * 0.60, 0.0, 0.80);\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), glint * 0.68);\n  diffuseColor.a = min(1.0, diffuseColor.a + glint * 0.14);\n}',
     );
 };
 
@@ -1111,8 +1114,32 @@ const frameBatch=createInstancedPool(
   getThickTagFrameGeo(20),
   frameBatchMat,
   64,
-  {name:'frameBatch'},
+  {name:'frameBatch',alertAttribute:true},
 );
+const alertGlowGeo=new THREE.PlaneGeometry(0.044,0.044);
+const alertGlowMat=new THREE.MeshBasicMaterial({
+  color:0xff2222,
+  transparent:true,
+  opacity:1.0,
+  side:THREE.DoubleSide,
+  depthTest:true,
+  depthWrite:false,
+  blending:THREE.AdditiveBlending,
+});
+alertGlowMat.customProgramCacheKey=()=>'tag-alert-glow-v1';
+alertGlowMat.onBeforeCompile=shader=>{
+  shader.uniforms.uTime=frameShimmerUniforms.uTime;
+  shader.vertexShader=shader.vertexShader
+    .replace('#include <common>','#include <common>\nvarying vec2 vGlowUv;')
+    .replace('#include <begin_vertex>','#include <begin_vertex>\nvGlowUv = position.xy / 0.022;');
+  shader.fragmentShader=shader.fragmentShader
+    .replace('#include <common>','#include <common>\nuniform float uTime;\nvarying vec2 vGlowUv;')
+    .replace(
+      '#include <color_fragment>',
+      '#include <color_fragment>\nfloat sqDist = max(abs(vGlowUv.x), abs(vGlowUv.y));\nfloat rad = length(vGlowUv);\nfloat pulse = 0.5 + 0.5 * sin(uTime * 11.5);\nfloat flash = pow(pulse, 1.6);\nfloat ringPhase = fract(uTime * 1.65);\nfloat ringR = 0.42 + ringPhase * 0.56;\nfloat ring = smoothstep(0.13, 0.0, abs(rad - ringR)) * (1.0 - ringPhase);\nfloat innerFlash = smoothstep(0.56, 0.42, sqDist) * (0.14 + 0.24 * flash);\nfloat outerHalo = smoothstep(1.0, 0.40, sqDist) * (0.24 + 0.44 * flash);\nfloat alpha = clamp(outerHalo + innerFlash + ring * 0.85, 0.0, 0.92);\ndiffuseColor.rgb = mix(vec3(1.0, 0.07, 0.07), vec3(1.0, 0.52, 0.36), clamp(ring * 0.65 + flash * 0.32, 0.0, 1.0));\ndiffuseColor.a = alpha;',
+    );
+};
+const alertGlowBatch=createInstancedPool(alertGlowGeo,alertGlowMat,48,{renderOrder:7,name:'alertGlowBatch'});
 const overlayFrameBatch=createInstancedPool(
   getThickTagFrameGeo(20),
   new THREE.MeshBasicMaterial({color:0xffffff,side:THREE.DoubleSide,depthTest:false,depthWrite:false}),
@@ -1161,7 +1188,7 @@ const badgeMesh=createBillboardAtlasMesh(badgeAtlas,96,{renderOrder:12,depthTest
 const tagFaceAtlas=createBadgeAtlas({width:512,height:1024,cellW:128,cellH:128});
 const tagFaceMesh=createOrientedAtlasMesh(tagFaceAtlas,32,{renderOrder:6,depthTest:true,depthWrite:false});
 root.add(
-  frameBatch.mesh,overlayFrameBatch.mesh,rodBatch.mesh,overlayRodBatch.mesh,
+  frameBatch.mesh,alertGlowBatch.mesh,overlayFrameBatch.mesh,rodBatch.mesh,overlayRodBatch.mesh,
   nodeBatch.mesh,zRingBatch.mesh,recOrbBatch.mesh,closeOrbBatch.mesh,
   axesBatch.lines,badgeMesh.mesh,tagFaceMesh.mesh,
 );
@@ -1200,16 +1227,47 @@ function drawStaticBadgeAtlas(slot,cacheKey,text,border='#38bdf8'){
   });
 }
 
-function drawTagMatrixFace(slot,cacheKey,idText,accentCss,{fill='rgba(6,11,20,0.88)',statusSymbol='',statusColor=null}={}){
+function drawTagMatrixFace(slot,cacheKey,idText,accentCss,{fill='rgba(6,11,20,0.88)',statusSymbol='',statusColor=null,alarmBell=false}={}){
   if(slot<0)return;
   tagFaceAtlas.draw(slot,cacheKey,(ctx,w,h)=>{
     ctx.scale(w/128,h/128);
     ctx.fillStyle=fill;
     ctx.fillRect(0,0,128,128);
     ctx.strokeStyle=accentCss;
-    ctx.lineWidth=4;
+    ctx.lineWidth=alarmBell?7:4;
     ctx.strokeRect(4,4,120,120);
-    if(statusSymbol){
+    if(alarmBell){
+      ctx.fillStyle='#fef08a';
+      ctx.beginPath();
+      ctx.arc(64,15,3.2,0,Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(64,29,12.5,Math.PI,0,false);
+      ctx.lineTo(80,43);
+      ctx.lineTo(84,46);
+      ctx.lineTo(44,46);
+      ctx.lineTo(48,43);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(64,49.5,3.8,0,Math.PI*2);
+      ctx.fill();
+      ctx.strokeStyle='#fde047';
+      ctx.lineWidth=3;
+      ctx.lineCap='round';
+      for(const r of [19,25]){
+        ctx.beginPath();
+        ctx.arc(64,30,r,-0.44,0.44);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(64,30,r,Math.PI-0.44,Math.PI+0.44);
+        ctx.stroke();
+      }
+      ctx.fillStyle='#ffffff';
+      ctx.font='bold 44px ui-monospace,monospace';
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(idText,64,88,108);
+    }else if(statusSymbol){
       ctx.fillStyle=statusColor||accentCss;
       ctx.font='bold 22px system-ui,sans-serif';
       ctx.textAlign='center';ctx.textBaseline='middle';
@@ -1286,6 +1344,8 @@ function createExtraVisual(tagId,edgeMm,lFromTag){
     setTagFramePose(frameBatch,frameSlot,lFromTag,0.0012,edgeMm/20);
     frameBatch.setColor(frameSlot,color);
   }
+  const alertSlot=alertGlowBatch.alloc();
+  if(alertSlot>=0)alertGlowBatch.setVisible(alertSlot,false);
   const axesSlot=axesBatch.alloc();
   if(axesSlot>=0){
     axesBatch.setPose(axesSlot,lFromTag,0.025*s);
@@ -1296,7 +1356,7 @@ function createExtraVisual(tagId,edgeMm,lFromTag){
     drawTagMatrixFace(faceSlot,`extra:${tagId}:${edgeMm}:${colorCss}`,`${tagId}`,colorCss);
     tagFaceMesh.setOrientedQuad(faceSlot,lFromTag,faceEdge,faceEdge,0.0009,true);
   }
-  return {frameSlot,axesSlot,faceSlot};
+  return {frameSlot,alertSlot,axesSlot,faceSlot,colorCss,outsidePerimeter:false};
 }
 
 function setRodSegment(mesh,ax,ay,az,bx,by,bz,radius=0.0018){
@@ -1485,10 +1545,44 @@ function getOrCreateFencePost(v){
   return post;
 }
 
+const _alertPosBuf=[0,0,0];
+let lastExtraAlertFenceVer=-1;
+function syncStaticExtrasPerimeterAlerts(force=false){
+  const curVer=perimeterFence?.version?.()??-1;
+  if(!force&&curVer===lastExtraAlertFenceVer)return;
+  lastExtraAlertFenceVer=curVer;
+  const fenceActive=Boolean(perimeterFence?.isActive?.());
+  for(const extra of placedExtras.values()){
+    let nextOutside=false;
+    if(fenceActive&&extra.lFromTag){
+      _alertPosBuf[0]=extra.lFromTag[12];
+      _alertPosBuf[1]=extra.lFromTag[13];
+      _alertPosBuf[2]=extra.lFromTag[14];
+      nextOutside=perimeterFence.isOutsideXY(_alertPosBuf,{wasOutside:Boolean(extra.outsidePerimeter)}).outside;
+    }
+    if(nextOutside!==Boolean(extra.outsidePerimeter)){
+      extra.outsidePerimeter=nextOutside;
+      frameBatch.setAlert(extra.frameSlot,nextOutside);
+      if(nextOutside&&extra.lFromTag){
+        setTagFramePose(alertGlowBatch,extra.alertSlot,extra.lFromTag,0.0016,extra.edgeMm/20);
+        alertGlowBatch.setVisible(extra.alertSlot,true);
+        drawTagMatrixFace(extra.faceSlot,`extra:${extra.tagId}:${extra.edgeMm}:alarm`,`${extra.tagId}`,'#ff3b30',{fill:'rgba(138,12,16,0.95)',alarmBell:true});
+      }else{
+        alertGlowBatch.setVisible(extra.alertSlot,false);
+        drawTagMatrixFace(extra.faceSlot,`extra:${extra.tagId}:${extra.edgeMm}:${extra.colorCss}`,`${extra.tagId}`,extra.colorCss);
+      }
+    }else if(nextOutside&&extra.lFromTag){
+      setTagFramePose(alertGlowBatch,extra.alertSlot,extra.lFromTag,0.0016,extra.edgeMm/20);
+      alertGlowBatch.setVisible(extra.alertSlot,true);
+    }
+  }
+}
+
 function syncFenceVisuals(now,dtSec=0,force=false){
   if(!perimeterFence)return;
   const moved=perimeterFence.step(dtSec);
   syncPerimeterTagVisuals(now);
+  syncStaticExtrasPerimeterAlerts(force);
   if(!perimeterFence.isActive()){
     fenceGroup.visible=false;
     for(const post of fencePostCache.values()){
@@ -3559,9 +3653,14 @@ function blendRigid(a,b,alpha){
 }
 
 function drawLiveBadge(entry,mode,coupled=false){
-  const key=`${entry.tagId}:${mode}:${coupled?1:0}`;
+  const out=Boolean(entry.outsidePerimeter);
+  const key=`${entry.tagId}:${mode}:${coupled?1:0}:${out?1:0}`;
   if(key===entry.faceKey||entry.faceSlot<0)return;
   entry.faceKey=key;
+  if(out){
+    drawTagMatrixFace(entry.faceSlot,`live:${key}`,`${entry.tagId}`,'#ff3b30',{fill:'rgba(138,12,16,0.95)',alarmBell:true});
+    return;
+  }
   const rec=mode==='rec',near=mode==='near',locked=mode==='locked',moving=mode==='moving',measure=mode==='measure';
   const stroke=rec?'#ef4444':(coupled?'#4ade80':(near?'#22d3ee':(locked?'#4ade80':entry.theme.css)));
   const fill=rec?'rgba(45,8,14,0.92)':(coupled?'rgba(8,30,22,0.92)':(near?'rgba(8,28,36,0.92)':'rgba(6,11,20,0.86)'));
@@ -3672,6 +3771,8 @@ function createMovableTool(tagId,edgeMm){
     frameBatch.setColor(frameSlot,theme.hex);
     frameBatch.setVisible(frameSlot,false);
   }
+  const alertSlot=alertGlowBatch.alloc();
+  if(alertSlot>=0)alertGlowBatch.setVisible(alertSlot,false);
   const axesSlot=axesBatch.alloc();
   if(axesSlot>=0)axesBatch.setVisible(axesSlot,false);
   const faceSlot=tagFaceAtlas.acquire();
@@ -3693,10 +3794,10 @@ function createMovableTool(tagId,edgeMm){
 
   const entry={
     tagId,edgeMm,theme,
-    frameSlot,axesSlot,faceSlot,faceKey:'',
+    frameSlot,alertSlot,axesSlot,faceSlot,faceKey:'',
     recOrbSlot,recPillSlot,recPillKey:'',
     markOrbSlot,markPillSlot,markPillKey:'',
-    visible:false,faceVisible:false,recOrbVisible:false,markOrbVisible:false,
+    visible:false,faceVisible:false,recOrbVisible:false,markOrbVisible:false,outsidePerimeter:false,lastAlertFenceVer:-1,
     frameColorHex:theme.hex,recOrbColorHex:0x0ea5e9,markOrbColorHex:0x22d3ee,recOrbScale:1,
     trailRibbon:null,ribbonRgb:null,rawLinePositions:null,linePositions:null,rawLineRightAxes:null,lineRightAxes:null,lineSpeeds:null,lineHalfWidths:null,lineColors:null,lineMat:null,lineEdgeMat:null,lineCount:0,
     dotsMesh:null,dotMat:null,dotColor:null,timeCopyDotColor:null,
@@ -4255,12 +4356,54 @@ function setTagRecording(entry,active,now){
   }
 }
 
+function syncMovablePerimeterAlert(entry,poseMat,visible,now){
+  const fenceActive=Boolean(perimeterFence?.isActive?.());
+  if(!visible||!poseMat||!fenceActive){
+    if(entry.outsidePerimeter){
+      entry.outsidePerimeter=false;
+      frameBatch.setAlert(entry.frameSlot,false);
+      alertGlowBatch.setVisible(entry.alertSlot,false);
+      if(visible){
+        drawLiveBadge(entry,!extraScanActive?'measure':(entry.recording?'rec':entry.lockState),entry.handCoupled);
+      }
+    }else{
+      alertGlowBatch.setVisible(entry.alertSlot,false);
+    }
+    return;
+  }
+  _alertPosBuf[0]=poseMat[12];
+  _alertPosBuf[1]=poseMat[13];
+  _alertPosBuf[2]=poseMat[14];
+  const res=perimeterFence.isOutsideXY(_alertPosBuf,{wasOutside:Boolean(entry.outsidePerimeter)});
+  if(res.outside!==Boolean(entry.outsidePerimeter)){
+    entry.outsidePerimeter=res.outside;
+    frameBatch.setAlert(entry.frameSlot,res.outside);
+    drawLiveBadge(entry,!extraScanActive?'measure':(entry.recording?'rec':entry.lockState),entry.handCoupled);
+    if(res.outside&&extraScanActive){
+      pushDiagEvent({
+        type:'perimeter-tag-outside',
+        tagId:entry.tagId,
+        edgeDistanceMm:Math.round(res.edgeDistanceM*1000),
+        atPerformanceMs:now,
+      });
+    }
+  }
+  if(entry.outsidePerimeter){
+    setTagFramePose(alertGlowBatch,entry.alertSlot,poseMat,0.0016,entry.edgeMm/20);
+    alertGlowBatch.setVisible(entry.alertSlot,true);
+  }else{
+    alertGlowBatch.setVisible(entry.alertSlot,false);
+  }
+}
+
 function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
   const dt=Math.min(0.05,Math.max(0.004,dtSec||1/90));
+  const curFenceVer=perimeterFence?.version?.()??-1;
   for(const entry of movableTools.values()){
     if(!extraScanActive){
       // MEASURE mode (90 FPS): keep every locked tag anchored & visible at its static currentPose so it can be hovered/pinned immediately.
-      if(!entry.measureModeApplied||entry.measureSyncedPose!==entry.currentPose){
+      const needsModeSync=!entry.measureModeApplied||entry.measureSyncedPose!==entry.currentPose;
+      if(needsModeSync){
         entry.handCoupled=false;entry.coupledHand=null;
         if(entry.currentPose){
           entry.visible=true;
@@ -4293,6 +4436,10 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
         entry.recHoldSince=null;entry.recHoldConsumed=false;
         entry.measureSyncedPose=entry.currentPose;
         entry.measureModeApplied=true;
+      }
+      if(needsModeSync||entry.lastAlertFenceVer!==curFenceVer){
+        entry.lastAlertFenceVer=curFenceVer;
+        syncMovablePerimeterAlert(entry,entry.currentPose?.matrix??null,Boolean(entry.currentPose),now);
       }
       continue;
     }
@@ -4367,6 +4514,8 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     entry.visible=alive;
     entry.faceVisible=alive;
     if(!alive){
+      syncMovablePerimeterAlert(entry,null,false,now);
+      entry.lastAlertFenceVer=curFenceVer;
       frameBatch.setVisible(entry.frameSlot,false);
       axesBatch.setVisible(entry.axesSlot,false);
       tagFaceMesh.setQuadVisible(entry.faceSlot,false);
@@ -4424,6 +4573,8 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     axesBatch.setVisible(entry.axesSlot,true);
     const faceEdge=Math.max(0.008,entry.edgeMm/1000-0.0006);
     tagFaceMesh.setOrientedQuad(entry.faceSlot,entry.displayMatrix,faceEdge,faceEdge,0.0009,true);
+    syncMovablePerimeterAlert(entry,entry.displayMatrix,true,now);
+    entry.lastAlertFenceVer=curFenceVer;
 
     // Brief green confirmation flash right after locking into place.
     const flashing=now<entry.lockFlashUntilMs;
@@ -4638,6 +4789,7 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
 
 function disposeMovableEntry(e){
   if(e.frameSlot>=0)frameBatch.free(e.frameSlot);
+  if(e.alertSlot>=0)alertGlowBatch.free(e.alertSlot);
   if(e.axesSlot>=0)axesBatch.free(e.axesSlot);
   if(e.faceSlot>=0){tagFaceMesh.clearSlot(e.faceSlot);tagFaceAtlas.release(e.faceSlot);}
   if(e.recOrbSlot>=0)recOrbBatch.free(e.recOrbSlot);
@@ -4676,12 +4828,14 @@ function clearAllUserItems(){
   for(const e of movableTools.values())disposeMovableEntry(e);
   for(const extra of placedExtras.values()){
     if(extra.frameSlot>=0)frameBatch.free(extra.frameSlot);
+    if(extra.alertSlot>=0)alertGlowBatch.free(extra.alertSlot);
     if(extra.axesSlot>=0)axesBatch.free(extra.axesSlot);
     if(extra.faceSlot>=0){tagFaceMesh.clearSlot(extra.faceSlot);tagFaceAtlas.release(extra.faceSlot);}
   }
   movableTools=new Map();
   placedExtras=new Map();
   extraPending=new Map();
+  lastExtraAlertFenceVer=-1;
   if(hadItems)playModeTick('unpin');
   showHudToast(hadItems?'↺ CLEARED ALL TAGS & TRAILS':'NOTHING TO CLEAR','#f59e0b');
 }
@@ -4696,6 +4850,7 @@ function clearExtras(){
   for(const e of movableTools.values())disposeMovableEntry(e);
   for(const extra of placedExtras.values()){
     if(extra.frameSlot>=0)frameBatch.free(extra.frameSlot);
+    if(extra.alertSlot>=0)alertGlowBatch.free(extra.alertSlot);
     if(extra.axesSlot>=0)axesBatch.free(extra.axesSlot);
     if(extra.faceSlot>=0){tagFaceMesh.clearSlot(extra.faceSlot);tagFaceAtlas.release(extra.faceSlot);}
   }
@@ -4717,6 +4872,7 @@ function clearExtras(){
     ch.material?.dispose?.();
   }
   placedExtras=new Map();extraPending=new Map();movableTools=new Map();
+  lastExtraAlertFenceVer=-1;
   perimeterTagVisuals.clear();
   perimeterFence?.reset();
   perimeterOfferSuppressed=false;lastModeFenceKey='';
@@ -5339,6 +5495,7 @@ function observeExtraTags(observation,sample,assoc){
       xMm:cx*1000,yMm:cy*1000,zMm:cz*1000,tiltDeg,atMs:null,elapsedS:0,clock,
     };
     placedExtras.set(v.tagId,{tagId:v.tagId,edgeMm:v.edgeMm,lFromTag:mean,placedAt:new Date().toISOString(),wp,...vis});
+    syncStaticExtrasPerimeterAlerts(true);
     extraPending.delete(v.tagId);
     pushDiagEvent({type:'extra-tag-placed',tagId:v.tagId,edgeMm:v.edgeMm,atPerformanceMs:performance.now(),maxPosMm:maxPos,maxAngDeg:maxAng});
   }
@@ -6269,16 +6426,16 @@ function buildScanFocusRois(){
     const moving=entry.lockState==='moving';
     const settling=entry.lockState==='settling';
     const isActive=entry.handCoupled||entry.recording||moving;
-    const isClose=(entry.lastApparentEdgePx||0)>=26;
-    if(!isActive&&!isClose&&!settling)continue;
+    const m=entry.displayMatrix||entry.targetMatrix||entry.lockedMatrix;
+    if(!m)continue;
+    const nearHand=!isActive&&!settling&&Number.isFinite(lastXrTime)&&isTagNearAnyHand(m,lastXrTime,0.25);
+    if(!isActive&&!settling&&!nearHand)continue;
     if(isActive){
       hasAnyActive=true;
       if(entry.recording)hasRecording=true;
     }
     if(!freshOptical)continue;
     if(isActive)hasFreshActive=true;
-    const m=entry.displayMatrix||entry.targetMatrix||entry.lockedMatrix;
-    if(!m)continue;
     let pos=[m[12],m[13],m[14]];
     if(entry.handCoupled&&entry.lastOpticalMatrix&&entry.displayMatrix){
       const om=entry.lastOpticalMatrix,dm=entry.displayMatrix;
@@ -7281,8 +7438,9 @@ try{
     hold=nextExitHold(hold,xrExitPressed(session.inputSources).held,now);
     if(hold.fire)end();
     if(root.visible){
-      if(frameBatch.activeCount()>0)frameShimmerUniforms.uTime.value=now*0.001;
+      if(frameBatch.activeCount()>0||alertGlowBatch.activeCount()>0)frameShimmerUniforms.uTime.value=now*0.001;
       frameBatch.commit();
+      alertGlowBatch.commit();
       overlayFrameBatch.commit();
       rodBatch.commit();
       overlayRodBatch.commit();

@@ -146,14 +146,18 @@ export {
 export {
   FENCE_HEIGHT_M,
   PERIMETER_TRIGGER_TAG_ID,
+  PERIMETER_OUTSIDE_HYSTERESIS_M,
   PERIMETER_MARKERS,
   isPerimeterTag,
   perimeterRole,
   extractRigAnchors,
   projectPointToTablePlane,
   polygonMetricsXY,
+  signedDistanceToPolygonXY,
+  evaluatePerimeterOutside,
   createPerimeterFence,
   type PerimeterFence,
+  type PerimeterOutsideResult,
   type PerimeterVertex,
 } from './perimeter-fence.js';
 export {
