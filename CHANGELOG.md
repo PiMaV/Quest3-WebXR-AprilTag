@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.5.0] - 2026-11-27
+
+### Added
+- **Elastic Force-Field Perimeter Membrane & Crossing Detection:** Added `locatePerimeterCrossing` and `PerimeterFence.locateCrossing` plus an elastic membrane breach and self-healing animation on perimeter violations ([`src/perimeter-fence.mjs`](src/perimeter-fence.mjs), [`types/perimeter-fence.d.ts`](types/perimeter-fence.d.ts), [`examples/quest.mjs`](examples/quest.mjs), [`tests/perimeter-fence.test.mjs`](tests/perimeter-fence.test.mjs)).
+- **Smooth Motion Wake & Per-Vertex Fade Tubes:** Added `MOTION_WAKE_DEFAULTS`, `createMotionWakeBuffer`, and optional `fadeAttribute` / `fades` support in `createPathTubeMesh` for smooth fading motion wakes on non-recording generic tags ([`src/path-smoother.mjs`](src/path-smoother.mjs), [`src/render-batch.mjs`](src/render-batch.mjs), [`src/index.mjs`](src/index.mjs), [`types/extras.d.ts`](types/extras.d.ts), [`types/three.d.ts`](types/three.d.ts), [`examples/quest.mjs`](examples/quest.mjs)).
+- **REC ALL Mode, Right-Fist Toggle & 2-Row L-Angle Dock:** Added `REC ALL` auto-recording across moving tags, right-fist hold gesture toggle, bilateral left/right hand sphere-joint tints in a single `InstancedMesh`, and a compact 2-row L-angle dock ([`examples/quest.mjs`](examples/quest.mjs), [`docs/controls.md`](docs/controls.md)).
+- **Tag Action Pill Layout & Focus-Scheduler Override:** Added `computeTagActionPillLayout` (side-by-side layout below mid-air tags and in front of flat tabletop tags), bimanual hand-coupled stillness tolerance in `updateTagRestState`, and per-call `maxForegroundTags` override in `createFocusScheduler` ([`src/tag-tap.mjs`](src/tag-tap.mjs), [`src/focus-scheduler.mjs`](src/focus-scheduler.mjs), [`src/index.mjs`](src/index.mjs), [`types/extras.d.ts`](types/extras.d.ts)).
+- **MWE Auto-Hiding In-AR Status Card & Technical Paper Updates:** Added an auto-hiding in-AR status card to [`examples/minimal.mjs`](examples/minimal.mjs), updated local theme styling and links for the bilingual Quarto technical paper, updated diagrams/benchmarks, and expanded the unit test suite to `153` passing tests.
+
+---
+
 ## [1.4.0] - 2026-11-27
 
 ### Added
