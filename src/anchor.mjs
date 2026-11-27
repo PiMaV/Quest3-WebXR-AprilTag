@@ -7,6 +7,7 @@ const median=a=>{const s=a.slice().sort((x,y)=>x-y),n=s.length;return n%2?s[(n-1
 const dot3=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 const dist3=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]);
 
+/** Check whether a column-major 4x4 array is a valid orthonormal rigid transform matrix. */
 export function isRigidPose(array) {
   if(!array||array.length!==16) return false;
   for(let i=0;i<16;i++) if(!Number.isFinite(array[i])) return false;
@@ -23,6 +24,7 @@ export function isRigidPose(array) {
   return Math.abs(det4(array)-1)<1e-3;
 }
 
+/** Collect a window of steady, calibrated 3-tag observations to seed a native WebXR anchor. */
 export function createStableLCollector(options={}) {
   const limits={...ANCHOR_QUALITY,...options};
   let requiredIds=(options.tagIds??[350,351,352]).slice().sort((a,b)=>a-b);
@@ -109,7 +111,10 @@ export function createStableLCollector(options={}) {
   return {observe,reset,setTagIds,state,summary};
 }
 
-// All anchor creation calls happen synchronously inside update(frame) while the XRFrame is active.
+/**
+ * Manage native WebXR `XRAnchor` creation, tracking, and explicit re-anchoring.
+ * All anchor creation calls happen synchronously inside `update(frame)` while the `XRFrame` is active.
+ */
 export function createLAnchorController({onEvent=()=>{},onCreated=()=>{},
   makeRigidTransform=(position,orientation)=>new XRRigidTransform(position,orientation),
   quality={},creationTimeoutMs=8000,clock=()=>performance.now()}={}) {

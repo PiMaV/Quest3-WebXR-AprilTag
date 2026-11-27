@@ -12,7 +12,7 @@ Recorded on real Meta Quest 3 hardware (`OculusBrowser 157.0.0.22.15`, `Chrome 1
 | Capture-to-XR time offset | `-50.2` to `-53.4 ms` (`3/3` seeds converged, spread `< 1 µs`) |
 | Holdout / verification consistency | `3.8–5.3 mm` / `0.63°` holdout; `0.7–5.5 mm` / `0.06–0.3°` fresh verification |
 | Cross-session repeatability (`1 m` span) | `2–4 mm` on 12 mm (`200`-series) & 20 mm (`300`-series) tags; read-only audit `6–8 mm` median |
-| Core & automated tests | `0` external runtime dependencies in pure ES core modules (`src/`); vendored AprilTag WASM & Three.js only; `123` passing unit tests |
+| Core & automated tests | `0` external runtime dependencies in pure ES core modules (`src/`); vendored AprilTag WASM & Three.js only; `130` passing unit tests |
 
 > **Honesty & Metrology Note:** Reprojection and self-consistency metrics are not an independent physical metrology certification (`independentlyValidated: false`). Anchors are session-scoped (`persistent: false`); calibrated camera profiles persist in `localStorage` across sessions.
 
@@ -25,7 +25,7 @@ Recent calibration and Focus-ROI additions enforce strict physical sanity bounds
 - **Joint `fx` + hand-eye BA (`refineJointCalibration`):** Jointly optimizes focal length, `viewerFromCameraGL`, `worldFromRig`, and `timeOffsetMs` in pixel reprojection space, preventing planar-only `f ↔ t_z` scale/depth degeneracy on shallow head tilts.
 - **3D translation diversity:** Calibration capture requires `>= 10 cm` of 3D head translation span in addition to multi-axis rotation (`diversity`).
 - **Validation & verification bounds:** Holdout `positionP95Mm < 8.5 mm`, `angleP95Deg < 1.5°`, `jointHeldOutRmsPx < 10.0 px`, `|camT| < 0.16 m`, `|camT_z| < 0.09 m`; post-fit verification `< 8.5 mm / 1.4°`; cached session verification `< 10.0 mm / 1.5°`.
-- **Fast Focus-ROI near-tracking:** Crops close active movable tags (`300–349`) for `28 Hz` off-thread WASM detection with `decimate = 1.5` (`refineEdges = 0`) motion-blur retry while keeping rendering at `90 FPS`.
+- **Fast Focus-ROI near-tracking:** Crops close active generic tags (`x00–x49`) for `28 Hz` off-thread WASM detection with `decimate = 1.5` (`refineEdges = 0`) motion-blur retry while keeping rendering at `90 FPS`.
 
 ---
 

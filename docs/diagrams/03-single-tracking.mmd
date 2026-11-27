@@ -1,0 +1,12 @@
+flowchart TD
+  F["Camera frame + capture time"] --> D["detector-worker (WASM)<br/>decimate, two-stage"]
+  D --> C["4 corners (LL,LR,UR,UL)"]
+  C --> PNP["solveSingleTagPose<br/>PnP with K and per-ID-class edge length"]
+  PNP --> RMS{"Reprojection RMS ok?<br/>Frame evidence: pixels changed?"}
+  RMS -- no --> X["discard"]
+  RMS -- yes --> T["Time alignment<br/>viewer pose at t_cap + Δt"]
+  T --> G{"Motion gate<br/>head angular/linear velocity<br/>steady 10°/s, max 32°/s"}
+  G -- too fast --> BR["Optical L-bridge<br/>≥3 tags, RMS ≤1 px,<br/>divergence ≤4 cm / 3.5°"]
+  G -- ok --> L
+  BR --> L["lFromTag = inverse(worldFromL) × worldFromViewer × viewerFromCam × cameraFromTag"]
+  L --> OUT["Tag pose in L-frame"]

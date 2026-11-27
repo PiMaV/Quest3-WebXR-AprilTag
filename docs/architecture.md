@@ -22,14 +22,14 @@ worldFromL = worldFromViewer(captureTime + timeOffsetMs) × viewerFromCameraGL �
 
 The calibration pipeline runs off-thread in [`src/calibration-worker.mjs`](../src/calibration-worker.mjs) via `solveCalibration` in [`src/solver.mjs`](../src/solver.mjs), orchestrated by [`src/assistant.mjs`](../src/assistant.mjs) and persisted via [`src/profile.mjs`](../src/profile.mjs):
 
-- **Capture diversity gate (`diversity`):** Requires `>= 30` multi-tag views, two non-collinear head rotation axes (`maxAngle > 0.2 rad`, `rotationArea > 0.015`), and `>= 14 cm` 3D translation span (`translationSpanM >= 0.14`) so focal length `fx` and camera-headset depth `t_z` stay cleanly decoupled even on shallow head tilts.
+- **Capture diversity gate (`diversity`):** Requires `>= 30` multi-tag views, two non-collinear head rotation axes (`maxAngle > 0.2 rad`, `rotationArea > 0.015`), and `>= 10 cm` 3D translation span (`translationSpanM >= 0.10`) so focal length `fx` and camera-headset depth `t_z` stay cleanly decoupled even on shallow head tilts.
 - **Stage 1 — Planar Intrinsics (`fitIntrinsics`):** Pseudo-Huber (`huberDelta = 3`) Schur-complement bundle adjustment over `centered-square` (`fx = fy`, centered `(cx, cy)`) or full `pinhole` models, restarting planar homographies across `K` updates.
 - **Stage 2 — Multi-Seed Hand-Eye + Time Offset (`fitHandEye`):** Solves `viewerFromCameraGL`, `worldFromRig`, and `timeOffsetMs` across multiple delay seeds (`-120 ms`, `0 ms`, `+120 ms`), verifying continuous `< 100 ms` XR pose history around every observation.
-- **Stage 3 — Joint Pixel-Space Refinement (`refineJointCalibration`):** Jointly optimizes `K`, `viewerFromCameraGL`, `worldFromRig`, and `timeOffsetMs` directly in pixel reprojection space against interpolated WebXR viewer poses to eliminate planar-only `f ↔ t_z` scale/depth degeneracy.
+- **Stage 3 — Joint Pixel-Space Refinement (`refineJointCalibration`):** Jointly optimizes `K`, `viewerFromCameraGL`, `worldFromRig`, and `timeOffsetMs` directly in pixel reprojection space over up to `48` evenly-spaced training frames (`30` LM iterations) against interpolated WebXR viewer poses to eliminate planar-only `f ↔ t_z` scale/depth degeneracy.
 - **Holdout & Verification Gates:**
-  - **80/20 holdout validation (`solveCalibration`):** Last 20% of views are never fitted; requires `trainingRmsPx < 1.0`, `heldOutRmsPx < 1.2`, `jointHeldOutRmsPx < 2.2`, `positionP95Mm < 5.0`, `angleP95Deg < 1.0`, `|camT| < 0.16 m`, `|camT_z| < 0.09 m`, `|timeOffsetMs| < 230 ms`, `>= 2` converged delay seeds (`delaySpreadMs < 15`), and tight parameter uncertainty (`fxStd < 0.05`).
-  - **Post-fit verification (`verifying`):** Fresh capture after fit (`positionP95Mm < 5.5`, `angleP95Deg < 1.0`, `reprojectionRmsPx < 1.1`, head motion `> 0.06 m`).
-  - **Cached session check (`checking`):** New-session check against `localStorage` SHA-256 profile (`positionP95Mm < 8.0`, `angleP95Deg < 1.2`, `reprojectionRmsPx < 1.2`, head motion `> 0.04 m`). `validateCalibration` rejects degraded or out-of-bounds profiles automatically without overwriting valid caches on failure.
+  - **80/20 holdout validation (`solveCalibration`):** Last 20% of views are never fitted; requires `trainingRmsPx < 1.0`, `heldOutRmsPx < 1.2`, `jointHeldOutRmsPx < 10.0`, `positionP95Mm < 8.5`, `angleP95Deg < 1.5`, `|camT| < 0.16 m`, `|camT_z| < 0.09 m`, `|timeOffsetMs| < 230 ms`, `>= 2` converged delay seeds (`delaySpreadMs < 15`), and tight parameter uncertainty (`fxStd < 0.05`).
+  - **Post-fit verification (`verifying`):** Fresh capture after fit (`positionP95Mm < 8.5`, `angleP95Deg < 1.4`, `reprojectionRmsPx < 1.2`, head motion `> 0.04 m`).
+  - **Cached session check (`checking`):** New-session check against `localStorage` SHA-256 profile (`positionP95Mm < 10.0`, `angleP95Deg < 1.5`, `reprojectionRmsPx < 1.2`, head motion `> 0.04 m`). `validateCalibration` rejects degraded or out-of-bounds profiles automatically without overwriting valid caches on failure.
 
 ---
 
@@ -38,11 +38,118 @@ The calibration pipeline runs off-thread in [`src/calibration-worker.mjs`](../sr
 **Zero-dependency ES core vs. vendored runtime dependencies:**
 
 1. **Zero npm dependencies (`package.json`):** No bundler, no transpiler, and no external npm runtime or dev packages (`node >= 22` built-in `node:test` and `scripts/serve.mjs`).
-2. **Pure ES core modules (`src/`):** Calibration, pose estimation, anchor lifecycle, hand-coupling, motion prediction, path smoothing, auditing, and rigid-transform math under `src/` are pure ES modules with zero Three.js or framework dependencies. Package subpath exports `./solver`, `./scan`, `./audit`, and `./xr-exit` (or direct module imports) load without Three.js.
-3. **Vendored AprilTag WASM (`vendor/apriltag/`):** ARENA/AprilRobotics `tag36h11` WebAssembly detector (`BSD-2-Clause` / `BSD-3-Clause`) loaded inside [`src/detector-worker.js`](../src/detector-worker.js).
-4. **Vendored Three.js `0.187.0` (`vendor/three/`):** `MIT`-licensed WebGL engine imported only by [`examples/quest.mjs`](../examples/quest.mjs) and the two optional rendering helpers [`src/ui-atlas.mjs`](../src/ui-atlas.mjs) and [`src/render-batch.mjs`](../src/render-batch.mjs) (which are also re-exported from the convenience barrel [`src/index.mjs`](../src/index.mjs)).
+2. **Pure ES core modules (`src/`):** Calibration, pose estimation, anchor lifecycle, hand-coupling, motion prediction, path smoothing, auditing, and rigid-transform math under `src/index.mjs` (and subpath exports `./solver`, `./scan`, `./audit`, `./xr-exit`, `./perimeter`, `./camera`, `./assistant`, `./anchor`, `./profile`, `./rig`, `./runtime`, `./detector`) have **zero Three.js or framework dependencies**.
+3. **Zero-dependency TypeScript types (`types/`):** Full `.d.ts` declarations for `.` and every subpath export are included via `"types"` in [`package.json`](../package.json).
+4. **Vendored AprilTag WASM (`vendor/apriltag/`):** ARENA/AprilRobotics `tag36h11` WebAssembly detector (`BSD-2-Clause` / `BSD-3-Clause`) loaded inside [`src/detector-worker.js`](../src/detector-worker.js).
+5. **Vendored Three.js `0.187.0` (`vendor/three/`):** `MIT`-licensed WebGL engine imported only by [`examples/quest.mjs`](../examples/quest.mjs), [`examples/minimal.mjs`](../examples/minimal.mjs), and the optional rendering helpers exported separately via [`src/three.mjs`](../src/three.mjs) (`@pimav/quest3-webxr-apriltag/three`, wrapping [`src/ui-atlas.mjs`](../src/ui-atlas.mjs) and [`src/render-batch.mjs`](../src/render-batch.mjs)).
 
 See [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for full license attribution and [`print/SOURCE.json`](../print/SOURCE.json) for physical asset provenance.
+
+---
+
+## Quickstart (Minimal Integration)
+
+For a complete runnable starter (~240 lines, no showcase HUD or portals), see [`examples/minimal.html`](../examples/minimal.html) and [`examples/minimal.mjs`](../examples/minimal.mjs).
+
+### Core Calibration → `XRAnchor` → `worldFromL` Loop
+
+```js
+import {
+  createReferenceCamera,
+  createCalibrationAssistant,
+  createLAnchorController,
+  createObservationBuffer,
+  deviceIdentity,
+  product,
+  cvToGL,
+} from '@pimav/quest3-webxr-apriltag';
+
+const obsBuffer = createObservationBuffer({ maxAgeMs: 650, maxItems: 16 });
+let profile = null;
+
+const anchor = createLAnchorController({
+  quality: { softReject: true, maxRmsPx: 1.15 },
+  onCreated: () => capture.stop(), // switch to pure 90 FPS native XRAnchor mode
+});
+
+const capture = createReferenceCamera({
+  video,
+  geometry: rig,
+  getContext: () => ({ sessionId: 'app-1', spaceEpoch }),
+  getSettings: () => ({
+    horizontalFovDeg: 65,
+    printScale: 1,
+    maxLongEdge: 1280,
+    experimentalCalibration: profile,
+    decimate: 1,
+    maxHz: 8,
+    detectMode: 'two-stage',
+  }),
+  onObservation: (observation, sample) => {
+    assistant.observe(observation, sample, history, performance.now());
+    if (profile) obsBuffer.push({ observation, sample });
+  },
+});
+
+// Inside XRSession startup after capture.start():
+const assistant = createCalibrationAssistant({
+  rig,
+  device: await deviceIdentity(capture.state(), rig),
+  imageSize: capture.state().sourceSize,
+  onProfile: (p) => { profile = p; },
+});
+await assistant.begin();
+
+// Inside frame callback:
+const worldFromL = anchor.update(frame, now, { viewerTracked });
+if (profile && (anchor.phase() === 'collecting' || anchor.phase() === 'ready')) {
+  for (const item of obsBuffer.drain(history, profile, now)) {
+    const tool = item.observation.tools[0];
+    anchor.observe({
+      sample: item.sample,
+      tool,
+      candidate: item.candidate,
+      worldFromL: tool
+        ? product(item.candidate.worldFromViewer, profile.viewerFromCameraGL, cvToGL(tool.cameraFromTool))
+        : null,
+    }, now);
+  }
+}
+```
+
+### Custom Physical Tag Sizes
+
+`requiredTagEdgeMm(id)` maps the M.E.S.S. `tag36h11` ranges (`100–499`). For standard tags with custom printed edge lengths (e.g. tags `0, 1, 2` at `50 mm`), pass `edgeMm` or `getTagEdgeMm` directly to `solveSingleTagPose`, or pass `unassignedTagEdgeMm` in `getSettings()` for the detector worker:
+
+```js
+import { solveSingleTagPose } from '@pimav/quest3-webxr-apriltag';
+
+const pose = solveSingleTagPose(rawMarker, K, { edgeMm: 50 });
+// Or per-ID lookup:
+const mapped = solveSingleTagPose(rawMarker, K, {
+  getTagEdgeMm: (id) => (id === 0 ? 50 : 30),
+});
+
+// In createReferenceCamera getSettings():
+// { solveUnassigned: true, unassignedTagEdgeMm: { 0: 50, default: 30 } }
+```
+
+### Bundler Setups (Vite / Webpack / Rollup)
+
+`createReferenceCamera` accepts `workerFactory` and `wasmBaseUrl` so bundlers can serve `apriltag_wasm.js` / `apriltag_wasm.wasm` from `public/` or an asset URL without relying on relative `../vendor/apriltag/` resolution:
+
+```js
+const capture = createReferenceCamera({
+  video,
+  geometry: rig,
+  wasmBaseUrl: '/vendor/apriltag/',
+  workerFactory: ({ workerUrl }) =>
+    new Worker(new URL('./my-detector-worker-entry.js' + workerUrl.search, import.meta.url)),
+  getSettings,
+  getContext,
+  onObservation,
+});
+```
 
 ---
 
@@ -67,7 +174,7 @@ Physical rig and print-sheet definitions live in [`rigs/ms-qr-main-l.json`](../r
 | [`src/anchor-audit.mjs`](../src/anchor-audit.mjs) | Strictly read-only optical comparison against native anchor pose (`usedToCorrectAnchor: false`) |
 | [`src/tool-scan.mjs`](../src/tool-scan.mjs) + [`src/perimeter-fence.mjs`](../src/perimeter-fence.mjs) | Multi-view 6DOF registration for loose plates and clockwise 20 cm perimeter fence (`353–359`) |
 | [`src/tag-callout.mjs`](../src/tag-callout.mjs) + [`src/tag-tap.mjs`](../src/tag-tap.mjs) | View-aware 3D callout layout (`computeHoverCardLayout`, `computePinPillPositions`) and full-face tag surface / pinch proximity metrics |
-| [`src/ui-atlas.mjs`](../src/ui-atlas.mjs) + [`src/render-batch.mjs`](../src/render-batch.mjs) | Optional Three.js instanced pools, badge atlases, 2-edge Twist-Ribbon (`createPathRibbonMesh`), and variable-radius tube (`createPathTubeMesh`) helpers |
+| [`src/three.mjs`](../src/three.mjs) + [`src/ui-atlas.mjs`](../src/ui-atlas.mjs) + [`src/render-batch.mjs`](../src/render-batch.mjs) | Optional Three.js subpath (`./three`) with instanced pools, badge atlases, 2-edge Twist-Ribbon (`createPathRibbonMesh`), and variable-radius tube (`createPathTubeMesh`) helpers |
 | [`src/frame-evidence.mjs`](../src/frame-evidence.mjs) + [`src/xr-exit.mjs`](../src/xr-exit.mjs) + [`src/version.mjs`](../src/version.mjs) | Frozen-frame pixel change fingerprinting, Quest controller long-press exit helper, and shared `APP_VERSION_LABEL` |
 
 ---
@@ -89,6 +196,7 @@ node scripts/serve.mjs --base /Quest3-WebXR-AprilTag
 # 3a. Meta Quest 3 over USB (localhost is a Secure Context, no TLS cert needed)
 adb reverse tcp:8443 tcp:8443
 # Open in Meta Quest Browser: http://localhost:8443/examples/quest.html
+# Or minimal starter:         http://localhost:8443/examples/minimal.html
 
 # 3b. Or serve over LAN HTTPS with your own certificate
 node scripts/serve.mjs --cert cert.pem --key key.pem --host 0.0.0.0 --port 8443

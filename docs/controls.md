@@ -17,14 +17,14 @@ All primary workflows in [`examples/quest.html`](../examples/quest.html) work di
 
 ## `SCAN` Mode (Camera ON · Red Hand Tint)
 
-Used for discovering markers, tracking movable objects, recording 3D motion paths, and placing Time-Copies.
+Used for discovering markers, tracking generic tagged objects, recording 3D motion paths, and placing Time-Copies.
 
-- **M.E.S.S. ID Convention (`tag36h11`):** Only the first 50 IDs per 100-block (`x00–x49`) are free user-assignable AprilTags (e.g., `200–249` at 12 mm, `300–349` at 20 mm). IDs from `x50` upward (`x50–x99`, such as `250–299` and `350–399`) are reserved M.E.S.S. system/reference ranges. See [Markers & ID Convention](./markers.md).
-- **Movable 20 mm Tags (`300–349`):**
+- **M.E.S.S. ID Convention (`tag36h11`):** The hundreds digit selects the size class and tag edge. `x00–x49` are generic (no assigned role, e.g. `200–249` at 12 mm, `300–349` at 20 mm); `x50–x99` are dedicated (fixed purpose with a geometry profile, e.g. `350–359`, `370–372`). See [Markers & ID Convention](./markers.md).
+- **Generic Tags (`x00–x49`, e.g. 20 mm `300–349`):**
   - Auto-lock and follow live while optically fresh (`~0.95 s` idle / `~1.2 s` recording dropout window, with no mid-air "last seen" ghosts after removal).
   - **Multi-tag rigid ruler 90 Hz hand coupling:** Supports gripping two rigidly mounted tags simultaneously under rotation up to `~0.42 m` lever arm, snapping smoothly back to the optical pose on timeout or drift.
   - **Proximity-prioritized multi-tag Focus-ROI tracking:** Runs up to `28 Hz` on up to 3 active/sibling targets (keeping nearby tags within `45 cm` even during active recording) via a two-stage ROI pipeline (`decimate = 2` search on large boxes → tight `decimate = 1` corner refinement, plus `decimate = 1.5` motion-blur retry), instant partial-miss recovery sweeps, live 90 Hz hand-centered ROIs, and damped 6DOF optical lead prediction inside thicker shimmering frames.
-- **Static & Other Edge Classes (`200–249`, etc.):** Detected tags with defined edge classes (such as free 12 mm tags `200–249`) place static locked markers scaled by ID class (`requiredTagEdgeMm`) with their ID rendered flat on the tag matrix.
+- **Dedicated IDs without a profile (`x50–x99`, e.g. `250–299`):** Shown as static locked markers scaled by ID class (`requiredTagEdgeMm`) with their ID rendered flat on the tag matrix, plus a one-time warning.
 - **Table Perimeter Fence (`353–359`):** Reserved perimeter markers (activated via `TL` `353`, labeled `YL` `358`, `TL` `353`, `XT` `357`, `TR` `354`, `YR` `359`, `BR` `355`, `XB` `356`) build a 20 cm clockwise table fence.
 - **Time-Copy Snapshots (`[⏱ MARK]`):** Hold an index fingertip `0.40 s` on the bottom **`[⏱ MARK]`** pill below any tag (in mid-air or flat on the table, positioned clear of left/right grabbing fingers) to freeze a **Time-Copy** point marker at its live 3D pose.
 - **3D Twist-Ribbon Path Recording (`[● REC]`):** Hold **`[● REC]`** (`0.65 s` start / `0.35 s` stop) above a tag to record a **tag-colored 2-edge Twist-Ribbon** (retains per-tag object color while modulating width `5–35 mm` (`7×`) across `0–550 mm/s` to show 3D roll/twist and speed in 2 draw calls) with waypoint dots.

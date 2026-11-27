@@ -4,6 +4,10 @@ import {fitPlanarPose} from './rig.mjs';
 import {cvToGL,observationIsFresh,poseAt,product} from './runtime.mjs';
 import {PROFILE_SCHEMA,PIPELINE,createProfileStore} from './profile.mjs';
 const clone=v=>structuredClone(v);
+/**
+ * Create the guided calibration and cached-profile verification state machine
+ * (`idle` -> `checking` / `scanning` -> `solving` -> `verifying` -> `ready`).
+ */
 export function createCalibrationAssistant({rig,device,imageSize,store=createProfileStore(),onChange=()=>{},
   onProfile=()=>{},workerFactory=()=>new Worker(new URL('./calibration-worker.mjs',import.meta.url),{type:'module'}),model='centered-square',
   scanViews=36,verificationViews=10}={}){

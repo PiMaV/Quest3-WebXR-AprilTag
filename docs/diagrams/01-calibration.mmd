@@ -1,0 +1,17 @@
+flowchart TD
+  A["Orbit head around L-angle<br/>(3 tags, tag36h11)"] --> B{"Diversity gate<br/>≥30 views, 2 rotation axes,<br/>≥10 cm translation"}
+  B -- no --> A
+  B -- yes --> S1
+  subgraph FIT ["solveCalibration (worker)"]
+    S1["Stage 1 fitIntrinsics<br/>planar BA, pseudo-Huber δ=3<br/>Schur complement"] --> S2
+    S2["Stage 2 fitHandEye<br/>viewerFromCameraGL, worldFromRig<br/>delay seeds −120 / 0 / +120 ms"] --> S3
+    S3["Stage 3 refineJointCalibration<br/>K + hand-eye + Δt jointly<br/>pixel reprojection, 48 frames, 30 LM iterations"]
+  end
+  S3 --> H{"Holdout 80/20<br/>train <1.0 px, held-out <1.2 px<br/>P95 <8.5 mm / <1.5°<br/>≥2 delay seeds converged"}
+  H -- fail --> A
+  H -- pass --> V{"Verifying<br/>fresh views<br/>P95 <8.5 mm / <1.4°"}
+  V -- fail --> A
+  V -- pass --> P[("Profile → localStorage<br/>SHA-256")]
+  P --> C{"New session: checking<br/>P95 <10 mm / <1.5°"}
+  C -- pass --> OK["Profile active"]
+  C -- fail --> A

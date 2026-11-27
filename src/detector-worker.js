@@ -1,6 +1,10 @@
 // Classic worker: the existing public Emscripten build uses importScripts.
 // Supports VideoFrame (WebCodecs Y-plane), ImageBitmap, RGBA, and raw grayscale inputs.
-const base=new URL('../vendor/apriltag/',self.location.href).href;
+const _customWasmBase=new URLSearchParams(self.location.search).get('wasmBaseUrl');
+const _rawBase=_customWasmBase
+  ?new URL(_customWasmBase,self.location.href).href
+  :new URL('../vendor/apriltag/',self.location.href).href;
+const base=_rawBase.endsWith('/')?_rawBase:`${_rawBase}/`;
 const YUV_FORMATS=new Set(['I420','I420A','I422','I444','NV12']);
 let detector,prepareRgbaFrame,prepareGrayFrame,observeReference,solveSingleTagPose,offscreen=null,offCtx=null,copyBuf=null,grayBuf=null;
 let detectMode='full',activeDecimate=1,trackRefIds=null,lastRefHintBox=null;
@@ -54,6 +58,21 @@ async function extractVideoFrameGray(frame,width,height,previousEvidence,callbac
     } catch { /* Fall back to OffscreenCanvas drawImage below. */ }
   }
   return {...drawToGray(frame,width,height,previousEvidence,callbackCount),readbackMode:'worker-videoframe-canvas'};
+}
+
+function resolveUnassignedEdgeMm(spec,id){
+  if(typeof spec==='number') return (Number.isFinite(spec)&&spec>0)?spec:null;
+  if(spec&&typeof spec==='object'){
+    if(Object.hasOwn(spec,id)||Object.hasOwn(spec,String(id))){
+      const v=spec[id]??spec[String(id)];
+      if(typeof v==='number'&&Number.isFinite(v)&&v>0) return v;
+    }
+    if(Object.hasOwn(spec,'default')){
+      const v=spec.default;
+      if(typeof v==='number'&&Number.isFinite(v)&&v>0) return v;
+    }
+  }
+  return null;
 }
 
 self.onmessage=async({data})=>{
@@ -148,7 +167,11 @@ self.onmessage=async({data})=>{
         const entry={id:m.id,family:data.geometry.family,corners:m.corners,registered:false,pose:null,softFallback:Boolean(m.softFallback)};
         if(data.solveUnassigned&&counts.get(m.id)===1) {
           entry.workerSolved=true;
-          const solved=solveSingleTagPose(m,data.K,{minEdgePx:8,minAreaPx:64,maxRmsPx:2.5});
+          const customEdgeMm=resolveUnassignedEdgeMm(data.unassignedTagEdgeMm,m.id);
+          const solved=solveSingleTagPose(m,data.K,{
+            ...(customEdgeMm!=null?{edgeMm:customEdgeMm}:null),
+            minEdgePx:8,minAreaPx:64,maxRmsPx:2.5,
+          });
           if(solved) {
             entry.pose=solved.pose;
             entry.edgeMm=solved.edgeMm;

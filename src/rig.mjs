@@ -3,6 +3,7 @@ const quadAreaPx=c=>Math.abs(c.reduce((v,p,i)=>v+p.x*c[(i+1)%4].y-p.y*c[(i+1)%4]
 // ARENA's atagjs_detect returns AprilTag p[0..3] in physical LL, LR, UR, UL order
 // (even after rotation). OpenCV's corner order differs.
 export const WASM_PRINT_ORDER = [0, 1, 2, 3];
+/** Return the physical edge length in mm defined by the M.E.S.S. tag36h11 ID classes (100–499). */
 export function requiredTagEdgeMm(markerId) {
   if (!Number.isInteger(markerId)) throw new RangeError(`No standard tag edge defined for ID ${markerId}`);
   if (markerId >= 100 && markerId <= 199) return 6.0;
@@ -17,6 +18,7 @@ const mul = (a, s) => a.map(v => v * s);
 const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
 const finite = a => a.every(Number.isFinite);
 
+/** Validate and scale a `webxr-apriltag-rig-v1` planar target definition. */
 export function referenceTools(g, printScale=1) {
   if(g?.schema!=='webxr-apriltag-rig-v1'||g.family!=='apriltag-36h11'||g.units!=='m'||!g.id||
      !Array.isArray(g.tools)||g.tools.length!==1||!(printScale>0)) throw new TypeError('Invalid planar rigid target');
@@ -54,8 +56,10 @@ function solve(rows, rhs) {
   return a.map(r=>r[n]);
 }
 
-// Joint least-squares planar fit, normalized about the tool points for conditioning.
-// K must describe these image pixels. Distortion must be removed before calling.
+/**
+ * Joint least-squares planar pose fit (normalized homography + analytic-Jacobian Gauss-Newton).
+ * K must describe these image pixels; distortion must be removed before calling.
+ */
 export function fitPlanarPose(tags, K) {
   const points=tags.flatMap(t=>t.points), pixels=tags.flatMap(t=>t.pixels);
   const centre=[0,1].map(j=>points.reduce((s,p)=>s+p[j],0)/points.length);
@@ -281,10 +285,22 @@ function refinePose(initial,tags,K) {
   return { R: [r1, r2, r3], t };
 }
 
-export function solveSingleTagPose(raw, K, { minEdgePx = 8, minAreaPx = 64, maxRmsPx = 2.5, minCosView = 0, maxDepthM = Infinity } = {}) {
-  let edgeMm;
-  try { edgeMm = requiredTagEdgeMm(raw?.id); } catch { return null; }
-  const half = (edgeMm / 1000) * 0.5;
+/**
+ * Solve a 6DOF OpenCV-frame pose for a single detected AprilTag square.
+ * Accepts an explicit `edgeMm` or `getTagEdgeMm(id)` override; defaults to `requiredTagEdgeMm(id)`.
+ */
+export function solveSingleTagPose(raw, K, { edgeMm = null, getTagEdgeMm = null, minEdgePx = 8, minAreaPx = 64, maxRmsPx = 2.5, minCosView = 0, maxDepthM = Infinity } = {}) {
+  let resolvedEdgeMm;
+  if (edgeMm !== null && edgeMm !== undefined) {
+    if (typeof edgeMm !== 'number' || !Number.isFinite(edgeMm) || edgeMm <= 0) return null;
+    resolvedEdgeMm = edgeMm;
+  } else if (typeof getTagEdgeMm === 'function') {
+    try { resolvedEdgeMm = getTagEdgeMm(raw?.id); } catch { return null; }
+    if (typeof resolvedEdgeMm !== 'number' || !Number.isFinite(resolvedEdgeMm) || resolvedEdgeMm <= 0) return null;
+  } else {
+    try { resolvedEdgeMm = requiredTagEdgeMm(raw?.id); } catch { return null; }
+  }
+  const half = (resolvedEdgeMm / 1000) * 0.5;
   const corners = [[-half, -half], [half, -half], [half, half], [-half, half]];
   const c = raw.corners;
   if (!Array.isArray(c) || c.length !== 4) return null;
@@ -325,7 +341,7 @@ export function solveSingleTagPose(raw, K, { minEdgePx = 8, minAreaPx = 64, maxR
   const cosView = tNorm > 1e-6 ? Math.abs(r3[0] * t[0] + r3[1] * t[1] + r3[2] * t[2]) / tNorm : 0;
   const depthM = t[2];
   if (!Number.isFinite(depthM) || depthM > maxDepthM || cosView < minCosView) return null;
-  return { edgeMm, pose, corners: c, minEdgePx: minE, areaPx: area, rmsPx, cosView, depthM };
+  return { edgeMm: resolvedEdgeMm, pose, corners: c, minEdgePx: minE, areaPx: area, rmsPx, cosView, depthM };
 }
 
 function residual(pose, tag, K) {
@@ -386,6 +402,7 @@ function consensus(tags, K, maxRmsPx) {
   return best;
 }
 
+/** Match raw AprilTag detections against a planar reference rig and run strict-majority consensus. */
 export function observeReference(markers, geometry, K, {printScale=1,maxRmsPx=3,minAreaPx=100}={}) {
   if (![K?.fx,K?.fy,K?.cx,K?.cy,K?.width,K?.height].every(Number.isFinite) ||
       K.fx<=0 || K.fy<=0 || K.width<=0 || K.height<=0 || !(maxRmsPx>0) || !(minAreaPx>0))

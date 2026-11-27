@@ -273,3 +273,42 @@ test('analytic-Jacobian fitPlanarPose and solveSingleTagPose recover exact 6DOF 
   const distorted=structuredClone(corners);distorted[0].x+=12;
   assert.equal(solveSingleTagPose({id:305,corners:distorted},K,{maxRmsPx:1.5}),null);
 });
+
+test('solveSingleTagPose supports custom edgeMm and getTagEdgeMm overrides without breaking defaults',()=>{
+  const K={width:1280,height:1080,fx:900,fy:900,cx:640,cy:540};
+  const gtGL=vectorRigid([0.2,-0.3,0.1,0.03,-0.02,-0.50]);
+  const half20=0.010;
+  const cornersLocal=[[-half20,-half20],[half20,-half20],[half20,half20],[-half20,half20]];
+  const corners=cornersLocal.map(([x,y])=>{
+    const wx=gtGL[0]*x+gtGL[4]*y+gtGL[12];
+    const wy=gtGL[1]*x+gtGL[5]*y+gtGL[13];
+    const wz=gtGL[2]*x+gtGL[6]*y+gtGL[14];
+    return {x:K.fx*(wx/(-wz))+K.cx,y:K.fy*((-wy)/(-wz))+K.cy};
+  });
+
+  // Default behavior unchanged: non-M.E.S.S. ID 0 returns null, ID 300 resolves to 20 mm.
+  assert.equal(solveSingleTagPose({id:0,corners},K),null);
+  const def300=solveSingleTagPose({id:300,corners},K,{maxRmsPx:0.5});
+  assert.ok(def300);
+  assert.equal(def300.edgeMm,20);
+
+  // Explicit edgeMm=50 scales depth by 2.5x relative to 20 mm corners.
+  const custom50=solveSingleTagPose({id:0,corners},K,{edgeMm:50,maxRmsPx:0.5});
+  assert.ok(custom50);
+  assert.equal(custom50.edgeMm,50);
+  assert.ok(Math.abs(custom50.depthM-def300.depthM*2.5)<1e-6);
+
+  // Callback lookup getTagEdgeMm(id).
+  const lookup=id=>(id===7?35:null);
+  const custom7=solveSingleTagPose({id:7,corners},K,{getTagEdgeMm:lookup,maxRmsPx:0.5});
+  assert.ok(custom7);
+  assert.equal(custom7.edgeMm,35);
+  assert.ok(Math.abs(custom7.depthM-def300.depthM*(35/20))<1e-6);
+  assert.equal(solveSingleTagPose({id:8,corners},K,{getTagEdgeMm:lookup}),null);
+
+  // Invalid custom sizes fail cleanly with null.
+  assert.equal(solveSingleTagPose({id:0,corners},K,{edgeMm:0}),null);
+  assert.equal(solveSingleTagPose({id:0,corners},K,{edgeMm:-10}),null);
+  assert.equal(solveSingleTagPose({id:0,corners},K,{edgeMm:NaN}),null);
+  assert.equal(solveSingleTagPose({id:0,corners},K,{getTagEdgeMm:()=>{throw new Error('boom');}}),null);
+});

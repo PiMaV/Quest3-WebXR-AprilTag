@@ -5,14 +5,17 @@
   "versionNote": "Current M.E.S.S. L-angle print sheet series (v3.0); print sheet revisions may increment independently while exact file checksums and calibrated rig geometries remain pinned here.",
   "copiedWithoutModification": true,
   "idConvention": {
-    "summary": "Per 100-block in the M.E.S.S. AprilTag language (tag36h11), only the first 50 IDs (x00–x49) are free user-assignable AprilTags (e.g. 200–249 at 12 mm, 300–349 at 20 mm); IDs from x50 upward (x50–x99, e.g. 250–299 and 350–399) are reserved M.E.S.S. system/reference IDs.",
-    "freeRanges": {
-      "12mm": "200–249",
-      "20mm": "300–349"
+    "summary": "Per 100-block in the M.E.S.S. AprilTag language (tag36h11), the hundreds digit selects the size class and tag edge length. IDs x00-x49 are generic (no assigned role; the user may use them freely). IDs x50-x99 are dedicated (fixed purpose with a known local geometry profile). Dedicated IDs without a profile are unassigned.",
+    "genericRanges": {
+      "12mm": "200-249",
+      "20mm": "300-349"
     },
-    "reservedRanges": {
-      "200Series": "250–299",
-      "300Series": "350–399"
+    "dedicatedRanges": {
+      "20mm": "350-359, 370-372"
+    },
+    "unassignedDedicatedRanges": {
+      "12mm": "250-299",
+      "20mm": "360-369, 373-399"
     }
   },
   "paperMm": [

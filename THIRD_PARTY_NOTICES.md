@@ -23,9 +23,9 @@ respective licenses:
   Three.js `0.187.0` — **MIT License**.
   License: `vendor/three/LICENSE`
   Upstream: https://github.com/mrdoob/three.js
-  Used by the Quest 3 demo (`examples/quest.mjs`) and optional WebGL rendering
-  helpers (`src/ui-atlas.mjs`, `src/render-batch.mjs`). The core calibration,
-  pose solver, anchor lifecycle, and runtime math modules have zero Three.js
+  Used by the Quest 3 demos ([`examples/quest.mjs`](examples/quest.mjs), [`examples/minimal.mjs`](examples/minimal.mjs)) and optional WebGL rendering
+  helpers ([`src/three.mjs`](src/three.mjs), [`src/ui-atlas.mjs`](src/ui-atlas.mjs), [`src/render-batch.mjs`](src/render-batch.mjs)). The core calibration,
+  pose solver, anchor lifecycle, and runtime math modules (`src/index.mjs`) have zero Three.js
   dependencies.
 
 ## First-Party Asset Provenance

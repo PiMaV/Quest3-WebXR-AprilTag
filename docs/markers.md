@@ -21,16 +21,22 @@ Every physical coordinate measurement depends on an exact **1:1 millimeter-accur
 
 ## M.E.S.S. AprilTag ID Convention (`tag36h11`)
 
-Per 100-block in the M.E.S.S. AprilTag convention (defined in [`print/SOURCE.json`](../print/SOURCE.json) and enforced in [`src/rig.mjs`](../src/rig.mjs) via `requiredTagEdgeMm`), **only the first 50 IDs (`x00–x49`) are free user-assignable tags**; IDs from **`x50` upward (`x50–x99`) are reserved M.E.S.S. system and reference IDs**:
+Per 100-block in the M.E.S.S. AprilTag convention (defined in [`print/SOURCE.json`](../print/SOURCE.json) and enforced in [`src/rig.mjs`](../src/rig.mjs) via `requiredTagEdgeMm`), the **hundreds digit** selects the size class and tag edge length. **`x00–x49` are generic**: no assigned role, the user may use them freely (fixed, moved or tracked is an application choice). **`x50–x99` are dedicated**: a fixed purpose with a known local geometry profile. From `400` upward both halves are generic plates.
 
-| ID Range | Tag Edge Size | Role |
-|---|---|---|
-| `200–249` | `12 mm` | Free user-assignable static markers (sample tags `200`, `201` on A4 sheet) |
-| `250–299` | — | Reserved M.E.S.S. 200-series range |
-| `300–349` | `20 mm` | Free user-assignable movable 3D object / tool tags (sample tags `300`, `301` on A4 sheet) |
-| `350–352` | `20 mm` | Reserved A4 L-angle origin rig (`350` origin, `351` +X 230 mm, `352` +Y 170 mm) |
-| `353–359` | `20 mm` | Reserved clockwise table perimeter markers (`YL 358`, `TL 353`, `XT 357`, `TR 354`, `YR 359`, `BR 355`, `XB 356`) |
-| `370–372` | `20 mm` | Reserved Tablet / e-Ink L-angle origin rig (`370` origin, `371` +X 150 mm, `372` +Y 110 mm) |
-| `360–369`, `373–399` | — | Reserved M.E.S.S. 300-series range |
+| ID Range | Class | Tag Edge | Role |
+|---|---|---|---|
+| `100–149` | S generic | `6 mm` | Generic detail plates |
+| `150–199` | S dedicated | `6 mm` | No profile assigned yet |
+| `200–249` | M generic | `12 mm` | Generic table plates (sample tags `200`, `201` on A4 sheet) |
+| `250–299` | M dedicated | `12 mm` | No profile assigned yet (rulers, reference frames) |
+| `300–349` | L generic | `20 mm` | Generic plates (sample tags `300`, `301` on A4 sheet) |
+| `350–352` | L dedicated | `20 mm` | A4 L-angle origin rig (`350` origin, `351` +X 230 mm, `352` +Y 170 mm) |
+| `353–359` | L dedicated | `20 mm` | Clockwise table perimeter markers (`YL 358`, `TL 353`, `XT 357`, `TR 354`, `YR 359`, `BR 355`, `XB 356`) |
+| `370–372` | L dedicated | `20 mm` | Tablet / e-Ink L-angle origin rig (`370` origin, `371` +X 150 mm, `372` +Y 110 mm) |
+| `360–369`, `373–399` | L dedicated | `20 mm` | Unassigned |
+| `400–449` | XL generic | `80 mm` | Large plates (`sheet_A5_XL_200mm_id_400`, `sheet_A4_XL_200mm_ids_401-402`) |
+| `450–499` | XXL generic | `112 mm` | Large plates (`sheet_A4_XXL_280mm_id_450`) |
+
+A detected dedicated ID without a profile is displayed and triggers a one-time warning.
 
 Loose independent tool/plate definitions are described in [`rigs/ms-qr-independent-tools.json`](../rigs/ms-qr-independent-tools.json), and exact millimeter cut-piece geometry plus SHA-256 asset checksums live in [`print/SOURCE.json`](../print/SOURCE.json).

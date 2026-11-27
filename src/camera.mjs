@@ -4,8 +4,11 @@ import {calibratedCameraModel,profileCameraConstraints} from './profile.mjs';
 
 
 
-// Reference camera capture adapter using atomic requestVideoFrameCallback frames and off-thread AprilTag detection.
-export function createReferenceCamera({video,geometry,getSettings,getContext,onObservation,onState,onError}) {
+/**
+ * Create a WebXR reference camera capture adapter using atomic `requestVideoFrameCallback`
+ * frames and off-thread AprilTag detection (`VideoFrame` / `ImageBitmap` / main-canvas fallback).
+ */
+export function createReferenceCamera({video,geometry,getSettings,getContext,onObservation,onState,onError,workerFactory=null,wasmBaseUrl=null}) {
   const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
   let worker=null,ready=null,readyResolve,readyReject,workerTimer;
   let stream=null,running=false,starting=false,generation=0,serial=0,busy=null;
@@ -30,7 +33,17 @@ export function createReferenceCamera({video,geometry,getSettings,getContext,onO
   function prepare() {
     if(ready) return ready;
     ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
-    worker=new Worker(new URL('./detector-worker.js',import.meta.url));activeDecimate=1;activeDetectMode=undefined;activeTrackRefKey=undefined;
+    const workerUrl=new URL('./detector-worker.js',import.meta.url);
+    if(typeof wasmBaseUrl==='string'&&wasmBaseUrl.length>0) {
+      let resolvedBase=wasmBaseUrl;
+      if(globalThis.location?.href) {
+        try {resolvedBase=new URL(wasmBaseUrl,globalThis.location.href).href;} catch {/* keep literal */}
+      }
+      if(!resolvedBase.endsWith('/')) resolvedBase+='/';
+      workerUrl.searchParams.set('wasmBaseUrl',resolvedBase);
+    }
+    worker=typeof workerFactory==='function'?workerFactory({workerUrl,wasmBaseUrl}):new Worker(workerUrl);
+    activeDecimate=1;activeDetectMode=undefined;activeTrackRefKey=undefined;
     workerTimer=setTimeout(()=>fail(new Error('Detector failed to load (15 s).')),15000);
     worker.onerror=event=>fail(new Error(event.message||'Detector error'));
     worker.onmessage=({data})=>{
@@ -145,9 +158,12 @@ export function createReferenceCamera({video,geometry,getSettings,getContext,onO
     const solveUnassigned=Boolean(settings.solveUnassigned);
     const priorRois=Array.isArray(settings.priorRois)&&settings.priorRois.length?settings.priorRois:undefined;
     const focusRois=Array.isArray(settings.focusRois)&&settings.focusRois.length?settings.focusRois:undefined;
+    const unassignedTagEdgeMm=(typeof settings.unassignedTagEdgeMm==='number'||(settings.unassignedTagEdgeMm&&typeof settings.unassignedTagEdgeMm==='object'))?settings.unassignedTagEdgeMm:undefined;
     sample.priorRoiCount=priorRois?priorRois.length:0;
     sample.focusRoiCount=focusRois?focusRois.length:0;
-    const extraMsg=(priorRois||focusRois)?{...(priorRois?{priorRois}:null),...(focusRois?{focusRois}:null)}:null;
+    const extraMsg=(priorRois||focusRois||unassignedTagEdgeMm!==undefined)
+      ?{...(priorRois?{priorRois}:null),...(focusRois?{focusRois}:null),...(unassignedTagEdgeMm!==undefined?{unassignedTagEdgeMm}:null)}
+      :null;
     const sendMainCanvas=(mode='main-canvas')=>{
       if(canvas.width!==width||canvas.height!==height) {canvas.width=width;canvas.height=height;}
       ctx.drawImage(video,0,0,width,height);

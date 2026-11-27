@@ -56,6 +56,7 @@ function buildSchur(rows,poses,g,size,model,damping){
   }
   return {S,b,locals};
 }
+/** Fit camera intrinsics (`centered-square` or `pinhole`) via Pseudo-Huber Schur-complement BA. */
 export function fitIntrinsics(rows,size,{model='centered-square',maxIterations=60}={}){
   let g=model==='pinhole'?[Math.log(.8*size[0]),Math.log(.8*size[0]),.5,.5]:[Math.log(.8*size[0])];
   const n=g.length;
@@ -130,12 +131,14 @@ export function worldPoses(rows,history,K,X,offset){
     return h&&c?product(h,X,cvToGL(c)):null;
   });
 }
+/** Measure 95th-percentile position (mm) and orientation (deg) scatter of world rig poses. */
 export function consistency(worlds,reference=null){
   if(!worlds.length||worlds.some(x=>!x))return {ok:false,positionP95Mm:Infinity,angleP95Deg:Infinity};
   const ref=reference??meanRigid(worlds),inv=inverse(ref),errors=worlds.map(w=>rigidVector(product(inv,w)));
   const position=errors.map(e=>Math.hypot(...e.slice(3))*1000),angle=errors.map(e=>Math.hypot(...e.slice(0,3))*180/Math.PI);
   return {ok:true,positionP95Mm:percentile(position,.95),angleP95Deg:percentile(angle,.95),reference:ref};
 }
+/** Solve `viewerFromCameraGL`, `worldFromRig`, and `timeOffsetMs` across multiple delay seeds. */
 export function fitHandEye(rows,history,K){
   const validRows=[],cameras=[];
   for(const r of rows){
@@ -165,6 +168,7 @@ export function fitHandEye(rows,history,K){
   return {viewerFromCameraGL:vectorRigid(fit.x.slice(0,6)),worldFromRig:vectorRigid(fit.x.slice(6,12)),
     timeOffsetMs:fit.x[12]*1000,cost:fit.cost,delaySpreadMs,convergedSeeds:equivalent.length,usedViews:validRows.length};
 }
+/** Check whether calibration views span two non-collinear head rotation axes and >= 10 cm translation. */
 export function diversity(rows,history){
   const poses=rows.map(r=>poseAt(history,r.captureTime)).filter(Boolean);
   if(poses.length<3)return {ok:false,reason:'Time-matched XR poses missing'};
@@ -250,6 +254,7 @@ function refineJointCalibration(validRows,history,initK,hand,{imageSize,model='c
   const jointTrainingRmsPx=jointReprojectionRms(validRows,history,K,viewerFromCameraGL,worldFromRig,timeOffsetMs);
   return {K,viewerFromCameraGL,worldFromRig,timeOffsetMs,jointTrainingRmsPx,fxStd};
 }
+/** Full camera intrinsics, hand-eye, capture delay, joint BA refinement, and 80/20 holdout solver. */
 export function solveCalibration({rows,history,imageSize,model='centered-square'},progress=()=>{}){
   if(rows.length<30)throw new Error('At least 30 distinct multi-tag views required');
   const scope=rows[0].scope;

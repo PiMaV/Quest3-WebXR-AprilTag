@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> idle
+  idle --> offered: TL 353 discovered
+  offered --> active: user confirms
+  active --> active: Marker update<br/>table-plane ray projection (z=0)<br/>yaw smoothing τ=65 ms<br/>jump >15 cm within 500 ms accepted only after 6 cm confirmation
+  note right of active
+    Clockwise Polygon:
+    350 → 352 → 358 → 353 → 357 → 354
+    → 359 → 355 → 356 → 351 → 350
+    Fence 20 cm high
+  end note

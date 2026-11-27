@@ -36,7 +36,7 @@ Print at **100% scale** (no "Fit to Page") or size 1:1 on screen/tablet/e-Ink us
 
 ## Documentation
 
-[How It Works & Architecture](docs/architecture.md) · [Controls (`SCAN` / `MEASURE`)](docs/controls.md) · [Hardware Benchmarks](docs/benchmarks.md) · [Markers & IDs](docs/markers.md) · [Local Dev](docs/architecture.md#run-locally) · [Media Guide](docs/media.md) · [Changelog](CHANGELOG.md)
+[How It Works & Architecture](docs/architecture.md) · [Minimal Example & Quickstart](docs/architecture.md#quickstart-minimal-integration) · [Controls (`SCAN` / `MEASURE`)](docs/controls.md) · [Hardware Benchmarks](docs/benchmarks.md) · [Markers & IDs](docs/markers.md) · [Local Dev](docs/architecture.md#run-locally) · [Media Guide](docs/media.md) · [Changelog](CHANGELOG.md)
 
 ---
 

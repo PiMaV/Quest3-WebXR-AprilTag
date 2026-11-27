@@ -1,0 +1,8 @@
+stateDiagram-v2
+  [*] --> FREE
+  FREE --> CANDIDATE: Tag <0.30 m from hand<br/>pinch ≤6.5 cm or wand
+  CANDIDATE --> COUPLED: Rigid-body coherence<br/>hand/tag motion ratio 0.55–1.65<br/>excitation ≥2.2 cm or ≥12°
+  CANDIDATE --> FREE: Pass-over / external push<br/>or >0.9 s
+  COUPLED --> COUPLED: 90 Hz: handFromTag × hand pose<br/>soft adapt α=0.25 on consistent optics
+  COUPLED --> FREE: Pinch opens (0 ms)<br/>tag stationary, hand pulls away<br/>drift > watchdog<br/>hand lost 120 ms / optics stale 520 ms
+  FREE --> [*]

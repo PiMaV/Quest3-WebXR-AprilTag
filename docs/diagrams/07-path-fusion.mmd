@@ -1,0 +1,8 @@
+flowchart LR
+  H["Hand prediction 90 Hz<br/>PendingTrail"] --> COMMIT["Commit segment"]
+  OPT["Confirming optical pose"] --> ERR["Endpoint error e = optical − segment end<br/>clipped to ≤3.5 cm"]
+  COMMIT --> ERR
+  ERR --> FUSE["fuseCommittedTrailSegment<br/>point i gets e·(i+1)/n·0.45"]
+  FUSE --> SMOOTH["smoothLineTail / smoothAxisTail"]
+  SMOOTH --> STYLE["Speed → tube radius,<br/>ribbon width, heat color"]
+  STYLE --> TRAIL["3D trail without sawtooth"]

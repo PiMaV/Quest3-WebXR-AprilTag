@@ -7,11 +7,13 @@ import {
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
   createPerfTracker,ADAPTIVE_QUALITY_MODES,createAdaptiveQualityController,
-  createInstancedPool,createAxesBatch,createPathRibbonMesh,createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh,
   projectPriorRois,prioritizeFocusCandidates,fuseCommittedTrailSegment,smoothLineTail,smoothAxisTail,
   RIBBON_SPEED_DEFAULTS,speedToRibbonHalfWidth,
   createTagMotionPredictor,APP_VERSION_LABEL,
 } from '../src/index.mjs';
+import {
+  createInstancedPool,createAxesBatch,createPathRibbonMesh,createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh,
+} from '../src/three.mjs';
 import {associateAnchorCapture,auditAnchorObservation,createAnchorAudit} from '../src/anchor-audit.mjs';
 import {createPerimeterFence,isPerimeterTag,perimeterRole,FENCE_HEIGHT_M} from '../src/perimeter-fence.mjs';
 import {matToQuat,quatSlerp,composeRigid} from '../src/runtime.mjs';
@@ -559,7 +561,10 @@ const handHistory=createHandHistory({maxMs:1800});
 const tagHandCoupler=createTagHandCoupler({opticalStaleTimeoutMs:380,maxUnconfirmedDriftM:0.26});
 const tagPredictor=createTagMotionPredictor();
 const context=()=>({sessionId,spaceEpoch:epoch});
-const isMovableTag=id=>id>=300&&id<=349;
+// M.E.S.S. convention: x00-x49 = generic (no assigned role, user decides how to use it); x50-x99 = dedicated (role from a geometry profile).
+// Hundreds digit only selects the size class. 500+ (special) and 0-99 (debug) are neither.
+const isGenericTag=id=>Number.isInteger(id)&&id>=100&&id<500&&(id%100)<50;
+const warnedUnassignedDedicated=new Set();
 const refGroup=new THREE.Group();
 root.add(refGroup);
 const portalRoot=new THREE.Group();
@@ -5206,15 +5211,15 @@ function observeExtraTags(observation,sample,assoc){
     lastSampleStats.motionConfidence=staticGate.confidence;
     lastSampleStats.motionFrozen=staticGate.frozen;
     lastSampleStats.carriedConfidence=carriedGate.confidence;
-    lastSampleStats.rawMovableIds=all.filter(d=>isMovableTag(d.id)).map(d=>d.id);
+    lastSampleStats.rawGenericIds=all.filter(d=>isGenericTag(d.id)).map(d=>d.id);
   }
   if(!K||!all.length)return;
   const counts=new Map();for(const d of all)counts.set(d.id,(counts.get(d.id)||0)+1);
 
   if(staticGate.frozen&&carriedGate.frozen){
-    // Keep already-visible movable tags alive at their anchored 90 Hz pose while head is turning fast.
+    // Keep already-visible generic tags alive at their anchored 90 Hz pose while head is turning fast.
     for(const raw of all){
-      if(counts.get(raw.id)!==1||!isMovableTag(raw.id))continue;
+      if(counts.get(raw.id)!==1||!isGenericTag(raw.id))continue;
       const existing=movableTools.get(raw.id);
       if(existing?.displayMatrix){existing.lastAt=atMs;existing.lastOpticalAtMs=atMs;}
     }
@@ -5232,9 +5237,9 @@ function observeExtraTags(observation,sample,assoc){
   for(const raw of all){
     if(counts.get(raw.id)!==1)continue;
     const perimeter=isPerimeterTag(raw.id);
-    const movable=isMovableTag(raw.id);
-    if(!movable&&staticGate.frozen)continue;
-    const existingMov=movable?movableTools.get(raw.id):null;
+    const generic=isGenericTag(raw.id);
+    if(!generic&&staticGate.frozen)continue;
+    const existingMov=generic?movableTools.get(raw.id):null;
     const isTrackedMoving=Boolean(existingMov&&(existingMov.handCoupled||existingMov.recording||existingMov.lockState==='moving'));
     const solved=resolveUnassignedTagPose(
       raw,
@@ -5243,17 +5248,17 @@ function observeExtraTags(observation,sample,assoc){
         ?{minEdgePx:farMode?8:(steadyBoost?8.5:9),minAreaPx:farMode?64:72,maxRmsPx:perimeterMaxRms,minCosView:0.22,maxDepthM:farMode?3.2:(steadyBoost?2.6:2.2),scaleRmsFactor:0.08}
         :{
           minEdgePx:farMode?9:(steadyBoost?10:11),minAreaPx:farMode?80:(steadyBoost?92:110),
-          maxRmsPx:movable?carriedMaxRms:staticMaxRms,minCosView:0.30,maxDepthM:farMode?3.5:(steadyBoost?2.6:1.95),
+          maxRmsPx:generic?carriedMaxRms:staticMaxRms,minCosView:0.30,maxDepthM:farMode?3.5:(steadyBoost?2.6:1.95),
           scaleRmsFactor:isTrackedMoving?0.085:0.055,softFallbackMaxRms:isTrackedMoving?1.45:0.55,
         },
     );
     if(!solved)continue;
     const {edgeMm,pose,minEdgePx,rmsPx,softFallback}=solved;
     const lFromTag=product(lFromCamera,cvToGL(pose));
-    valid.push({tagId:raw.id,edgeMm,lFromTag,apparentEdgePx:minEdgePx,rmsPx,movable,perimeter,softFallback});
+    valid.push({tagId:raw.id,edgeMm,lFromTag,apparentEdgePx:minEdgePx,rmsPx,generic,perimeter,softFallback});
   }
   if(lastSampleStats&&lastSampleStats.serial===sample.serial){
-    lastSampleStats.seenMovableIds=valid.filter(v=>v.movable).map(v=>v.tagId);
+    lastSampleStats.seenGenericIds=valid.filter(v=>v.generic).map(v=>v.tagId);
   }
 
   // Always observe perimeter markers (353-359) while SCAN is active and staticGate allows.
@@ -5281,10 +5286,10 @@ function observeExtraTags(observation,sample,assoc){
     }
   }
 
-  // SCAN mode: auto-lock + follow movable probes (300-349) and any non-perimeter static anchors.
+  // SCAN mode: track every generic tag (x00-x49) uniformly; pinning is a user action. Dedicated IDs without a known profile are only shown and warned about once.
   for(const v of valid){
     if(v.perimeter)continue;
-    if(v.movable){
+    if(v.generic){
       const existing=movableTools.get(v.tagId);
       const nearHand=isTagNearAnyHand(v.lFromTag,assoc.targetXrTimeMs,0.22);
       const lockedDispM=(existing?.lockState==='locked'&&existing.lockedMatrix)
@@ -5308,6 +5313,11 @@ function observeExtraTags(observation,sample,assoc){
         softFallback:v.softFallback,
       });
       continue;
+    }
+    if(!warnedUnassignedDedicated.has(v.tagId)){
+      warnedUnassignedDedicated.add(v.tagId);
+      showHudToast(`⚠ ID ${v.tagId}: dedicated range, no profile assigned`,'#facc15',2400);
+      pushDiagEvent({type:'unassigned-dedicated-id',tagId:v.tagId,atPerformanceMs:performance.now()});
     }
     if(staticGate.frozen||placedExtras.has(v.tagId)||staticGate.confidence<0.35)continue;
     const list=extraPending.get(v.tagId)??[];
@@ -5488,7 +5498,7 @@ function drawCameraInset(ctx,x,y,w,h,framing,{drawVideo=true,motion=null}={}){
     }
     for(const u of lastObs.unassignedDetections??[]){
       const role=perimeterRole(u.id);
-      const col=isMovableTag(u.id)?'#facc15':role?'#22d3ee':'#94a3b8';
+      const col=isGenericTag(u.id)?'#facc15':role?'#22d3ee':'#94a3b8';
       drawQuad(u.corners,col,role?`${u.id}${role}`:String(u.id));
     }
   }

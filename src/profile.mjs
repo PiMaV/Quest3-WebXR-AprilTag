@@ -4,6 +4,7 @@ export const PROFILE_SCHEMA='webxr-apriltag-profile-v1';
 export const PIPELINE='rgba-gray-arena36h11-planar-capture-xrraf-v1';
 const stable=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))):x);
 export async function digest(v){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(stable(v)))),b=>b.toString(16).padStart(2,'0')).join('');}
+/** Compute a SHA-256 device + camera-mode + rig identity key for calibration profile scoping. */
 export async function deviceIdentity(camera,rig,userAgent=navigator.userAgent){
   const s=camera.trackSettings??{},mode={sourceSize:camera.sourceSize,resizeMode:s.resizeMode??null,facingMode:s.facingMode??null,
     zoom:s.zoom??null,focusMode:s.focusMode??null};
@@ -12,6 +13,7 @@ export async function deviceIdentity(camera,rig,userAgent=navigator.userAgent){
   return {key:await digest({cameraHash,mode,rigHash,pipeline:PIPELINE}),cameraHash,mode,rigHash,pipeline:PIPELINE,
     trackLabel:camera.trackLabel,userAgent,cacheable};
 }
+/** Validate a calibration profile against schema, physical camera bounds, and verification gates. */
 export function validateCalibration(p){
   const camT=Array.isArray(p?.viewerFromCameraGL)?p.viewerFromCameraGL.slice(12,15):null;
   if(p?.schema!==PROFILE_SCHEMA||!p.id||!p.device?.key||p.device.pipeline!==PIPELINE||!p.device.rigHash||
@@ -46,6 +48,7 @@ export async function importCalibrationProfile(payload,device,store=createProfil
   const profile=assertProfileDevice(extractCalibrationProfile(payload),device);
   await store.save(profile);return profile;
 }
+/** Rescale and validate a calibration profile's intrinsics for the active camera stream mode. */
 export function calibratedCameraModel(p,imageSize,sourceSize,label,userAgent,settings={}){
   // Candidates may be used for verification, but cannot be persisted before it.
   if(p.schema!==PROFILE_SCHEMA||!isRigidPose(p.viewerFromCameraGL))throw new Error('Invalid calibration profile');
@@ -62,6 +65,7 @@ export function profileCameraConstraints(p,devices=[],supported={}){
     ...(supported.resizeMode&&p.device.mode.resizeMode?{resizeMode:{exact:p.device.mode.resizeMode}}:{}),
     ...(device?.deviceId?{deviceId:{exact:device.deviceId}}:{})}};
 }
+/** Interpolate the calibrated XR viewer pose at `captureTime + profile.timeOffsetMs`. */
 export function viewerPoseHorizon(history,sample,p){
   const c=sample?.context,cap=sample?.videoFrameMetadata?.captureTime;
   if(!Number.isFinite(cap)||!c?.sessionId||!Number.isFinite(p?.timeOffsetMs)||
@@ -92,6 +96,7 @@ export function viewerPoseHorizon(history,sample,p){
 export function calibratedViewerPose(history,sample,p){
   return viewerPoseHorizon(history,sample,p).pose;
 }
+/** Buffer fast optical observations until their future XR viewer-pose horizon is available. */
 export function createObservationBuffer({maxAgeMs=650,maxItems=12}={}){
   let queue=[];
   function push(entry){
@@ -113,6 +118,7 @@ export function createObservationBuffer({maxAgeMs=650,maxItems=12}={}){
   }
   return {push,drain,clear(){queue=[];},size:()=>queue.length};
 }
+/** Create a SHA-256 checksummed persistence store (defaults to `localStorage`) for calibration profiles. */
 export function createProfileStore(storage=globalThis.localStorage){
   const key=id=>`webxr-apriltag/v1/${id}`;
   return {

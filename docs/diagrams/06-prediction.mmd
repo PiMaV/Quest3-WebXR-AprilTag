@@ -1,0 +1,16 @@
+flowchart TD
+  O["observe(tagId, pose, t_obs)"] --> DT{"0.012 s ≤ dt ≤ 0.35 s?"}
+  DT -- no --> RST["Reset state, v = 0"]
+  DT -- yes --> V["raw velocity<br/>v = Δpos/dt (≤1.8 m/s)<br/>ω = log(inv(prev)×cur)/dt (≤8 rad/s)"]
+  V --> REV{"Direction reversal?<br/>v·v_prev < 0"}
+  REV -- yes --> A1["α = 1.0"]
+  REV -- no --> A2["α = 0.58"]
+  A1 --> EMA["v ← (1−α)v_prev + α·v"]
+  A2 --> EMA
+  EMA --> ST[("State per tag")]
+  ST --> P["predict(tagId, now)<br/>age = now − t_obs"]
+  P --> STILL{"Stationary?<br/>v <1.5 cm/s and ω <4°/s"}
+  STILL -- yes --> LAST["Last pose"]
+  STILL -- no --> LEAD["lead = min(0.105 s, 0.72·age) · exp(−max(0, age−0.12)/0.085)"]
+  LEAD --> EXT["pose' = pose × exp(ω·lead)<br/>pos' = pos + v·lead"]
+  EXT --> OUT["Rigid lead pose"]

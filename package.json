@@ -5,24 +5,80 @@
   "type": "module",
   "private": false,
   "license": "Apache-2.0",
+  "types": "./types/index.d.ts",
   "homepage": "https://q3.mess.engineering/",
   "repository": {
     "type": "git",
     "url": "https://github.com/PiMaV/Quest3-WebXR-AprilTag.git"
   },
   "exports": {
-    ".": "./src/index.mjs",
-    "./solver": "./src/solver.mjs",
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./src/index.mjs"
+    },
+    "./three": {
+      "types": "./types/three.d.ts",
+      "import": "./src/three.mjs"
+    },
+    "./solver": {
+      "types": "./types/solver.d.ts",
+      "import": "./src/solver.mjs"
+    },
+    "./scan": {
+      "types": "./types/tool-scan.d.ts",
+      "import": "./src/tool-scan.mjs"
+    },
+    "./audit": {
+      "types": "./types/anchor-audit.d.ts",
+      "import": "./src/anchor-audit.mjs"
+    },
+    "./xr-exit": {
+      "types": "./types/xr-exit.d.ts",
+      "import": "./src/xr-exit.mjs"
+    },
+    "./perimeter": {
+      "types": "./types/perimeter-fence.d.ts",
+      "import": "./src/perimeter-fence.mjs"
+    },
+    "./camera": {
+      "types": "./types/camera.d.ts",
+      "import": "./src/camera.mjs"
+    },
+    "./assistant": {
+      "types": "./types/assistant.d.ts",
+      "import": "./src/assistant.mjs"
+    },
+    "./anchor": {
+      "types": "./types/anchor.d.ts",
+      "import": "./src/anchor.mjs"
+    },
+    "./profile": {
+      "types": "./types/profile.d.ts",
+      "import": "./src/profile.mjs"
+    },
+    "./rig": {
+      "types": "./types/rig.d.ts",
+      "import": "./src/rig.mjs"
+    },
+    "./runtime": {
+      "types": "./types/runtime.d.ts",
+      "import": "./src/runtime.mjs"
+    },
+    "./detector": {
+      "types": "./types/detector.d.ts",
+      "import": "./src/detector.mjs"
+    },
     "./rigs/ms-qr-main-l.json": "./rigs/ms-qr-main-l.json",
     "./rigs/ms-qr-tablet-l.json": "./rigs/ms-qr-tablet-l.json",
-    "./scan": "./src/tool-scan.mjs",
-    "./audit": "./src/anchor-audit.mjs",
-    "./xr-exit": "./src/xr-exit.mjs",
-    "./rigs/ms-qr-independent-tools.json": "./rigs/ms-qr-independent-tools.json"
+    "./rigs/ms-qr-independent-tools.json": "./rigs/ms-qr-independent-tools.json",
+    "./detector-worker.js": "./src/detector-worker.js",
+    "./calibration-worker.mjs": "./src/calibration-worker.mjs",
+    "./vendor/apriltag/*": "./vendor/apriltag/*"
   },
   "files": [
     "index.html",
     "src",
+    "types",
     "vendor",
     "rigs",
     "print",

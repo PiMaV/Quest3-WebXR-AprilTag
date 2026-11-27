@@ -444,3 +444,76 @@ test('createReferenceCamera forwards focusRois when provided and records focusRo
     cam.dispose();
   });
 });
+
+test('createReferenceCamera supports custom workerFactory, wasmBaseUrl, and unassignedTagEdgeMm',async()=>{
+  await withBrowserMocks(async()=>{
+    const track={readyState:'live',muted:false,label:'Quest RGB',stop(){},getSettings:()=>({deviceId:'cam1',resizeMode:'none'}),addEventListener(){}};
+    Object.defineProperty(globalThis,'navigator',{value:{
+      userAgent:'QuestMock/1.0',
+      mediaDevices:{
+        getSupportedConstraints:()=>({resizeMode:true}),
+        enumerateDevices:async()=>[],
+        getUserMedia:async()=>({getVideoTracks:()=>[track],getTracks:()=>[track]}),
+      },
+    },configurable:true,writable:true});
+
+    const factoryCalls=[];
+    let customWorker=null;
+    class CustomWorker{
+      constructor(ctx){
+        factoryCalls.push(ctx);
+        customWorker=this;
+        this.messages=[];
+        queueMicrotask(()=>this.onmessage?.({data:{type:'ready'}}));
+      }
+      postMessage(data){this.messages.push(data);}
+      terminate(){}
+    }
+
+    const video=makeMockVideo({withRvfc:true});
+    const observations=[];
+    let edgeSpec=50;
+    const cam=createReferenceCamera({
+      video,geometry:rig,
+      wasmBaseUrl:'https://cdn.example.test/assets/apriltag',
+      workerFactory:ctx=>new CustomWorker(ctx),
+      getSettings:()=>({
+        horizontalFovDeg:65,printScale:1,maxLongEdge:1280,experimentalCalibration:null,
+        maxHz:10,solveUnassigned:true,unassignedTagEdgeMm:edgeSpec,
+      }),
+      getContext:()=>({sessionId:'s1',spaceEpoch:0}),
+      onObservation:(obs,sample)=>observations.push({obs,sample}),
+    });
+
+    await cam.start();
+    assert.equal(factoryCalls.length,1);
+    assert.equal(factoryCalls[0].wasmBaseUrl,'https://cdn.example.test/assets/apriltag');
+    assert.equal(factoryCalls[0].workerUrl.searchParams.get('wasmBaseUrl'),'https://cdn.example.test/assets/apriltag/');
+
+    video.currentTime=1.0;
+    video.fireRvfc(1000,{mediaTime:1.0,presentedFrames:1,captureTime:990});
+    assert.equal(customWorker.messages.length,1);
+    assert.equal(customWorker.messages[0].unassignedTagEdgeMm,50);
+    customWorker.onmessage({data:{
+      type:'detections',serial:customWorker.messages[0].serial,markers:[],
+      frameEvidence:{fresh:true,pixelsChanged:true},preprocessMs:1,detectMs:5,
+    }});
+    assert.equal(observations.length,1);
+
+    // Map form is also forwarded; null/undefined omits the field.
+    edgeSpec={0:45,default:20};
+    video.currentTime=1.2;
+    video.fireRvfc(1200,{mediaTime:1.2,presentedFrames:2,captureTime:1190});
+    assert.deepEqual(customWorker.messages[1].unassignedTagEdgeMm,{0:45,default:20});
+    customWorker.onmessage({data:{
+      type:'detections',serial:customWorker.messages[1].serial,markers:[],
+      frameEvidence:{fresh:true,pixelsChanged:true},preprocessMs:1,detectMs:5,
+    }});
+
+    edgeSpec=null;
+    video.currentTime=1.4;
+    video.fireRvfc(1400,{mediaTime:1.4,presentedFrames:3,captureTime:1390});
+    assert.equal('unassignedTagEdgeMm' in customWorker.messages[2],false);
+    cam.dispose();
+  });
+});
