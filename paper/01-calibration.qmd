@@ -1,0 +1,81 @@
+---
+title: "Estimating camera extrinsics and time offset with a stationary L-shaped target"
+subtitle: "Diagram 01 · Technical paper · Draft"
+abstract: |
+  As the user moves their head around a stationary AprilTag target, its pose changes in the camera image. Its pose in WebXR space should remain constant. This constraint lets the solver estimate the camera’s mounting position and orientation together with the time offset between each image and its corresponding head pose. A held-out test asks whether the calibration and the recorded head motion can predict the tag corners in a new image.
+---
+
+**English** · [Deutsch](01-kalibrierung.html){hreflang=de lang=de}
+
+[Paper overview](overview.html) · [Calibration diagram][diagramm]
+
+## What the target measures
+
+Tags 350, 351 and 352 lie on a rigid, flat L-shaped target. On the main target, each black square is 20 mm wide. Relative to tag 350, the other tags are displaced by 230 mm along one arm and 170 mm along the other. The corner coordinates are therefore known in a common metric frame, provided the target was printed to scale. For each image, the detector returns visible corner locations in pixels. The assistant accepts two visible tags during data collection and requires all three for final verification. [Target geometry][rig] · [Data collection][assistent]
+
+The target stays still while the user moves sideways, varies their distance to the target and rotates their head about different axes. Each view has two data sources. The video supplies the image timestamp $t_i$ (`captureTime`), and the XR history supplies timestamped head poses. Between two XR samples, the application interpolates position linearly and orientation by spherical linear interpolation of quaternions (SLERP). [Pose interpolation][runtime]
+
+## How motion separates the two unknowns
+
+$T_{A\leftarrow B}$ maps points from frame $B$ to frame $A$. Let $W$ denote the XR world, $H$ the viewer, $C$ the camera in WebGL coordinates and $L$ the target. For every ideal observation $i$,
+
+$$
+\underbrace{T_{W\leftarrow L}}_{Y}
+=
+\underbrace{T_{W\leftarrow H}(t_i+\Delta t)}_{H_i(\Delta t)}
+\;\underbrace{T_{H\leftarrow C}}_{X}
+\;\underbrace{T_{C\leftarrow L,i}}_{C_i}.
+$$
+
+The image corners and camera model $K$ determine $C_i$. The code converts the optical pose from camera axes ($y$ down, $z$ forward) to WebGL axes ($y$ up, $z$ backward). $X$ (`viewerFromCameraGL`) represents the six degrees of freedom of the camera mount. $Y$ (`worldFromRig`) is the unknown target pose, constant across all views. $\Delta t$ (`timeOffsetMs`) is the effective time offset. For example, with $\Delta t=-55$ ms, an image timestamped at 1000 ms is paired with the XR pose at 945 ms. This offset alone cannot separate sensor latency from display latency. [Transform chain and solver][solver] · [Runtime use][profil]
+
+**Why vary the motion?** With the head at rest, shifting the timestamp leaves the head pose unchanged. During straight motion at constant velocity and fixed orientation, a time error $\delta t$ looks like a constant spatial displacement $\mathbf v\,\delta t$. When the head rotates, a camera mounted off the rotation axis traces an arc. Reversing the direction of rotation reverses the angular error caused by a timing mismatch. At 90 degrees/s, a 20 ms timing error corresponds to about 1.8 degrees. Combining views with different motions helps distinguish the mounting offset from the time offset.
+
+## The three fitting stages
+
+1. **Estimate intrinsics from the image corners.** The solver sets aside the last approximately 20% of the views in capture order. It fits $K$ to the training images while allowing a separate target pose for each image. A pseudo-Huber loss with a 3 px scale limits the influence of large corner errors. The default model assumes $f_x=f_y$, a centred principal point and zero distortion. The optional pinhole model estimates both focal lengths and the principal point separately.
+2. **Fit the mounting transform and time offset.** For a candidate $(X,Y,\Delta t)$, the solver computes $E_i=Y^{-1}H_i(\Delta t)XC_i$ for every view. Ideally, $E_i$ is the identity. The solver minimises the sum of squared rotation-vector and translation components, scaled by 0.01 rad and 0.01 m respectively. Three runs start at offsets of $-120$, $0$ and $+120$ ms. The best solutions must agree on the offset. This stage needs at least 24 training views with a valid optical pose and continuous XR history over $t_i\pm250$ ms. Gaps longer than 100 ms are rejected.
+3. **Refine all parameters in image space.** For each known target corner $P_j$, the head pose predicts an image point. With observed pixel $u_{ij}$ and projection $\pi_K$ including the axis conversion,
+
+   $$
+   \hat u_{ij}=\pi_K\!\left(X^{-1}H_i(\Delta t)^{-1}Y P_j\right),
+   \qquad
+   r_{ij}=\hat u_{ij}-u_{ij}.
+   $$
+
+   The solver varies $K,X,Y,\Delta t$ jointly over up to 48 training views for at most 30 Levenberg–Marquardt iterations. It accepts the refinement if the joint training RMS is finite and exceeds the initial RMS by at most 0.05 px. Otherwise, it keeps the previous fit. [Implementation of all three stages][solver]
+
+The solver requires at least 30 views. By default, the assistant starts fitting at 36. Both the full sequence and the training subset must exhibit rotation about two non-collinear axes and a translation span of at least 10 cm. The span is the greatest distance between any two head positions. Rotating in place cannot provide it. [Motion checks][solver] · [Assistant][assistent]
+
+## Which checks reveal a timing error?
+
+| Check | What it measures | Acceptance threshold |
+|---|---|---|
+| Optical reprojection | Each image gets its own fitted target pose. The corners can agree closely even with an incorrect time offset. | Training < 1.0 px, holdout < 1.2 px RMS |
+| Joint reprojection | $K,X,Y,\Delta t$ are fixed. The XR head pose predicts each held-out corner without refitting the target pose for that image. | Holdout < 10.0 px RMS |
+| Spatial consistency | World poses reconstructed from the held-out images are compared with $Y$ from training. | 95th percentile < 8.5 mm and < 1.5° |
+| Stability of the time fit | At least two starting values yield comparable costs. Their estimated time offsets must agree. | Spread < 15 ms, absolute final offset < 230 ms |
+
+The solver also checks intrinsic uncertainty and whether the fitted camera position is plausible. Before saving the profile, the assistant collects **fresh observations**. By default it requires at least ten views and more than 4 cm of head translation. The first four target poses provide the reference for the rest. The limits are 8.5 mm and 1.4° for 95th-percentile scatter and 1.2 px for optical reprojection RMS. These checks measure repeatability around the stationary target. Measuring absolute accuracy on a physical headset would require an independently surveyed reference. [Acceptance logic][solver] · [Fresh-view verification][assistent]
+
+## Worked example with a known time offset
+
+The repository’s synthetic test generates 72 views with known $X$, focal length $f=890$ px and offset $\Delta t=-55$ ms. A deterministic perturbation of at most 0.05 px is added to each projected corner coordinate. Using the default camera model, 57 training views and 15 held-out views give the following results.
+
+| Quantity | Synthetic result |
+|---|---:|
+| Estimated time offset | −55.003 ms |
+| Estimated focal length | 889.963 px |
+| Camera position error relative to the simulated mount | 0.072 mm |
+| Joint reprojection error on held-out views | 0.0505 px RMS |
+
+These values quantify recovery of known parameters under the test model. Run `node --test tests/calibration.test.mjs` from the repository root to check the estimates against the simulated ground truth. [Data generator][synthetik] · [Ground-truth assertions][test]
+
+[diagramm]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/diagrams.md#calibration
+[rig]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/rigs/ms-qr-main-l.json
+[runtime]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/src/runtime.mjs#L101-L134
+[solver]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/src/solver.mjs#L22-L309
+[assistent]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/src/assistant.mjs
+[profil]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/src/profile.mjs#L68-L80
+[synthetik]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/tests/synthetic.mjs
+[test]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/tests/calibration.test.mjs#L8-L18

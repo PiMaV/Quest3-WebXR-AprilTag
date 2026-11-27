@@ -1,0 +1,137 @@
+```{ojs}
+//| echo: true
+{
+  // Front-facing 20 mm tag, fixed camera, translation in the L frame.
+  const camera = {width: 1280, height: 1080, focalPx: 880, depthM: 0.55};
+  const secondsPerImage = 0.1;
+  const xrHz = 90;
+  const positionsMm = [
+    [-302, -70], [-260, -55], [-200, -30], [-120, 6], [-27, 40],
+    [75, 63], [182, 72], [285, 62], [162, 17], [47, -20],
+    [-43, -47], [-105, -58], [-140, -54], [-155, -35], [-153, -9]
+  ];
+  const positions = positionsMm.map(pair => pair.map(mm => mm / 1000));
+  const pixelsPerMetre = camera.focalPx / camera.depthM;
+  const edgePx = 0.020 * pixelsPerMetre;
+  const project = ([x, y]) => [
+    camera.width / 2 + pixelsPerMetre * x,
+    camera.height / 2 - pixelsPerMetre * y
+  ];
+
+  // Moving, uncoupled tag at full confidence. Each step uses only past observations.
+  const displayAlpha = 1 - Math.exp(-38 / xrHz);
+  let display = positions[0].slice();
+  let velocity = [0, 0];
+  const forecasts = positions.slice(0, -1).map((position, index) => {
+    if (index > 0) {
+      const raw = position.map((p, axis) => (p - positions[index - 1][axis]) / secondsPerImage);
+      const limit = 1.8 / Math.max(1.8, Math.hypot(...raw));
+      const reversed = raw[0] * velocity[0] + raw[1] * velocity[1] < 0;
+      const weight = reversed ? 1 : 0.58;
+      velocity = raw.map((v, axis) => (1 - weight) * velocity[axis] + weight * v * limit);
+    }
+    const speed = Math.hypot(...velocity);
+    for (let tick = 1; tick <= secondsPerImage * xrHz; tick++) {
+      const age = tick / xrHz;
+      const decay = Math.exp(-Math.max(0, age - 0.12) / 0.085);
+      const lead = speed < 0.015 ? 0 : Math.min(0.105, 0.72 * age) * decay;
+      display = position.map((p, axis) => {
+        const predicted = p + velocity[axis] * lead;
+        return display[axis] + displayAlpha * (predicted - display[axis]);
+      });
+    }
+    const center = project(display);
+    const half = Math.min(240, Math.max(110, Math.round(2.2 * edgePx + Math.min(130, 165 * speed))));
+    const box = [
+      Math.max(0, Math.floor(center[0] - half)), Math.max(0, Math.floor(center[1] - half)),
+      Math.min(camera.width, Math.ceil(center[0] + half)), Math.min(camera.height, Math.ceil(center[1] + half))
+    ];
+    return {center, box, speed};
+  });
+
+  const german = document.documentElement.lang.startsWith("de");
+  const labels = german ? {
+    capture: "Letzte bekannte Aufnahme",
+    trail: "Optische Spur",
+    centre: "Suchmitte",
+    next: "Tag im Folgebild",
+    speed: "Geschätztes Tempo",
+    window: "Suchfenster",
+    share: "Anteil am Bild"
+  } : {
+    capture: "Last observed frame",
+    trail: "Observed trail",
+    centre: "Search centre",
+    next: "Tag in next frame",
+    speed: "Estimated speed",
+    window: "Search window",
+    share: "Share of image"
+  };
+  const panel = html`<div class="roi-demo">
+    <label for="roi-frame">${labels.capture} <output for="roi-frame"></output></label>
+    <input id="roi-frame" type="range" min="2" max="${forecasts.length}" step="1" value="7">
+    <div class="roi-body">
+      <div class="roi-view"></div>
+      <div>
+        <ul class="roi-legend">
+          <li><i aria-hidden="true" style="color:#006d70">●</i>${labels.trail}</li>
+          <li><i aria-hidden="true" style="color:#944c12">✚</i>${labels.centre}</li>
+          <li><i aria-hidden="true" style="color:#423780">□</i>${labels.next}</li>
+        </ul>
+        <dl>
+          <div><dt>${labels.speed}</dt><dd class="roi-speed"></dd></div>
+          <div><dt>${labels.window}</dt><dd class="roi-size"></dd></div>
+          <div><dt>${labels.share}</dt><dd class="roi-share"></dd></div>
+        </dl>
+      </div>
+    </div>
+    <p class="roi-status" role="status"></p>
+  </div>`;
+  const slider = panel.querySelector("input");
+  const pixels = positions.map(project);
+  const format = (value, digits) => value.toLocaleString(german ? "de-DE" : "en-GB", {minimumFractionDigits: digits, maximumFractionDigits: digits});
+  function draw() {
+    const frame = slider.valueAsNumber;
+    const {center, box, speed} = forecasts[frame - 1];
+    const trail = pixels.slice(0, frame);
+    const [lastX, lastY] = trail[trail.length - 1];
+    const [u, v] = center;
+    const [nextX, nextY] = pixels[frame];
+    const [left, top, right, bottom] = box;
+    const width = right - left, height = bottom - top;
+    const inside = nextX - edgePx / 2 >= left && nextX + edgePx / 2 <= right
+      && nextY - edgePx / 2 >= top && nextY + edgePx / 2 <= bottom;
+    const dots = trail.map(([x, y]) => svg`<circle cx="${x}" cy="${y}" r="9" fill="#006d70"/>`);
+    const frameLabel = `${german ? "Bild" : "Frame"} ${frame} → ${frame + 1}`;
+    panel.querySelector("output").textContent = frameLabel;
+    slider.setAttribute("aria-valuetext", frameLabel);
+    panel.querySelector(".roi-view").replaceChildren(svg`<svg class="roi-image" viewBox="0 0 1280 1080"
+        role="img" aria-label="${frameLabel}. ${labels.trail}, ${labels.window}, ${labels.next}.">
+      <rect width="1280" height="1080" fill="#edf3f4"/>
+      <path d="M320 0V1080 M640 0V1080 M960 0V1080 M0 270H1280 M0 540H1280 M0 810H1280"
+            stroke="#d1dfe1" stroke-width="3" fill="none"/>
+      <rect x="${left}" y="${top}" width="${width}" height="${height}"
+            fill="#dfaa68" fill-opacity=".25" stroke="#944c12" stroke-width="6"/>
+      <polyline points="${trail.map(p => p.join(",")).join(" ")}" fill="none" stroke="#006d70" stroke-width="6"/>
+      ${dots}
+      <path d="M${lastX} ${lastY} L${u} ${v}" stroke="#944c12" stroke-width="5" stroke-dasharray="9 7"/>
+      <circle cx="${lastX}" cy="${lastY}" r="13" fill="#006d70" stroke="white" stroke-width="4"/>
+      <path d="M-16 0H16 M0 -16V16" transform="translate(${u} ${v})" stroke="#944c12" stroke-width="7"/>
+      <rect x="${nextX - edgePx / 2}" y="${nextY - edgePx / 2}" width="${edgePx}" height="${edgePx}"
+            fill="none" stroke="#423780" stroke-width="7"/>
+    </svg>`);
+    panel.querySelector(".roi-speed").textContent = `${format(speed, 2)} m/s`;
+    panel.querySelector(".roi-size").textContent = `${width} × ${height} px`;
+    panel.querySelector(".roi-share").textContent = `${format(100 * width * height / (camera.width * camera.height), 1)} %`;
+    const status = german
+      ? [`In Bild ${frame + 1} liegen alle vier Tagecken im Suchfenster.`,
+         `In Bild ${frame + 1} liegt der Tag nach der Umkehr außerhalb des Suchfensters.`]
+      : [`All four tag corners are inside the search window in frame ${frame + 1}.`,
+         `After the reversal, the tag falls outside the search window in frame ${frame + 1}.`];
+    panel.querySelector(".roi-status").textContent = status[inside ? 0 : 1];
+  }
+  slider.addEventListener("input", draw);
+  draw();
+  return panel;
+}
+```

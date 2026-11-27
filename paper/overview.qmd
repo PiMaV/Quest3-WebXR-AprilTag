@@ -1,0 +1,21 @@
+---
+title: "AprilTag tracking on Quest 3 in eight diagrams"
+subtitle: "Technical paper series"
+---
+
+**English** · [Deutsch](uebersicht.html){hreflang=de lang=de}
+
+The series follows a measurement from the corners of a tag in a camera image to its motion in WebXR space. Each paper addresses a physical question, derives the equations used by the implementation and shows how to check the result. The calibration paper is available as a draft. The remaining seven entries are proposed topics. Each diagram will be checked against the implementation before its paper is written.
+
+| Diagram | Question |
+|---|---|
+| **01 · [Calibration](01-calibration.html)** | How can head motion around a stationary target reveal both the rigid camera-to-head transform and the time offset between the camera and WebXR? |
+| **02 · World origin** | When do optical estimates of the target’s position and orientation agree closely enough to establish an XR anchor? |
+| **03 · Single-tag tracking** | How do four image corners and a known edge length determine a metric pose? How can the tracker detect an implausible jump? |
+| **04 · Multi-tag tracking** | How should the detector allocate search windows and processing time across tags that differ in speed and visibility? |
+| **05 · Hand coupling** | How can a measured hand-to-object offset carry the object pose forward, and when does the rigid-coupling assumption break down? |
+| **06 · Prediction** | How far can position and orientation be extrapolated from recent optical poses while waiting for the next observation? |
+| **07 · Trajectory correction** | How does a new optical pose correct the end of a predicted trajectory segment, and how is the correction distributed over earlier points? |
+| **08 · Perimeter** | How do markers on a tabletop define the vertices of a spatial boundary, and how does uncertainty in one vertex affect its outline? |
+
+The [diagram collection](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/diagrams.md) shows how the modules fit together. [How Quest 3 finds a moving AprilTag again](index.html) connects several of them using a pendulum as an example.

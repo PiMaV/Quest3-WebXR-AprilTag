@@ -15,6 +15,8 @@
 
 All modules in context; yellow = one-time, blue = live, green = output.
 
+Technical papers · [English](../paper/overview.qmd) | [Deutsch](../paper/uebersicht.qmd)
+
 ```mermaid
 flowchart LR
   classDef once fill:#fde68a,stroke:#b45309,color:#000
@@ -41,6 +43,8 @@ flowchart LR
 
 `solveCalibration` in `src/solver.mjs`, gates from `docs/architecture.md`.
 
+Camera extrinsics and time offset · [English](../paper/01-calibration.qmd) | [Deutsch](../paper/01-kalibrierung.qmd)
+
 ```mermaid
 flowchart TD
   A["Orbit head around L-angle<br/>(3 tags, tag36h11)"] --> B{"Diversity gate<br/>≥30 views, 2 rotation axes,<br/>≥10 cm translation"}
@@ -49,14 +53,14 @@ flowchart TD
   subgraph FIT ["solveCalibration (worker)"]
     S1["Stage 1 fitIntrinsics<br/>planar BA, pseudo-Huber δ=3<br/>Schur complement"] --> S2
     S2["Stage 2 fitHandEye<br/>viewerFromCameraGL, worldFromRig<br/>delay seeds −120 / 0 / +120 ms"] --> S3
-    S3["Stage 3 refineJointCalibration<br/>K + hand-eye + Δt jointly<br/>pixel reprojection, 48 frames, 30 LM iterations"]
+    S3["Stage 3 refineJointCalibration<br/>K + hand-eye + Δt jointly<br/>pixel reprojection, up to 48 views<br/>and up to 30 LM iterations"]
   end
-  S3 --> H{"Holdout 80/20<br/>train <1.0 px, held-out <1.2 px<br/>P95 <8.5 mm / <1.5°<br/>≥2 delay seeds converged"}
+  S3 --> H{"Holdout 80/20<br/>optical RMS: train <1.0 px, holdout <1.2 px<br/>joint holdout RMS <10 px<br/>P95 <8.5 mm / <1.5°<br/>≥2 equivalent seeds, spread <15 ms<br/>offset, camera position and uncertainty gates"}
   H -- fail --> A
-  H -- pass --> V{"Verifying<br/>fresh views<br/>P95 <8.5 mm / <1.4°"}
+  H -- pass --> V{"Verifying<br/>all 3 tags, fresh views, motion >4 cm<br/>RMS <1.2 px, P95 <8.5 mm / <1.4°"}
   V -- fail --> A
   V -- pass --> P[("Profile → localStorage<br/>SHA-256")]
-  P --> C{"New session: checking<br/>P95 <10 mm / <1.5°"}
+  P --> C{"New session: checking<br/>motion >4 cm, RMS <1.2 px<br/>P95 <10 mm / <1.5°"}
   C -- pass --> OK["Profile active"]
   C -- fail --> A
 ```
@@ -100,11 +104,11 @@ flowchart TD
 
 ## Multi Tracking (Focus-ROI)
 
-Generic tags x00–x49 (`src/camera.mjs`, `docs/controls.md`).
+Movable tags 300–349 (`src/camera.mjs`, `docs/controls.md`).
 
 ```mermaid
 flowchart TD
-  IDS["Generic tags x00–x49"] --> PRIO["Proximity priority<br/>≤45 cm, max 3 active/sibling targets"]
+  IDS["Movable tags 300–349"] --> PRIO["Proximity priority<br/>≤45 cm, max 3 active/sibling targets"]
   PRIO --> ROI["Focus-ROI up to 28 Hz"]
   subgraph TWO ["Two-stage ROI"]
     R1["Search: decimate=2<br/>large box"] --> R2["Refine: decimate=1<br/>tight box, corners"]

@@ -1,0 +1,83 @@
+---
+lang: de
+title: "Kameraextrinsik und Zeitversatz am ruhenden Kalibrierwinkel"
+subtitle: "Fachdiagramm 01 · Technisches Kurzpaper · Entwurf"
+abstract-title: Kurzfassung
+abstract: |
+  Dreht man den Kopf um einen festliegenden AprilTag-Winkel, ändert sich dessen Pose im Kamerabild. Im WebXR-Raum muss er am selben Ort bleiben. Aus dieser Bedingung schätzt die Anwendung gemeinsam die Lage der Kamera relativ zum Headset und den Zeitversatz zwischen Kamerabild und Kopfpose. Entscheidend für die Prüfung ist, ob sich die Bildecken einer zurückgehaltenen Ansicht allein aus der Kopfbewegung und der geschätzten Kalibrierung vorhersagen lassen.
+---
+
+[English](01-calibration.html){hreflang=en lang=en} · **Deutsch**
+
+[Übersicht der Kurzpaper](uebersicht.html) · [Fachdiagramm 01][diagramm]
+
+## Was der Winkel messbar macht
+
+Die Tags 350, 351 und 352 liegen auf einem starren, ebenen L-Winkel. Im Hauptwinkel sind ihre schwarzen Quadrate 20 mm breit. Die Verschiebungen von Tag 350 zu den beiden anderen betragen 230 mm und 170 mm entlang der beiden Schenkel. Damit sind die Eckpunkte in einem gemeinsamen metrischen Koordinatensystem bekannt. Der Maßstab setzt einen maßhaltigen Druck voraus. Pro Aufnahme liefert der Detektor die sichtbaren Ecken in Pixeln. Während der Erfassung genügen zwei Tags, bei der späteren Verifikation verlangt der Assistent alle drei. [Winkelgeometrie][rig] · [Erfassung][assistent]
+
+Der Winkel bleibt liegen. Der Nutzer bewegt den Kopf seitlich sowie näher heran und weiter weg und dreht ihn um verschiedene Achsen. Zu jeder Ansicht gehören zwei Datenströme. Das Video liefert den Zeitstempel $t_i$ (`captureTime`), die XR-Historie liefert zeitgestempelte Kopfposen. Zwischen zwei XR-Posen interpoliert die Anwendung die Position linear und die Orientierung per Quaternion-Slerp. [Zeitinterpolation][runtime]
+
+## Zwei Unbekannte in derselben Bewegung
+
+$T_{A\leftarrow B}$ überführt einen Punkt aus System $B$ in System $A$. Es seien $W$ der XR-Raum, $H$ der Viewer, $C$ die Kamera in WebGL-Achsen und $L$ der Winkel. Dann gilt für jede ideale Aufnahme $i$
+
+$$
+\underbrace{T_{W\leftarrow L}}_{Y}
+=
+\underbrace{T_{W\leftarrow H}(t_i+\Delta t)}_{H_i(\Delta t)}
+\;\underbrace{T_{H\leftarrow C}}_{X}
+\;\underbrace{T_{C\leftarrow L,i}}_{C_i}.
+$$
+
+$C_i$ kommt aus den Bildecken und dem Kameramodell $K$. Der Code überführt die optische Pose dazu aus Kameraachsen mit $y$ nach unten und $z$ nach vorn in WebGL-Achsen mit $y$ nach oben und $z$ nach hinten. $X$ (`viewerFromCameraGL`) enthält die drei Translations- und drei Rotationsfreiheitsgrade der Montage. $Y$ (`worldFromRig`) ist die unbekannte, über alle Ansichten konstante Lage des Winkels. $\Delta t$ (`timeOffsetMs`) ist ein effektiver Zeitabgleich. Bei $\Delta t=-55$ ms wird ein Bild mit Zeitstempel 1000 ms mit der XR-Pose bei 945 ms verknüpft. Aus diesem Wert allein lässt sich die Sensor- oder Anzeigelatenz nicht ableiten. [Transformationskette und Solver][solver] · [Laufzeitverwendung][profil]
+
+**Warum die Bewegung zählt.** Bei ruhendem Kopf ändert ein Zeitversatz die zugeordnete Pose überhaupt nicht. Bei gleichförmiger geradliniger Fahrt mit fester Orientierung erscheint ein Zeitfehler $\delta t$ als konstanter räumlicher Versatz $\mathbf v\,\delta t$. Dreht sich der Kopf, beschreibt eine seitlich versetzte Kamera einen Bogen um den Viewer. Wechselt zusätzlich die Drehrichtung, kehrt der Winkelfehler durch einen falschen Zeitabgleich sein Vorzeichen um. Beispielhaft ergeben $90$ Grad/s bei $20$ ms Zeitfehler rund $1{,}8$ Grad. Die gemeinsame Auswertung solcher Ansichten hilft, Montageversatz und Zeitfehler zu trennen.
+
+## Wie der Solver die Größen bestimmt
+
+1. **Kameramodell aus den Ecken.** Der Solver trennt die letzten rund 20 % der chronologischen Ansichten vor dem Fit ab. Aus den Trainingsbildern schätzt er $K$ und zunächst eine freie Winkelpose pro Bild. Ein robuster Pseudo-Huber-Verlust mit einer Skala von 3 px begrenzt den Einfluss großer Eckfehler. Standardmäßig gilt $f_x=f_y$, der Hauptpunkt liegt im Bildzentrum und die Verzeichnung ist null. Das optionale Pinhole-Modell schätzt beide Brennweiten und den Hauptpunkt separat.
+2. **Starre Montage und Uhrversatz.** Für einen Kandidaten $(X,Y,\Delta t)$ berechnet der Solver pro Ansicht die Abweichung $E_i=Y^{-1}H_i(\Delta t)XC_i$. Beim idealen Fit ist $E_i$ die Identität. Minimiert wird die Quadratsumme der Rotationsvektoren und Translationen, jeweils skaliert mit 0,01 rad bzw. 0,01 m. Drei Läufe starten bei $-120$, $0$ und $+120$ ms. Die besten Lösungen müssen im Zeitversatz übereinstimmen. Für diesen Schritt braucht der Solver mindestens 24 Trainingsansichten mit optischer Pose und durchgängiger XR-Historie im Fenster $t_i\pm250$ ms. Lücken über 100 ms sind unzulässig.
+3. **Gemeinsame Verfeinerung in Pixeln.** Für jede bekannte Ecke $P_j$ des Winkels sagt der Solver aus der Kopfpose einen Bildpunkt voraus. Mit dem beobachteten Pixel $u_{ij}$ und der Projektion $\pi_K$ einschließlich Achsenumrechnung gilt
+
+   $$
+   \hat u_{ij}=\pi_K\!\left(X^{-1}H_i(\Delta t)^{-1}Y P_j\right),
+   \qquad
+   r_{ij}=\hat u_{ij}-u_{ij}.
+   $$
+
+   Der Solver variiert $K,X,Y,\Delta t$ gemeinsam auf bis zu 48 Trainingsansichten in maximal 30 Levenberg–Marquardt-Iterationen. Er übernimmt den Schritt, wenn der gemeinsame Trainings-RMS endlich ist und den Ausgangswert um höchstens 0,05 px übersteigt. Andernfalls verwendet er den vorherigen Fit. [Implementierung aller drei Stufen][solver]
+
+Der Solver verlangt mindestens 30 Ansichten, der Assistent startet standardmäßig ab 36. Sowohl die gesamte Sequenz als auch ihr Trainingsanteil müssen zwei nicht kollineare Rotationsachsen und mindestens 10 cm Translationsspanne zeigen. Diese Spanne ist der größte Abstand zweier Kopfpositionen. Eine reine Drehung am Platz genügt dafür nicht. [Bewegungsprüfung][solver] · [Assistent][assistent]
+
+## Woran ein Zeitfehler auffällt
+
+| Prüfung | Was wird berechnet? | Freigabegrenze |
+|---|---|---|
+| Optische Reprojektion | Pro Bild darf eine eigene Winkelpose die beobachteten Ecken erklären. Dieser Test kann auch bei falschem Zeitabgleich gut ausfallen. | Training < 1,0 px, Holdout < 1,2 px RMS |
+| Gemeinsame Reprojektion | Im Holdout sind $K,X,Y,\Delta t$ fest. Die XR-Pose sagt jede Bildecke voraus, ohne die Pose des Winkels für dieses Bild nachzufitten. | Holdout < 10,0 px RMS |
+| Räumliche Konsistenz | Die aus den Holdout-Bildern rekonstruierten Weltposen werden mit $Y$ aus dem Training verglichen. | P95 < 8,5 mm und < 1,5° |
+| Stabilität des Zeitfits | Mindestens zwei Startwerte erreichen vergleichbare Kosten. Gemessen wird die Spannweite ihrer Zeitversätze. | Spannweite < 15 ms, finaler Betrag < 230 ms |
+
+Zusätzlich prüft der Solver die Unsicherheit der Intrinsik und die Plausibilität der Kameraposition. Vor dem Speichern folgt eine **frische Aufnahme** mit standardmäßig mindestens zehn Ansichten und mehr als 4 cm Kopftranslation. Die ersten vier Winkelposen bilden die Referenz für die übrigen. Die Grenzen liegen bei 8,5 mm und 1,4° für die P95-Streuung sowie 1,2 px für den optischen RMS. Das misst die Wiederholbarkeit am ruhenden Winkel. Für die absolute Genauigkeit am physischen Gerät wäre eine unabhängig vermessene Referenz erforderlich. [Freigabelogik][solver] · [Frische Verifikation][assistent]
+
+## Zahlenbeispiel mit bekanntem Zeitversatz
+
+Der synthetische Repository-Test erzeugt 72 Ansichten mit bekanntem $X$, $f=890$ px und $\Delta t=-55$ ms. Die projizierten Ecken enthalten eine deterministische Störung mit höchstens 0,05 px je Koordinate. Im Standardmodell ergeben sich aus 57 Trainings- und 15 Holdout-Ansichten folgende Werte.
+
+| Größe | Ergebnis im synthetischen Lauf |
+|---|---:|
+| Geschätzter Zeitversatz | −55,003 ms |
+| Geschätzte Brennweite | 889,963 px |
+| Fehler der geschätzten Kameraposition gegenüber der Vorgabe | 0,072 mm |
+| Gemeinsamer Reprojektionsfehler im Holdout | 0,0505 px RMS |
+
+Die Zahlen beschreiben die Rückgewinnung vorgegebener Parameter unter dem Modell des Tests. Der Test ist im Repository mit `node --test tests/calibration.test.mjs` ausführbar. [Datengenerator][synthetik] · [Prüfung gegen die Vorgabewerte][test]
+
+[diagramm]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/diagrams.md#calibration
+[rig]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/rigs/ms-qr-main-l.json
+[runtime]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/src/runtime.mjs#L101-L134
+[solver]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/src/solver.mjs#L22-L309
+[assistent]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/src/assistant.mjs
+[profil]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/src/profile.mjs#L68-L80
+[synthetik]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/tests/synthetic.mjs
+[test]: https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/591ecff5c23375c217cf0922b9ea1834f86c40ed/tests/calibration.test.mjs#L8-L18

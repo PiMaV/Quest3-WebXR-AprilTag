@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="388"
+     viewBox="0 0 560 388" role="img" aria-labelledby="title desc">
+  <title id="title">Vom Kamerabild zur nächsten Suchregion</title>
+  <desc id="desc">Zwei Eingänge liefern Kameraaufnahmen und WebXR-Kopfposen. Ein Worker
+    erkennt AprilTag-Ecken. Kalibrierung und Zeitabgleich bringen beide Messungen in
+    ein Koordinatensystem. Der L-Winkel setzt einen nativen Raumanker. Im Scanbetrieb
+    liefert die bewegte Objektpose ein Suchfenster für den Detektor im nächsten Bild.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4"
+            markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 8 4 0 8Z" fill="#496371"/>
+    </marker>
+    <marker id="return-arrow" viewBox="0 0 8 8" refX="7" refY="4"
+            markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 8 4 0 8Z" fill="#934b10"/>
+    </marker>
+    <style>
+      text { font-family: system-ui, 'DejaVu Sans', sans-serif; fill: #183449; }
+      .heading { font-size: 21px; font-weight: 650; }
+      .detail { font-size: 16px; }
+      .arrow { fill: none; stroke: #496371; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="560" height="388" rx="12" fill="#fff"/>
+
+  <g id="input">
+    <g fill="#f1f5f6" stroke="#bacbd0">
+      <rect x="10" y="12" width="228" height="76" rx="8"/>
+      <rect x="280" y="12" width="228" height="76" rx="8"/>
+    </g>
+    <text class="heading" x="26" y="44">WebXR-Kopfpose</text>
+    <text class="detail" x="26" y="69">Verlauf in der XR-Zeit</text>
+    <text class="heading" x="296" y="44">Kamerabild</text>
+    <text class="detail" x="296" y="69">Bild und Aufnahmezeit</text>
+  </g>
+
+  <g id="processing">
+    <path class="arrow" d="M124 88V139"/>
+    <path class="arrow" d="M394 88V139"/>
+    <g fill="#e9f4f2" stroke="#639a97">
+      <rect x="10" y="142" width="228" height="82" rx="8"/>
+      <rect x="280" y="142" width="228" height="82" rx="8"/>
+    </g>
+    <path class="arrow" d="M280 183H242"/>
+    <text class="heading" x="26" y="176">Zeitabgleich</text>
+    <text class="detail" x="26" y="203">K · Kamera ↔ Kopf · Δt</text>
+    <text class="heading" x="296" y="176">AprilTag-Worker</text>
+    <text class="detail" x="296" y="203">Tag-ID und vier Ecken</text>
+  </g>
+
+  <g id="output">
+    <path class="arrow" d="M124 224V299"/>
+    <path class="arrow" d="M124 260H394V299"/>
+    <circle cx="124" cy="260" r="3.5" fill="#496371"/>
+    <g fill="#f1f5f6" stroke="#bacbd0">
+      <rect x="10" y="302" width="228" height="74" rx="8"/>
+      <rect x="280" y="302" width="228" height="74" rx="8"/>
+    </g>
+    <text class="heading" x="26" y="334">Raumursprung</text>
+    <text class="detail" x="26" y="359">Nativer WebXR-Anker</text>
+    <text class="heading" x="296" y="334">Bewegtes Objekt</text>
+    <text class="detail" x="296" y="359">Tagpose im L-System</text>
+    <path d="M508 339H548V183H511" fill="none" stroke="#934b10" stroke-width="2"
+          stroke-dasharray="6 4" marker-end="url(#return-arrow)"/>
+    <text transform="translate(537 261) rotate(-90)" text-anchor="middle"
+          style="font-size:16px;fill:#88440e">Nächste ROI</text>
+  </g>
+</svg>
