@@ -9,6 +9,8 @@ abstract: |
 
 [Overview of the eight diagrams and papers](overview.html)
 
+**Version note.** The pendulum experiment below reproduces v1.2.0. The current [multi-tag search](04-multi-tag-focus.html), [hand coupling](05-hand-coupling.html) and [prediction](06-prediction.html) chapters describe the revised scheduler, release behaviour and lead parameters.
+
 ![Two data streams provide a fixed origin and a moving object pose. The dashed arrow feeds the search window, or region of interest (ROI), back to the detector.](assets/graphical-abstract-en.svg){#fig-architecture width=100% fig-alt="Calibration and time alignment combine detected tag corners with head poses. A native anchor carries the origin. The moving object pose guides the next image search."}
 
 ## From a camera image to a world origin

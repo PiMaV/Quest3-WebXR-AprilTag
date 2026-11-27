@@ -1,0 +1,29 @@
+---
+lang: de
+title: "Den Raumursprung am L-Winkel verankern"
+subtitle: "Fachdiagramm 02 · Arbeitsfassung"
+---
+
+[English](02-world-origin.html){hreflang=en lang=en} · **Deutsch** · [Kapitelübersicht](uebersicht.html)
+
+Alle drei Tags des ruhenden L-Winkels definieren in jeder Ansicht denselben physischen Ursprung. Bewegt der Nutzer den Kopf, ändert sich die Viewerpose. Der zeitlich zugeordnete optische Messwert sollte den Winkel dennoch immer am selben Ort im XR-Raum ergeben.
+
+## Vom Bildzeitpunkt zum Anker
+
+Für Bildzeit $t_i$, kalibrierten Zeitversatz $\Delta t$ und Kamera $C$ am Viewer $H$ lautet die geschätzte Weltpose des Winkels $L$
+
+$$T_{W\leftarrow L,i}=T_{W\leftarrow H}(t_i+\Delta t)\,T_{H\leftarrow C}\,T_{C\leftarrow L,i}.$$
+
+Der Sammler verlangt mindestens fünf verschiedene Beobachtungen über mindestens eine Sekunde. Er bildet den komponentenweisen Median der Translation und mittelt die vorzeichengleich ausgerichteten Einheitsquaternionen mit anschließender Normierung. Die größten Abweichungen dürfen 5 mm und 1,5° betragen. Für die Reprojektion gilt in der Bibliothek standardmäßig 1 px RMS. Die Quest-Demo setzt 1,15 px und aktiviert die weiche Zurückweisung einzelner Beobachtungen.
+
+## Nach der Übergabe
+
+Aus der akzeptierten Pose entsteht ein nativer XR-Anker. Jeder weitere XR-Frame fragt dessen Ankerraum ab. In SCAN kann die Kamera weiter Objekte beobachten. MEASURE stoppt die Kamera. Die früher berichteten 89–90 FPS beschreiben den XR-Zyklus bei gesetztem Anker und ausgeschalteter Kamera. Die optische Trackingrate des neuen Verfahrens erfordert eine eigene Messung.
+
+**Prüfung.** Bei festliegendem Winkel die Blickrichtung ändern und die optische Weltpose mit dem Anker vergleichen. Distanz und Winkelabweichung protokollieren. Fehlt die native Ankerpose, gilt der Anker als verloren.
+
+## Implementierung
+
+Lokaler Tracking-Stand `c6cb24a` · 2026-11-27. `src/anchor.mjs` · `src/anchor-audit.mjs` · `examples/quest.mjs`
+
+Prüflauf im Repository · `node --test tests/anchor.test.mjs tests/anchor-audit.test.mjs`

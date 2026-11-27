@@ -333,23 +333,33 @@ test('signedDistanceToPolygonXY, evaluatePerimeterOutside, and fence.isOutsideXY
   assert.equal(fence.isOutsideXY([5.0, 5.0, 0.45]).outside, false);
 });
 
-test('isTablePointObservableInCamera checks frustum dead-zone, distance, viewing angle, and decimated foreshortening', () => {
-  const K = { fx: 1000, fy: 1000, cx: 640, cy: 540, width: 1280, height: 1080 };
+test('isTablePointObservableInCamera checks frustum dead-zone, distance, viewing angle, priorRois, and Quest 3 decimated foreshortening', () => {
+  // Real Quest 3 intrinsics (fx = fy = 886.3 on 1280x1080)
+  const K = { fx: 886.3, fy: 886.3, cx: 640, cy: 540, width: 1280, height: 1080 };
   // Overhead GL camera at (0.60, 0.60, 0.80) looking straight down (-Z) at table z = 0
   const camOver = translationMatrix(0.60, 0.60, 0.80);
 
-  // Center of view -> clearly observable at decimate=1 and decimate=2 (25px / 2 = 12.5px >= 11px)
+  // Center of view at 0.80 m -> observable at decimate=1 and decimate=2 (22.2px / 2 = 11.1px >= 7.0px)
   assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camOver, K, { decimate: 1 }), true);
   assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camOver, K, { decimate: 2 }), true);
-  // At 1.15 m under decimate=2, apparent edge is 17.4px -> decimated 8.7px < 11px -> NOT safely observable!
-  const camMidFar = translationMatrix(0.60, 0.60, 1.15);
-  assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camMidFar, K, { decimate: 2 }), false);
-  // Same 1.15 m at decimate=1.5 -> 11.6px >= 11px -> observable when looking straight down
-  assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camMidFar, K, { decimate: 1.5 }), true);
+  // At 1.05 m under decimate=2 with moderate offset (dy=0.35, v=245, dist=1.107, cosView=0.949): minor/2 = 8.01 >= 7.0
+  const camMidFar = translationMatrix(0.60, 0.25, 1.05);
+  assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camMidFar, K, { decimate: 2 }), true);
+  // At z=1.25 m, dy=0.30 (dist=1.285 <= 1.30, cosView=0.972, v=327): dec=2 minor = 6.89 < 7.0 -> false WITHOUT priorRoi,
+  // but TRUE when covered by a decimate=1 priorRoi (minor = 13.79 >= 7.0)!
+  const camPriorCase = translationMatrix(0.60, 0.30, 1.25);
+  assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camPriorCase, K, { decimate: 2 }), false);
+  assert.equal(
+    isTablePointObservableInCamera([0.60, 0.60, 0], camPriorCase, K, {
+      decimate: 2,
+      priorRois: [[560, 260, 720, 400]], // u=640, v=327 -> inside ROI
+    }),
+    true,
+  );
   // Out of FoV -> not observable
   assert.equal(isTablePointObservableInCamera([2.50, 0.60, 0], camOver, K), false);
-  // Within border + 4 cm spatial dead zone (marginX = 128 + 50 = 178px; u = 640 + 480 = 1120 > 1102) -> false
-  assert.equal(isTablePointObservableInCamera([0.984, 0.60, 0], camOver, K), false);
+  // Within border + 4 cm spatial dead zone (marginX = 102.4 + 44.3 = 146.7px -> max u = 1133.3; at x=1.06, u=1149.6) -> false
+  assert.equal(isTablePointObservableInCamera([1.06, 0.60, 0], camOver, K), false);
   // Too far (> 1.30 m) -> false
   const camFar = translationMatrix(0.60, 0.60, 1.45);
   assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camFar, K), false);
@@ -361,8 +371,8 @@ test('isTablePointObservableInCamera checks frustum dead-zone, distance, viewing
   assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camOblique, K), false);
 });
 
-test('reconcileView prunes disappeared fence markers only when clearly in-view, unoccluded, steady, and for prolonged time', () => {
-  const K = { fx: 1000, fy: 1000, cx: 640, cy: 540, width: 1280, height: 1080 };
+test('reconcileView prunes disappeared fence markers on Quest 3 dec=2, preserves across dec=3 sweeps, and allows clean re-activation', () => {
+  const K = { fx: 886.3, fy: 886.3, cx: 640, cy: 540, width: 1280, height: 1080 };
   const fence = createPerimeterFence(mainRig);
   const camInit = [0.4, 0.4, 0.8];
 
@@ -376,7 +386,7 @@ test('reconcileView prunes disappeared fence markers only when clearly in-view, 
   // Looking away at (-1.0, -1.0) -> TR (354) is outside FoV, must NEVER be removed even after 20 frames / 5 s
   const camAway = translationMatrix(-1.0, -1.0, 0.8);
   for (let i = 0; i < 20; i++) {
-    const r = fence.reconcileView({ seenIds: [], lFromCamera: camAway, K, atMs: 1000 + i * 250, confidence: 1, decimate: 1.5 });
+    const r = fence.reconcileView({ seenIds: [], lFromCamera: camAway, K, atMs: 1000 + i * 250, confidence: 1, decimate: 2 });
     assert.equal(r.removed.length, 0);
   }
   assert.equal(fence.dynamicCount(), 3);
@@ -391,7 +401,7 @@ test('reconcileView prunes disappeared fence markers only when clearly in-view, 
       atMs: 7000 + i * 400,
       confidence: 1,
       occludedIds: [354],
-      decimate: 1.5,
+      decimate: 2,
     });
     assert.equal(r.removed.length, 0);
   }
@@ -405,34 +415,45 @@ test('reconcileView prunes disappeared fence markers only when clearly in-view, 
       K,
       atMs: 15000 + i * 400,
       confidence: 0.4,
-      decimate: 1.5,
+      decimate: 2,
     });
     assert.equal(r.removed.length, 0);
   }
   assert.equal(fence.dynamicCount(), 3);
 
-  // Now look steadily at empty TR spot with no hand occlusion:
-  // First 9 frames (< 10 frames / < 3500 ms) must NOT remove yet
+  // Now look steadily at empty TR spot with Quest 3 decimate=2:
+  // First 7 frames (< 8 frames / < 2500 ms) must NOT remove yet
   const verBefore = fence.version();
-  for (let i = 0; i < 9; i++) {
+  for (let i = 0; i < 7; i++) {
     const r = fence.reconcileView({
       seenIds: [],
       lFromCamera: camOnTR,
       K,
-      atMs: 25000 + i * 400,
-      confidence: 0.9,
-      decimate: 1.5,
+      atMs: 25000 + i * 360,
+      confidence: 0.85,
+      decimate: 2,
     });
     assert.equal(r.removed.length, 0);
   }
-  // 10th consecutive in-view miss after >= 3500 ms (9 * 400 = 3600 ms) removes TR (354)
+  // An interleaved coarse decimate=3 fallback frame must NOT reset the accumulated misses
+  const skipped = fence.reconcileView({
+    seenIds: [],
+    lFromCamera: camOnTR,
+    K,
+    atMs: 25000 + 7 * 360,
+    confidence: 0.85,
+    decimate: 3,
+  });
+  assert.equal(skipped.removed.length, 0);
+
+  // 8th qualifying in-view miss after >= 2500 ms removes TR (354)
   const pruned = fence.reconcileView({
     seenIds: [],
     lFromCamera: camOnTR,
     K,
-    atMs: 25000 + 9 * 400,
-    confidence: 0.9,
-    decimate: 1.5,
+    atMs: 25000 + 8 * 360,
+    confidence: 0.85,
+    decimate: 2,
   });
   assert.equal(pruned.removed.length, 1);
   assert.equal(pruned.removed[0].id, 354);
@@ -448,6 +469,13 @@ test('reconcileView prunes disappeared fence markers only when clearly in-view, 
   );
   // Polygon shrank diagonally from TL(0.0175,0.615) to BR(0.9175,0.015): (0.75, 0.45) is now OUTSIDE!
   assert.equal(fence.isOutsideXY([0.75, 0.45, 0.10]).outside, true);
+
+  // Flipping TR (354) face-up again cleanly re-adds it to the active fence
+  const readded = fence.observe(354, translationMatrix(0.9175, 0.615, 0), camInit, 30000);
+  assert.equal(readded?.accepted, true);
+  assert.equal(readded?.isNew, true);
+  assert.equal(fence.dynamicCount(), 3);
+  assert.equal(fence.isOutsideXY([0.75, 0.45, 0.10]).outside, false);
 });
 
 test('disappearing TL #353 cancels offered state, keeps active fence alive with remaining markers, and deactivates when 0 left', () => {

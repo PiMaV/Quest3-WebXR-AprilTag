@@ -2204,7 +2204,13 @@ font-size: .92rem; font-weight: 600; }
 
 <div id="quarto-content" class="page-columns page-rows-contents page-layout-article toc-left">
 <div id="quarto-sidebar-toc-left" class="sidebar toc-left">
-  
+  <nav id="TOC" role="doc-toc" aria-labelledby="toc-title" class="toc-active">
+    <h2 id="toc-title">Inhaltsverzeichnis</h2>
+   
+  <ul class="collapse">
+  <li><a href="#tracking-update-vom-27.-november-2026" id="toc-tracking-update-vom-27.-november-2026" class="nav-link active" data-scroll-target="#tracking-update-vom-27.-november-2026">Tracking-Update vom 27. November 2026</a></li>
+  </ul>
+</nav>
 </div>
 <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
 </div>
@@ -2231,7 +2237,7 @@ font-size: .92rem; font-weight: 600; }
 
 
 <p><a href="overview.html" hreflang="en" lang="en">English</a> · <strong>Deutsch</strong></p>
-<p>Die Reihe folgt einem Messwert von den Bildecken bis zur Bewegung im WebXR-Raum. Jedes Kurzpaper soll die physikalische Frage, die verwendeten Größen und Gleichungen sowie eine Möglichkeit zur Überprüfung zeigen. Der erste Entwurf behandelt die Kalibrierung. Die weiteren Zeilen sind Themenvorschläge. Vor ihrer Ausarbeitung gleichen wir das jeweilige Diagramm mit dem dann gültigen Code ab.</p>
+<p>Die Reihe folgt einem Messwert von den Bildecken bis zur Bewegung im WebXR-Raum. Jedes Kurzpaper soll die physikalische Frage, die verwendeten Größen und Gleichungen sowie eine Möglichkeit zur Überprüfung zeigen. Alle acht Kapitel liegen als Arbeitsfassungen vor. Die Trackingkapitel beschreiben die lokale Revision <code>c6cb24a</code> vom 27. November 2026. Kapitel 05 und 08 berücksichtigen zusätzlich die anschließenden lokalen Änderungen an Bedienung und Perimeter-Sichtbarkeit.</p>
 <table class="caption-top table">
 <thead>
 <tr class="header">
@@ -2245,36 +2251,66 @@ font-size: .92rem; font-weight: 600; }
 <td>Wie lassen sich die starre Kamera-Kopf-Transformation und der Zeitversatz aus Kopfbewegungen um einen ruhenden Winkel schätzen?</td>
 </tr>
 <tr class="even">
-<td><strong>02 · Raumursprung</strong></td>
+<td><strong>02 · <a href="02-raumursprung.html">Raumursprung</a></strong></td>
 <td>Wann stimmen mehrere optische Schätzungen des Winkels in Position und Orientierung hinreichend überein, um den Ursprung an einen XR-Anker zu übergeben?</td>
 </tr>
 <tr class="odd">
-<td><strong>03 · Einzelmarker</strong></td>
+<td><strong>03 · <a href="03-einzelmarker.html">Einzelmarker</a></strong></td>
 <td>Wie ergeben vier Bildecken und die bekannte Kantenlänge eine metrische Pose, und woran lässt sich ein unplausibler Posesprung erkennen?</td>
 </tr>
 <tr class="even">
-<td><strong>04 · Mehrere Marker</strong></td>
+<td><strong>04 · <a href="04-mehrmarker-fokus.html">Mehrere Marker</a></strong></td>
 <td>Wie teilt der Detektor seine Bildausschnitte und Suchzeit auf, wenn mehrere Marker mit unterschiedlicher Geschwindigkeit und Sichtbarkeit verfolgt werden?</td>
 </tr>
 <tr class="odd">
-<td><strong>05 · Handkopplung</strong></td>
+<td><strong>05 · <a href="05-handkopplung.html">Handkopplung</a></strong></td>
 <td>Wie lässt sich ein am Objekt gemessener Versatz zur Hand nutzen, und wann verliert die Annahme einer starren Kopplung ihre Gültigkeit?</td>
 </tr>
 <tr class="even">
-<td><strong>06 · Prädiktion</strong></td>
+<td><strong>06 · <a href="06-praediktion.html">Prädiktion</a></strong></td>
 <td>Wie weit lassen sich Position und Orientierung aus den letzten optischen Posen fortschreiben, wenn die nächste Beobachtung aussteht?</td>
 </tr>
 <tr class="odd">
-<td><strong>07 · Bahnkorrektur</strong></td>
+<td><strong>07 · <a href="07-bahnkorrektur.html">Bahnkorrektur</a></strong></td>
 <td>Wie korrigiert eine neue optische Pose den Endpunkt eines vorhergesagten Bahnsegments und wie verteilt sich die Korrektur auf frühere Punkte?</td>
 </tr>
 <tr class="even">
-<td><strong>08 · Perimeter</strong></td>
+<td><strong>08 · <a href="08-tischkontur.html">Perimeter</a></strong></td>
 <td>Wie entstehen aus Markern auf der Tischebene die Eckpunkte einer räumlichen Begrenzung, und wie wirkt sich ein unsicherer Eckpunkt auf die Kontur aus?</td>
 </tr>
 </tbody>
 </table>
 <p>Die <a href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/diagrams.md">Diagrammsammlung im Repository</a> zeigt die Module im Zusammenhang. Der vorhandene <a href="bewegter-tag.html">Beitrag zum bewegten AprilTag</a> verbindet mehrere davon am Beispiel eines Pendels.</p>
+<section id="tracking-update-vom-27.-november-2026" class="level2">
+<h2 class="anchored" data-anchor-id="tracking-update-vom-27.-november-2026">Tracking-Update vom 27. November 2026</h2>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Änderung im lokalen Stand</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Die Obergrenze der Fokusübergaben steigt von 28 auf 60 Hz. Vordergrundausschnitte und periodische Vollbildsuchen kosten unterschiedlich viel Rechenzeit.</td>
+<td><a href="04-mehrmarker-fokus.html">Kameratakt, Detektorzeit und Treffer pro Tag</a></td>
+</tr>
+<tr class="even">
+<td>Getragene Tags erlauben schnellere Kopfdrehungen. Der optische Prädiktor läuft bei Handkopplung weiter und kann beim Loslassen übernehmen.</td>
+<td><a href="03-einzelmarker.html">Bewegungsgrenzen</a> · <a href="05-handkopplung.html">Übergabe an die Optik</a></td>
+</tr>
+<tr class="odd">
+<td>Bei einer 100 ms alten Beobachtung und 1 m/s beträgt der Vorlauf jetzt 90 mm, zuvor 72 mm.</td>
+<td><a href="06-praediktion.html">Prädiktionsgleichungen und Grenzen</a></td>
+</tr>
+<tr class="even">
+<td>Das Entfernen fehlender Perimetermarker berücksichtigt effektive Bildauflösung, Abdeckung durch Suchfenster und Zeit im Sichtfeld.</td>
+<td><a href="08-tischkontur.html">Perimeter-Sichtbarkeit</a></td>
+</tr>
+</tbody>
+</table>
+<p>Die Raten oben sind konfigurierte Obergrenzen. Die früher gemessenen 89–90 FPS betreffen den XR-Ankerbetrieb. Ein Vorher/Nachher-Vergleich frischer optischer Treffer pro Sekunde auf der Quest steht noch aus.</p>
+</section>
 
 </main>
 <!-- /main column -->

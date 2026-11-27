@@ -1,0 +1,36 @@
+---
+lang: en
+title: "How multiple tags share the camera frame"
+subtitle: "Diagram 04 · Working draft"
+---
+
+**English** · [Deutsch](04-mehrmarker-fokus.html){hreflang=de lang=de} · [Paper overview](overview.html)
+
+A full-image search can discover an unknown tag anywhere. A region of interest (ROI) spends detector time near a known tag’s predicted position. The fast SCAN path now chooses between a single foreground tag, two or three foreground tags and a wide search. The decision uses the **camera optical axis**. Eye tracking is not required.
+
+## Selecting and keeping a tag
+
+In camera coordinates with forward depth $z>0$, angular eccentricity is $\theta=\operatorname{atan2}(\sqrt{x^2+y^2},z)$. A recent central candidate normally enters within 20° and may remain out to 26°. The normal entry distance limit is 1.85 m, or 2.50 m in far mode. Recording and hand-coupled tags have priority over other motion and hand-proximity candidates, then resting tags. More than three active foreground candidates trigger wide search. A stable slot can survive 1.8 s without an optical hit. Leaving the exit cone normally starts a 500 ms grace period.
+
+For a moving tag the demo predicts its position for the planned image time. For a coupled tag it samples hand history at that time. After one or two misses the scheduler scales the window half-width by 1.35 or 1.75, capped at 260 px. Wider crops improve reacquisition at a cost in searched pixels.
+
+## Work per frame
+
+| Condition | Detector work |
+|---|---|
+| Active foreground | Speed-first ROI. A crop of at least 24,000 px² starts at decimation 2 with edge refinement. A smaller crop starts at 1.5 without refinement. Misses get a retry. |
+| Only resting, locked foreground | Use the precision-oriented ROI path with tight full-resolution refinement. |
+| All focus crops miss | Fall back to a full-image search in the same frame, coarse decimation 3. Three consecutive **partial** misses instead request a recovery sweep. |
+| Scheduled background search | Default intervals are 360, 550 or 950 ms. A fast tag at or above 0.25 m/s gets the longest interval. Mode and a recent detector-time budget of 22 ms affect the other choices. |
+
+## What “30 Hz” means here
+
+The previous demo capped focused submissions at 28 Hz. The current fast SCAN loop sets a **60 Hz submission ceiling** on focus frames and scheduled sweeps, and **30 Hz** on moving wide search. The capture path skips duplicate frames and skips submissions while the worker is busy. A 3 ms callback tolerance at caps of 25 Hz or above reduces accidental frame skipping from timing jitter. A 30 Hz source supplies one distinct image about every 33.3 ms. A higher ceiling can admit those images but cannot create new camera samples.
+
+**Performance check.** In matched Quest runs, record the camera callback rate, distinct submissions/s, fresh optical hits/s per tag, detector time (median and P95), and time to reacquire after occlusion. Compare one moving tag, three tags and a fourth active tag that triggers wide search. The repository’s earlier 89–90 FPS anchor measurement does not measure this path. No paired headset throughput measurements accompany this revision.
+
+## Implementation
+
+Local tracking revision `c6cb24a` · 2026-11-27. `src/focus-scheduler.mjs` · `src/camera.mjs` · `src/detector.mjs` · `examples/quest.mjs`
+
+Run from the repository root · `node --test tests/focus-scheduler.test.mjs tests/camera.test.mjs tests/wasm-smoke.test.mjs`

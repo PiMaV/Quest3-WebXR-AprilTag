@@ -66,6 +66,7 @@ export interface PerimeterFence {
     confidence?: number;
     occludedIds?: Iterable<number> | null;
     decimate?: number;
+    priorRois?: ReadonlyArray<ReadonlyArray<number>> | null;
   }): {
     removed: Array<{ id: number; role: string; pos: Vec3 }>;
     deactivated: boolean;
@@ -135,6 +136,7 @@ export function isTablePointObservableInCamera(
     deadZoneM?: number;
     minExpectedMinorPx?: number;
     decimate?: number;
+    priorRois?: ReadonlyArray<ReadonlyArray<number>> | null;
     tagEdgeM?: number;
   },
 ): boolean;

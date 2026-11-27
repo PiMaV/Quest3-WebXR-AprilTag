@@ -2204,7 +2204,13 @@ font-size: .92rem; font-weight: 600; }
 
 <div id="quarto-content" class="page-columns page-rows-contents page-layout-article toc-left">
 <div id="quarto-sidebar-toc-left" class="sidebar toc-left">
-  
+  <nav id="TOC" role="doc-toc" aria-labelledby="toc-title" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul class="collapse">
+  <li><a href="#tracking-update-27-november-2026" id="toc-tracking-update-27-november-2026" class="nav-link active" data-scroll-target="#tracking-update-27-november-2026">Tracking update · 27 November 2026</a></li>
+  </ul>
+</nav>
 </div>
 <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
 </div>
@@ -2231,7 +2237,7 @@ font-size: .92rem; font-weight: 600; }
 
 
 <p><strong>English</strong> · <a href="uebersicht.html" hreflang="de" lang="de">Deutsch</a></p>
-<p>The series follows a measurement from the corners of a tag in a camera image to its motion in WebXR space. Each paper addresses a physical question, derives the equations used by the implementation and shows how to check the result. The calibration paper is available as a draft. The remaining seven entries are proposed topics. Each diagram will be checked against the implementation before its paper is written.</p>
+<p>The series follows a measurement from the corners of a tag in a camera image to its motion in WebXR space. Each paper addresses a physical question, derives the equations used by the implementation and shows how to check the result. All eight chapters are available as working drafts. The tracking chapters describe local revision <code>c6cb24a</code> of 27 November 2026. Chapters 05 and 08 also include the local changes to interaction and perimeter visibility made after that commit.</p>
 <table class="caption-top table">
 <thead>
 <tr class="header">
@@ -2245,36 +2251,66 @@ font-size: .92rem; font-weight: 600; }
 <td>How can head motion around a stationary target reveal both the rigid camera-to-head transform and the time offset between the camera and WebXR?</td>
 </tr>
 <tr class="even">
-<td><strong>02 · World origin</strong></td>
+<td><strong>02 · <a href="02-world-origin.html">World origin</a></strong></td>
 <td>When do optical estimates of the target’s position and orientation agree closely enough to establish an XR anchor?</td>
 </tr>
 <tr class="odd">
-<td><strong>03 · Single-tag tracking</strong></td>
+<td><strong>03 · <a href="03-single-tag.html">Single-tag tracking</a></strong></td>
 <td>How do four image corners and a known edge length determine a metric pose? How can the tracker detect an implausible jump?</td>
 </tr>
 <tr class="even">
-<td><strong>04 · Multi-tag tracking</strong></td>
+<td><strong>04 · <a href="04-multi-tag-focus.html">Multi-tag tracking</a></strong></td>
 <td>How should the detector allocate search windows and processing time across tags that differ in speed and visibility?</td>
 </tr>
 <tr class="odd">
-<td><strong>05 · Hand coupling</strong></td>
+<td><strong>05 · <a href="05-hand-coupling.html">Hand coupling</a></strong></td>
 <td>How can a measured hand-to-object offset carry the object pose forward, and when does the rigid-coupling assumption break down?</td>
 </tr>
 <tr class="even">
-<td><strong>06 · Prediction</strong></td>
+<td><strong>06 · <a href="06-prediction.html">Prediction</a></strong></td>
 <td>How far can position and orientation be extrapolated from recent optical poses while waiting for the next observation?</td>
 </tr>
 <tr class="odd">
-<td><strong>07 · Trajectory correction</strong></td>
+<td><strong>07 · <a href="07-trajectory-correction.html">Trajectory correction</a></strong></td>
 <td>How does a new optical pose correct the end of a predicted trajectory segment, and how is the correction distributed over earlier points?</td>
 </tr>
 <tr class="even">
-<td><strong>08 · Perimeter</strong></td>
+<td><strong>08 · <a href="08-perimeter.html">Perimeter</a></strong></td>
 <td>How do markers on a tabletop define the vertices of a spatial boundary, and how does uncertainty in one vertex affect its outline?</td>
 </tr>
 </tbody>
 </table>
 <p>The <a href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/diagrams.md">diagram collection</a> shows how the modules fit together. <a href="index.html">How Quest 3 finds a moving AprilTag again</a> connects several of them using a pendulum as an example.</p>
+<section id="tracking-update-27-november-2026" class="level2">
+<h2 class="anchored" data-anchor-id="tracking-update-27-november-2026">Tracking update · 27 November 2026</h2>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Change in the local revision</th>
+<th>Where to read the details</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Focused submissions move from the old 28 Hz ceiling to 60 Hz. Foreground crops and periodic wide sweeps have different costs.</td>
+<td><a href="04-multi-tag-focus.html">Camera cadence, detection time and hits per tag</a></td>
+</tr>
+<tr class="even">
+<td>Carried tags tolerate faster head turns. The optical predictor stays active during hand coupling and takes over at release.</td>
+<td><a href="03-single-tag.html">Motion gates</a> · <a href="05-hand-coupling.html">Hand-to-optical handover</a></td>
+</tr>
+<tr class="odd">
+<td>A 100 ms old observation at 1 m/s advances 90 mm under the current predictor, previously 72 mm.</td>
+<td><a href="06-prediction.html">Prediction equations and limits</a></td>
+</tr>
+<tr class="even">
+<td>Removal of a missing perimeter marker depends on effective image resolution, ROI coverage and time in view.</td>
+<td><a href="08-perimeter.html">Perimeter visibility</a></td>
+</tr>
+</tbody>
+</table>
+<p>The rates above are configuration limits. The recorded hardware benchmark of 89–90 FPS covers the XR anchor loop. A before/after Quest measurement of fresh optical hits per second is still outstanding.</p>
+</section>
 
 </main>
 <!-- /main column -->

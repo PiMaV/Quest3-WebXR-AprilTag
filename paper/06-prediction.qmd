@@ -1,0 +1,28 @@
+---
+lang: en
+title: "Predicting the next pose between camera frames"
+subtitle: "Diagram 06 · Working draft"
+---
+
+**English** · [Deutsch](06-praediktion.html){hreflang=de lang=de} · [Paper overview](overview.html)
+
+Two optical observations give a linear velocity in the L frame and an angular velocity in the tag’s local frame. The predictor bounds their magnitudes at 1.8 m/s and 8 rad/s. A gap outside 12–350 ms resets the velocity estimate. For valid intervals, the measured velocity is blended with the previous estimate. A reversal detected by a negative linear velocity dot product gives the new observation full weight.
+
+## Changes to the prediction horizon
+
+Let $a$ be the age of the last observation in seconds. The current lead and predicted position are
+
+$$h(a)=\min(0.120,0.90a)\exp[-\max(0,a-0.120)/0.085],\qquad
+\hat p=p+vh(a).$$
+
+Orientation advances by a local rotation with rotation vector $\omega h(a)$. At speeds below 0.015 m/s **and** 4°/s the last pose is returned. The previous implementation used velocity weight 0.58, lead gain 0.72 and a 105 ms cap. The new values are **0.72, 0.90 and 120 ms**. For a 100 ms observation age and steady 1 m/s motion this moves the estimate 90 mm forward, compared with 72 mm previously. This is a model calculation. A reversal that has not yet been observed can increase overshoot.
+
+The moving-object display now captures the difference between the previous display and the new prediction. Its positional offset decays by $\exp(-\Delta t/\tau)$ at each render step, with $\tau=48$ ms on the moving optical update path. The ROI planner can independently request a prediction at its planned image time. Smoothing the visible object does not create a new optical observation.
+
+**Check.** In a trajectory with an abrupt reversal, report error against the next measured pose separately before and after reversal. Compare at the same observation age so changes in detector cadence cannot masquerade as predictor improvements.
+
+## Implementation
+
+Local tracking revision `c6cb24a` · 2026-11-27. `src/tag-predictor.mjs` · `examples/quest.mjs`
+
+Run from the repository root · `node --test tests/tag-predictor.test.mjs`

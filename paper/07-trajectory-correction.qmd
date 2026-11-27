@@ -1,0 +1,27 @@
+---
+lang: en
+title: "Correcting a recorded trajectory with optical observations"
+subtitle: "Diagram 07 · Working draft"
+---
+
+**English** · [Deutsch](07-bahnkorrektur.html){hreflang=de lang=de} · [Paper overview](overview.html)
+
+The hand tracker can supply several poses between optical observations. During recording these samples first enter a pending buffer. A valid optical observation confirms samples up to its timestamp. A watchdog release or timeout discards outstanding samples. A line drawn for display and a sequence confirmed by the camera therefore have different sampling histories.
+
+## Distributing an endpoint discrepancy
+
+For $n$ confirmed samples, let $e=p_{\mathrm{optical}}-p_n$ be the difference at the end of the segment. Limit its magnitude to 35 mm while preserving direction to obtain $\bar e$. For $i=1,\dots,n$ the corrected positions are
+
+$$p'_i=p_i+0.45\,\frac{i}{n}\bar e.$$
+
+With five samples and a 20 mm endpoint discrepancy along one axis, the first point moves by 1.8 mm and the last by 9 mm. The maximum endpoint correction in one pass is 15.75 mm. The segment retains part of the discrepancy to avoid a sudden jump. This operation changes translation only.
+
+The line renderer separately smooths the most recent interior points with a short binomial filter, keeps the latest endpoint fixed and caps displacement from the raw line at 12 mm in the demo. The tracking update changes how predictions reach the buffer during hand release. The fusion weights above are unchanged in the inspected revision.
+
+**Check.** Compare a committed segment with its pending inputs before display smoothing. Check the correction direction, preservation of orientations and the absence of samples later than the confirming optical timestamp.
+
+## Implementation
+
+Local tracking revision `c6cb24a` · 2026-11-27. `src/path-smoother.mjs` · `src/hand-coupling.mjs` · `examples/quest.mjs`
+
+Run from the repository root · `node --test tests/path-smoother.test.mjs tests/hand-coupling.test.mjs`

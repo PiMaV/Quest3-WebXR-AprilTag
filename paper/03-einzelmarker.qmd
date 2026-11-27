@@ -1,0 +1,27 @@
+---
+lang: de
+title: "Von vier Bildecken zur bewegten Tagpose"
+subtitle: "Fachdiagramm 03 · Arbeitsfassung"
+---
+
+[English](03-single-tag.html){hreflang=en lang=en} · **Deutsch** · [Kapitelübersicht](uebersicht.html)
+
+Ein Quadrat bekannter Kantenlänge liefert vier metrische Punkte $P_j$. Aus Intrinsik $K$ und gemessenen Bildecken $u_j$ bestimmt der planare Pose-Fit eine Rotation und Translation relativ zur Kamera. Der mittlere quadratische Eckfehler in Pixeln lautet
+
+$$e_{\mathrm{RMS}}=\sqrt{\frac{1}{4}\sum_{j=1}^4\|\pi_K(RP_j+t)-u_j\|^2}.$$
+
+Bei annähernd frontalem Blick beträgt die sichtbare Kantenlänge näherungsweise $f s/z$ mit Brennweite $f$, physischer Kantenlänge $s$ und Tiefe $z$. Mit wachsendem Abstand stehen also weniger Pixel für die Tiefenschätzung zur Verfügung. Die Implementierung prüft Eckgeometrie, Blickwinkel, Tiefe und Reprojektion.
+
+## Welche Kamerapose gehört zum Bild?
+
+Der reguläre Pfad verkettet die ankerrelative Kamerapose zur korrigierten Aufnahmezeit mit der optischen Tagpose. Liefern alle drei Referenztags im selben Bild eine gemeinsame starre Pose, kann der Winkel die Kamera direkt relativ zum L verorten. Die optische Referenz darf höchstens 1 px RMS aufweisen und maximal 4 cm und 3,5° von der XR-Schätzung abweichen.
+
+## Tracking-Änderung vom 27. November
+
+Die statische XR-Prüfung senkt ab 10°/s die Konfidenz und erreicht bei 32°/s ihre obere Winkelschwelle. Für getragene Objekte gelten jetzt **40/108°/s** im XR-Pfad und **46/125°/s** mit optischer Referenz, zuvor 28/95 und 36/110. Die lineare Kopfgeschwindigkeit geht zusätzlich ein. Bei einer reinen Kopfdrehung von 35°/s liegt der statische Pfad bereits über seiner Grenze, der XR-Pfad für getragene Objekte noch unter seiner ersten Winkelschwelle. So bleiben plausible Beobachtungen bei schnelleren Kopfbewegungen verwertbar. Ein Gerätetest sollte neben akzeptierten Beobachtungen auch Positionssprünge bei vergleichbarer Kopfgeschwindigkeit zählen.
+
+## Implementierung
+
+Lokaler Tracking-Stand `c6cb24a` · 2026-11-27. `src/rig.mjs` · `src/motion-guard.mjs` · `examples/quest.mjs`
+
+Prüflauf im Repository · `node --test tests/rig-runtime.test.mjs tests/motion-guard.test.mjs`

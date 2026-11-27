@@ -5,17 +5,28 @@ subtitle: "Technical paper series"
 
 **English** · [Deutsch](uebersicht.html){hreflang=de lang=de}
 
-The series follows a measurement from the corners of a tag in a camera image to its motion in WebXR space. Each paper addresses a physical question, derives the equations used by the implementation and shows how to check the result. The calibration paper is available as a draft. The remaining seven entries are proposed topics. Each diagram will be checked against the implementation before its paper is written.
+The series follows a measurement from the corners of a tag in a camera image to its motion in WebXR space. Each paper addresses a physical question, derives the equations used by the implementation and shows how to check the result. All eight chapters are available as working drafts. The tracking chapters describe local revision `c6cb24a` of 27 November 2026. Chapters 05 and 08 also include the local changes to interaction and perimeter visibility made after that commit.
 
 | Diagram | Question |
 |---|---|
 | **01 · [Calibration](01-calibration.html)** | How can head motion around a stationary target reveal both the rigid camera-to-head transform and the time offset between the camera and WebXR? |
-| **02 · World origin** | When do optical estimates of the target’s position and orientation agree closely enough to establish an XR anchor? |
-| **03 · Single-tag tracking** | How do four image corners and a known edge length determine a metric pose? How can the tracker detect an implausible jump? |
-| **04 · Multi-tag tracking** | How should the detector allocate search windows and processing time across tags that differ in speed and visibility? |
-| **05 · Hand coupling** | How can a measured hand-to-object offset carry the object pose forward, and when does the rigid-coupling assumption break down? |
-| **06 · Prediction** | How far can position and orientation be extrapolated from recent optical poses while waiting for the next observation? |
-| **07 · Trajectory correction** | How does a new optical pose correct the end of a predicted trajectory segment, and how is the correction distributed over earlier points? |
-| **08 · Perimeter** | How do markers on a tabletop define the vertices of a spatial boundary, and how does uncertainty in one vertex affect its outline? |
+| **02 · [World origin](02-world-origin.html)** | When do optical estimates of the target’s position and orientation agree closely enough to establish an XR anchor? |
+| **03 · [Single-tag tracking](03-single-tag.html)** | How do four image corners and a known edge length determine a metric pose? How can the tracker detect an implausible jump? |
+| **04 · [Multi-tag tracking](04-multi-tag-focus.html)** | How should the detector allocate search windows and processing time across tags that differ in speed and visibility? |
+| **05 · [Hand coupling](05-hand-coupling.html)** | How can a measured hand-to-object offset carry the object pose forward, and when does the rigid-coupling assumption break down? |
+| **06 · [Prediction](06-prediction.html)** | How far can position and orientation be extrapolated from recent optical poses while waiting for the next observation? |
+| **07 · [Trajectory correction](07-trajectory-correction.html)** | How does a new optical pose correct the end of a predicted trajectory segment, and how is the correction distributed over earlier points? |
+| **08 · [Perimeter](08-perimeter.html)** | How do markers on a tabletop define the vertices of a spatial boundary, and how does uncertainty in one vertex affect its outline? |
 
 The [diagram collection](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/diagrams.md) shows how the modules fit together. [How Quest 3 finds a moving AprilTag again](index.html) connects several of them using a pendulum as an example.
+
+## Tracking update · 27 November 2026
+
+| Change in the local revision | Where to read the details |
+|---|---|
+| Focused submissions move from the old 28 Hz ceiling to 60 Hz. Foreground crops and periodic wide sweeps have different costs. | [Camera cadence, detection time and hits per tag](04-multi-tag-focus.html) |
+| Carried tags tolerate faster head turns. The optical predictor stays active during hand coupling and takes over at release. | [Motion gates](03-single-tag.html) · [Hand-to-optical handover](05-hand-coupling.html) |
+| A 100 ms old observation at 1 m/s advances 90 mm under the current predictor, previously 72 mm. | [Prediction equations and limits](06-prediction.html) |
+| Removal of a missing perimeter marker depends on effective image resolution, ROI coverage and time in view. | [Perimeter visibility](08-perimeter.html) |
+
+The rates above are configuration limits. The recorded hardware benchmark of 89–90 FPS covers the XR anchor loop. A before/after Quest measurement of fresh optical hits per second is still outstanding.

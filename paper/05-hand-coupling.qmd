@@ -1,0 +1,28 @@
+---
+lang: en
+title: "When the hand can carry the tag pose"
+subtitle: "Diagram 05 · Working draft"
+---
+
+**English** · [Deutsch](05-handkopplung.html){hreflang=de lang=de} · [Paper overview](overview.html)
+
+A hand passing near a tag can look like a grasp in a single image. Coupling therefore compares **changes in pose** across time. The application aligns the hand history with the optical capture and estimates the tag relative to the hand $B$ in the target frame $L$.
+
+$$X=T_{L\leftarrow B}(t_i)^{-1}T_{L\leftarrow T}(t_i),\qquad
+\hat T_{L\leftarrow T}(t)=T_{L\leftarrow B}(t)\,X.$$
+
+A rigid grasp should keep $X$ approximately constant. Typical evidence includes at least 22 mm of positional excitation or 12° of rotation, together with checks on grip geometry and motion coherence. The translational motion-ratio window is 0.55–1.65. The lever arm matters because rotating the hand can translate a tag at the end of a stick even when the palm barely moves.
+
+## Following and releasing
+
+While coupled, the XR hand drives the display between optical observations. The newer fast path also samples the hand at the target ROI time, while optical observations keep the independent tag predictor warm. On a normal release, the display can hand over to this predictor. The previous display-to-prediction offset decays over successive XR frames. Timeout and watchdog paths can return to the last optical pose. A 500 ms post-release search boost enlarges the ROI to help find the freely moving tag.
+
+The local action controls use a separate rest test. Finger-proximity checks for recording and marking run for visible, uncoupled tags whose display pose has remained within 12 mm and about 8° for 500 ms. This avoids probing action buttons on moving objects.
+
+**Check.** Compare a tag carried by a pinched hand, a hand passing over a stationary tag, and a release while the object is still moving. Record the last hand-driven pose, the first optical pose and their time difference. The continuity of the displayed pose and the time of the next independent optical hit measure different things.
+
+## Implementation
+
+Local working tree, including interaction changes after `c6cb24a` · 2026-11-27. `src/tag-tap.mjs` · `src/hand-coupling.mjs` · `src/tag-predictor.mjs` · `examples/quest.mjs`
+
+Run from the repository root · `node --test tests/hand-coupling.test.mjs tests/tag-predictor.test.mjs tests/tag-tap.test.mjs`

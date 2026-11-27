@@ -2,7 +2,7 @@ flowchart LR
   classDef once fill:#fde68a,stroke:#b45309,color:#000
   classDef live fill:#bfdbfe,stroke:#1d4ed8,color:#000
   classDef out fill:#bbf7d0,stroke:#15803d,color:#000
-  CAM["Passthrough camera<br/>no K, ~50 ms delay"]:::live
+  CAM["Passthrough camera<br/>image and capture timestamp"]:::live
   DET["AprilTag WASM<br/>image corners"]:::live
   CAL["1 Calibration<br/>K, viewerFromCameraGL, timeOffset"]:::once
   ORI["2 Origin Lock<br/>L-angle 350/351/352 → XRAnchor"]:::once

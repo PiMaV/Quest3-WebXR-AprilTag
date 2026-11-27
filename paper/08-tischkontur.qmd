@@ -1,0 +1,31 @@
+---
+lang: de
+title: "Wann ein fehlender Perimetermarker die Tischkontur ändern darf"
+subtitle: "Fachdiagramm 08 · Arbeitsfassung"
+---
+
+[English](08-perimeter.html){hreflang=en lang=en} · **Deutsch** · [Kapitelübersicht](uebersicht.html)
+
+Die Bestätigung von Tag 353 aktiviert den Perimeter aus L-Winkel und den Markern 353–359. Eine aus Kamerazentrum $c$ beobachtete Markerposition $p$ lässt sich entlang des Sehstrahls auf die Tischebene $z=0$ projizieren.
+
+$$q=c+\lambda(p-c),\qquad\lambda=\frac{c_z}{c_z-p_z}.$$
+
+Die Implementierung begrenzt Höhe, Strahlneigung und horizontale Korrektur. Ist die Strahlprojektion unzuverlässig, verwendet sie $(p_x,p_y,0)$. Die vorgegebene Markerreihenfolge bestimmt die Polygonkanten. Position und Gierwinkel werden geglättet. Ein Sprung über 15 cm innerhalb von 500 ms erfordert eine weitere Beobachtung im Abstand von höchstens 6 cm zur vorgeschlagenen neuen Position.
+
+## War ein fehlender Marker tatsächlich erkennbar?
+
+Nach Dezimierung kann selbst eine Vollbildsuche einen schräg gesehenen Tag verfehlen. Die neue Prüfung schätzt die **kurze projizierte Kante in Detektorpixeln**
+
+$$b_{\mathrm{kurz}}\approx\frac{s\min(f_x,f_y)}{z}\frac{\cos\phi}{d}.$$
+
+Dabei ist $s$ die physische Kantenlänge, $z$ die optische Tiefe, $\phi$ der Winkel zwischen Tischnormale und Blicklinie und $d$ der Dezimierungsfaktor. Bei $s=20$ mm, $f=880$ px, $z=0{,}8$ m, $\cos\phi=0{,}7$ und $d=2$ ergeben sich 7,7 px. Die lokale Schwelle beträgt 7 px. Die Ansicht besteht damit die Größenprüfung. Bei Dezimierung 3 ergeben sich nur 5,1 px. Liegt das projizierte Zentrum mindestens 12 px innerhalb einer vorgegebenen Suchregion (Prior-ROI), setzt das Sichtbarkeitsmodell wegen der Verfeinerung dort $d=1$.
+
+Zusätzlich prüft die Anwendung Abstand, Blickwinkel, Bildrandreserve und eine ins Bild projizierte Totzone von 4 cm. Die Bildrandreserve je Achse beträgt mindestens 64 px oder 8 % der jeweiligen Bilddimension, je nachdem, was größer ist, zuzüglich der projizierten Totzone. Frische breite Suchen und Vollbild-Rückfallsuchen können ab 0,55 Konfidenz Fehlbelege liefern. Frames mit Dezimierung über 2 ohne Prior-ROIs sind ausgeschlossen. Erfolgreiche reine ROI-Suchen und eingefrorene Bilder werden übersprungen. Handverdeckung oder unzureichende Sichtbarkeit setzen die Fehlhistorie des betroffenen Markers zurück. Erst **mindestens acht qualifizierte Fehlbeobachtungen und mindestens 2,5 s** seit dem ersten gezählten Fehlschlag erlauben das Entfernen. Kurzes Wegsehen hat damit eine andere Wirkung als eine längere, klare Sicht auf eine inzwischen leere Markerposition.
+
+**Prüfung.** Bei gleichen Kameraposen die Dezimierung variieren und Handverdeckung simulieren. Ein abwesender Tag darf erst aus der Kontur fallen, wenn beide Fehlerschwellen unter geeigneten Sichtbedingungen erreicht sind.
+
+## Implementierung
+
+Lokaler Arbeitsstand einschließlich Perimeteränderungen nach `c6cb24a` · 2026-11-27. `src/perimeter-fence.mjs` · `examples/quest.mjs`
+
+Prüflauf im Repository · `node --test tests/perimeter-fence.test.mjs`

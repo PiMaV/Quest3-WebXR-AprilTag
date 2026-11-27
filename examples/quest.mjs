@@ -2,7 +2,7 @@ import * as THREE from '../vendor/three/three.module.js';
 import {
   createReferenceCamera,createCalibrationAssistant,createLAnchorController,deviceIdentity,
   createObservationBuffer,fitPlanarPose,solveSingleTagPose,requiredTagEdgeMm,product,inverse,cvToGL,meanRigid,rigidVector,
-  xrExitPressed,nextExitHold,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos,computeHoverCardLayout,computePinPillPositions,HOVER_CALLOUT_DEFAULTS,
+  xrExitPressed,nextExitHold,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos,createTagRestState,resetTagRestState,updateTagRestState,evaluateTagActionPills,computeHoverCardLayout,computePinPillPositions,HOVER_CALLOUT_DEFAULTS,
   viewerVelocityAt,resolveCameraInL,evaluateMotionGate,evaluateCarriedJumpGuard,CARRIED_MOTION_GATE_DEFAULTS,
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
@@ -4115,6 +4115,7 @@ function createMovableTool(tagId,edgeMm){
     handCoupled:false,coupledHand:null,coupledStepCount:0,measureModeApplied:false,measureSyncedPose:null,lastCoupledStepAtMs:0,postReleaseBoostUntilMs:0,releaseSpeedMps:0,pendingTrail:createCoupledTrailBuffer(),
     recentPoses:[],recording:false,lastRecLineMatrix:null,lastRecFrameMatrix:null,lastRecAtMs:0,
     markHoldSince:null,markHoldConsumed:false,recHoldSince:null,recHoldConsumed:false,recOrbPosL:[0,0,0],markOrbPosL:[0,0,0],
+    pillRestState:createTagRestState(),
   };
   drawLiveBadge(entry,'settling',false);
   drawRecOrbPill(entry,false,false);
@@ -4974,7 +4975,11 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
   const MARK_HOLD_MS=400;
 
   for(const entry of movableTools.values()){
-    if(!entry.visible||!entry.displayMatrix)continue;
+    if(!entry.visible||!entry.displayMatrix){
+      resetTagRestState(entry.pillRestState);
+      continue;
+    }
+    const rest=updateTagRestState(entry.pillRestState,entry.displayMatrix,now,{handCoupled:entry.handCoupled});
     const tx=entry.displayMatrix[12],ty=entry.displayMatrix[13],tz=entry.displayMatrix[14];
     // [● REC / ■ STOP] sits 6.8 cm above the tag; [⏱ MARK] sits 6.8 cm below anywhere in 3D space (tabletop fallback only if flat on wood).
     const ox=tx+upL[0]*0.068,oy=ty+upL[1]*0.068,oz=tz+upL[2]*0.068;
@@ -4992,20 +4997,28 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
     entry.markOrbPosL=[mx,my,mz];
 
     let minTagDist=Infinity,minOrbDist=Infinity,minMarkDist=Infinity;
-    for(const pr of probes){
-      // Never let the hand currently carrying this tag trigger an accidental MARK or REC poke.
-      const carryingThis=pr.kind==='hand'&&tagHandCoupler.isHandCarrying(pr.handedness,entry.tagId);
-      if(carryingThis)continue;
-      const dt=Math.hypot(tx-pr.pos[0],ty-pr.pos[1],tz-pr.pos[2]);
-      if(dt<minTagDist)minTagDist=dt;
-      const doOrb=Math.hypot(ox-pr.pos[0],oy-pr.pos[1],oz-pr.pos[2]);
-      if(doOrb<minOrbDist)minOrbDist=doOrb;
-      const doMark=Math.hypot(mx-pr.pos[0],my-pr.pos[1],mz-pr.pos[2]);
-      if(doMark<minMarkDist)minMarkDist=doMark;
-      recordProbeProximity(pr.probeId,Math.min(dt,doOrb,doMark));
+    if(rest.isResting&&!entry.handCoupled){
+      for(const pr of probes){
+        const dt=Math.hypot(tx-pr.pos[0],ty-pr.pos[1],tz-pr.pos[2]);
+        if(dt<minTagDist)minTagDist=dt;
+        const doOrb=Math.hypot(ox-pr.pos[0],oy-pr.pos[1],oz-pr.pos[2]);
+        if(doOrb<minOrbDist)minOrbDist=doOrb;
+        const doMark=Math.hypot(mx-pr.pos[0],my-pr.pos[1],mz-pr.pos[2]);
+        if(doMark<minMarkDist)minMarkDist=doMark;
+        const nearest=entry.recording?Math.min(dt,doOrb):Math.min(dt,doOrb,doMark);
+        recordProbeProximity(pr.probeId,nearest);
+      }
     }
 
-    const showOrb=entry.recording||entry.handCoupled||((entry.lockState==='locked'||entry.currentPose)&&(minTagDist<0.18||minOrbDist<0.14));
+    const {showRec:showOrb,showMark}=evaluateTagActionPills({
+      isResting:rest.isResting,
+      handCoupled:entry.handCoupled,
+      recording:entry.recording,
+      hasPose:Boolean(entry.displayMatrix),
+      minTagDist,
+      minRecDist:minOrbDist,
+      minMarkDist,
+    });
     entry.recOrbVisible=showOrb;
     const orbHot=showOrb&&minOrbDist<0.042;
     const orbScale=entry.recording?entry.recOrbScale:(orbHot?1.35:1.0);
@@ -5024,7 +5037,6 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       badgeMesh.setQuadVisible(entry.recPillSlot,false);
     }
 
-    const showMark=!entry.recording&&Boolean(entry.displayMatrix)&&(entry.handCoupled||minTagDist<0.22||minMarkDist<0.16);
     entry.markOrbVisible=showMark;
     const markHot=showMark&&minMarkDist<0.042;
     const markScale=markHot?1.35:1.0;
@@ -5838,6 +5850,7 @@ function observeExtraTags(observation,sample,assoc){
         confidence:staticGate.confidence,
         occludedIds,
         decimate:effDec,
+        priorRois:sample.settings?.priorRois??null,
       });
       if(pruned?.removed?.length){
         if(perimeterFence.dynamicCount()<7)perimeterCompleteAnnounced=false;

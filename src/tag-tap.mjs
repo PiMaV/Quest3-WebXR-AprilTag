@@ -92,3 +92,128 @@ export function projectIndexSelectorPos(tipPos, refProximalPos, offsetM = INDEX_
   }
   return [tipPos[0], tipPos[1], tipPos[2]];
 }
+
+/**
+ * Defaults for minimalist live-tag action pill visibility ([● REC / ■ STOP] & [⏱ MARK]).
+ * Pills stay hidden while moving, while hand-coupled, and until a finger approaches a resting tag.
+ */
+export const TAG_ACTION_PILL_DEFAULTS = {
+  minRestMs: 500,
+  maxRestPosDispM: 0.012,
+  minRestAxisDot: 0.99, // ~8.1 deg orientation tolerance across normal & in-plane yaw
+  tagNearM: 0.16,
+  pillNearM: 0.12,
+};
+
+export function createTagRestState() {
+  return { anchorPos: null, anchorX: null, anchorZ: null, sinceMs: null };
+}
+
+export function resetTagRestState(state) {
+  if (!state) return;
+  state.anchorPos = null;
+  state.anchorX = null;
+  state.anchorZ = null;
+  state.sinceMs = null;
+}
+
+/**
+ * Track whether a movable AprilTag has remained stationary (un-coupled and within
+ * tight 6DOF displacement tolerances) for at least `minRestMs` (default 500 ms).
+ */
+export function updateTagRestState(
+  state,
+  tagMatrix,
+  nowMs,
+  {
+    handCoupled = false,
+    minRestMs = TAG_ACTION_PILL_DEFAULTS.minRestMs,
+    maxRestPosDispM = TAG_ACTION_PILL_DEFAULTS.maxRestPosDispM,
+    minRestAxisDot = TAG_ACTION_PILL_DEFAULTS.minRestAxisDot,
+  } = {},
+) {
+  if (!state) return { isResting: false, restingMs: 0 };
+  if (
+    handCoupled ||
+    !tagMatrix ||
+    tagMatrix.length < 15 ||
+    !Number.isFinite(nowMs) ||
+    !Number.isFinite(tagMatrix[12]) ||
+    !Number.isFinite(tagMatrix[13]) ||
+    !Number.isFinite(tagMatrix[14])
+  ) {
+    resetTagRestState(state);
+    return { isResting: false, restingMs: 0 };
+  }
+
+  const tx = tagMatrix[12];
+  const ty = tagMatrix[13];
+  const tz = tagMatrix[14];
+  const xx = tagMatrix[0];
+  const xy = tagMatrix[1];
+  const xz = tagMatrix[2];
+  const zx = tagMatrix[8];
+  const zy = tagMatrix[9];
+  const zz = tagMatrix[10];
+
+  if (!state.anchorPos || state.sinceMs == null) {
+    state.anchorPos = [tx, ty, tz];
+    state.anchorX = [xx, xy, xz];
+    state.anchorZ = [zx, zy, zz];
+    state.sinceMs = nowMs;
+    return { isResting: false, restingMs: 0 };
+  }
+
+  const posDisp = Math.hypot(
+    tx - state.anchorPos[0],
+    ty - state.anchorPos[1],
+    tz - state.anchorPos[2],
+  );
+  const xDot =
+    xx * state.anchorX[0] +
+    xy * state.anchorX[1] +
+    xz * state.anchorX[2];
+  const zDot =
+    zx * state.anchorZ[0] +
+    zy * state.anchorZ[1] +
+    zz * state.anchorZ[2];
+
+  if (posDisp > maxRestPosDispM || xDot < minRestAxisDot || zDot < minRestAxisDot) {
+    state.anchorPos = [tx, ty, tz];
+    state.anchorX = [xx, xy, xz];
+    state.anchorZ = [zx, zy, zz];
+    state.sinceMs = nowMs;
+    return { isResting: false, restingMs: 0 };
+  }
+
+  const restingMs = Math.max(0, nowMs - state.sinceMs);
+  return { isResting: restingMs >= minRestMs, restingMs };
+}
+
+/**
+ * Decide whether a movable tag's [● REC / ■ STOP] and [⏱ MARK] action pills should be visible.
+ * Enforces minimalism: never shown while hand-coupled or moving; requires resting >= 500 ms
+ * AND fingertip proximity. Active recording hides [■ STOP] during motion and reveals it again
+ * only once the tag rests and a finger approaches.
+ */
+export function evaluateTagActionPills({
+  isResting = false,
+  handCoupled = false,
+  recording = false,
+  hasPose = false,
+  minTagDist = Infinity,
+  minRecDist = Infinity,
+  minMarkDist = Infinity,
+  tagNearM = TAG_ACTION_PILL_DEFAULTS.tagNearM,
+  pillNearM = TAG_ACTION_PILL_DEFAULTS.pillNearM,
+} = {}) {
+  if (!hasPose || handCoupled || !isResting) {
+    return { showRec: false, showMark: false };
+  }
+  const nearRec = minTagDist < tagNearM || minRecDist < pillNearM;
+  const nearMark = minTagDist < tagNearM || minMarkDist < pillNearM;
+  return {
+    showRec: nearRec,
+    showMark: !recording && nearMark,
+  };
+}

@@ -1,0 +1,31 @@
+---
+lang: en
+title: "When a missing perimeter marker should change the boundary"
+subtitle: "Diagram 08 · Working draft"
+---
+
+**English** · [Deutsch](08-tischkontur.html){hreflang=de lang=de} · [Paper overview](overview.html)
+
+A confirmed tag 353 enables the perimeter defined by the L-shaped target and markers 353–359. A marker position $p$ observed from camera centre $c$ can be projected onto the tabletop $z=0$ along its viewing ray:
+
+$$q=c+\lambda(p-c),\qquad\lambda=\frac{c_z}{c_z-p_z}.$$
+
+The implementation bounds the height, ray slope and horizontal correction. If projection is unreliable it uses $(p_x,p_y,0)$. Known marker order determines the polygon edges. Position and yaw updates are smoothed. A jump above 15 cm within 500 ms requires a confirming observation within 6 cm of the proposed new position.
+
+## Was the missing marker actually observable?
+
+A full-frame search can miss an oblique tag after the image is decimated. The revised check estimates the **short projected edge in detector pixels**
+
+$$b_{\mathrm{minor}}\approx\frac{s\min(f_x,f_y)}{z}\frac{\cos\phi}{d},$$
+
+where $s$ is the physical tag edge, $z$ is optical depth, $\phi$ is the angle from the table normal to the viewing direction, and $d$ is the decimation factor. At $s=20$ mm, $f=880$ px, $z=0.8$ m, $\cos\phi=0.7$ and $d=2$, the expected edge is 7.7 px. The local threshold is 7 px, so this view clears the size check. At decimation 3 the estimate drops to 5.1 px. For a projected centre at least 12 px inside a prior ROI, the visibility model uses $d=1$ to account for the refinement pass.
+
+The visibility check also requires a suitable camera distance and angle, an image-border margin and an additional projected 4 cm dead zone. The border reserve on each axis is the larger of 64 px and 8% of the respective image dimension, plus the projected dead zone. Fresh wide observations and full-frame fallbacks can provide evidence when confidence reaches 0.55. Frames with decimation above 2 and no prior ROIs are excluded. Successful ROI-only searches and frozen frames are skipped. Hand occlusion or failed visibility checks reset the affected marker’s miss history. Pruning needs **at least eight eligible misses and at least 2.5 s** since the first counted miss. A brief glance away therefore has different consequences from observing an empty, clearly visible marker location.
+
+**Check.** With the same recorded poses, vary decimation and simulate hand occlusion. An absent tag should leave the polygon only after both miss thresholds are met under observable conditions.
+
+## Implementation
+
+Local working tree, including perimeter changes after `c6cb24a` · 2026-11-27. `src/perimeter-fence.mjs` · `examples/quest.mjs`
+
+Run from the repository root · `node --test tests/perimeter-fence.test.mjs`

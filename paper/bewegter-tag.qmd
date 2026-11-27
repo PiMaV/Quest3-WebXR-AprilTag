@@ -19,6 +19,8 @@ abstract: |
 
 [Zur Übersicht der acht Fachdiagramme und Kurzpaper](uebersicht.html)
 
+**Versionshinweis.** Das folgende Pendelexperiment bildet v1.2.0 ab. Die aktuellen Kapitel zu [Mehrmarker-Suche](04-mehrmarker-fokus.html), [Handkopplung](05-handkopplung.html) und [Prädiktion](06-praediktion.html) erklären den neuen Suchplan, die Freigabe und den geänderten Vorlauf.
+
 ![Zwei Datenströme liefern einen ortsfesten Ursprung und bewegte Objektposen. Der gestrichelte Pfeil führt das aus der Objektpose berechnete Suchfenster (Region of Interest, ROI) zum Detektor zurück.](assets/graphical-abstract.svg){#fig-architecture width=100% fig-alt="Kamerabild und Kopfpose werden über AprilTag-Detektion, Kalibrierung und Zeitabgleich zusammengeführt. Ein nativer Anker trägt den Ursprung. Die Objektpose steuert die nächste Suchregion."}
 
 ## Vom Kamerabild zum Raumursprung

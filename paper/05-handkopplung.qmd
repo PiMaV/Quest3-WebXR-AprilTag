@@ -1,0 +1,28 @@
+---
+lang: de
+title: "Wann die Hand die Tagpose fortschreiben kann"
+subtitle: "Fachdiagramm 05 · Arbeitsfassung"
+---
+
+[English](05-hand-coupling.html){hreflang=en lang=en} · **Deutsch** · [Kapitelübersicht](uebersicht.html)
+
+Eine über den Tag streichende Hand kann in einem Einzelbild wie ein Griff aussehen. Die Kopplung vergleicht deshalb **Poseänderungen** über die Zeit. Dazu ordnet die Anwendung die Handhistorie der optischen Aufnahmezeit zu und schätzt die Tagpose relativ zur Hand $B$ im Bezugssystem $L$.
+
+$$X=T_{L\leftarrow B}(t_i)^{-1}T_{L\leftarrow T}(t_i),\qquad
+\hat T_{L\leftarrow T}(t)=T_{L\leftarrow B}(t)\,X.$$
+
+Bei einem starren Griff bleibt $X$ annähernd konstant. Als Bewegungsanregung dienen beispielsweise mindestens 22 mm Translation oder 12° Rotation. Hinzu kommen Prüfungen der Griffgeometrie und der gemeinsamen Bewegung. Für das translatorische Bewegungsverhältnis gilt das Fenster 0,55–1,65. Der Hebelarm ist relevant, weil eine Drehung der Hand den Tag am Ende eines Stabs versetzen kann, auch wenn die Handfläche fast am selben Ort bleibt.
+
+## Mitführen und Loslassen
+
+Während der Kopplung treibt die XR-Hand die Anzeige zwischen optischen Messungen. Der neue Fokuspfad fragt die Handhistorie zusätzlich zur Zielzeit des Suchfensters ab. Parallel aktualisieren optische Beobachtungen den separaten Tagprädiktor. Bei regulärer Freigabe kann dieser die Anzeige übernehmen. Die Abweichung zwischen bisheriger Anzeige und Vorhersage klingt über mehrere XR-Frames ab. Bei Zeitüberschreitung oder ausgelöster Schutzprüfung kann die Anzeige zur letzten optischen Pose zurückkehren. Für 500 ms nach der Freigabe wird das Suchfenster vergrößert, um den frei bewegten Tag wiederzufinden.
+
+Die lokalen Bedienelemente nutzen eine eigene Ruheprüfung. Die Fingerabstände für Aufnahme und Markierung werden bei sichtbaren, ungekoppelten Tags geprüft, deren Anzeigepose für 500 ms innerhalb von 12 mm und rund 8° blieb. Damit entfallen diese Abstandsprüfungen an bewegten Objekten.
+
+**Prüfung.** Einen gegriffenen Tag, eine über einen ruhenden Tag streichende Hand und die Freigabe eines noch bewegten Tags vergleichen. Letzte handgeführte Pose, erste optische Pose und Zeitdifferenz erfassen. Sichtbare Kontinuität und Zeitpunkt des nächsten unabhängigen optischen Treffers beantworten unterschiedliche Fragen.
+
+## Implementierung
+
+Lokaler Arbeitsstand einschließlich Interaktionsänderungen nach `c6cb24a` · 2026-11-27. `src/tag-tap.mjs` · `src/hand-coupling.mjs` · `src/tag-predictor.mjs` · `examples/quest.mjs`
+
+Prüflauf im Repository · `node --test tests/hand-coupling.test.mjs tests/tag-predictor.test.mjs tests/tag-tap.test.mjs`

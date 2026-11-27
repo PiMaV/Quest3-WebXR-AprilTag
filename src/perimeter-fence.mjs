@@ -208,11 +208,12 @@ export function isTablePointObservableInCamera(posL, lFromCamera, K, {
   minDistM = 0.22,
   maxDistM = 1.30,
   minCosView = 0.50,
-  borderMarginFrac = 0.10,
-  minBorderMarginPx = 72,
+  borderMarginFrac = 0.08,
+  minBorderMarginPx = 64,
   deadZoneM = 0.04,
-  minExpectedMinorPx = 11,
+  minExpectedMinorPx = 7.0,
   decimate = 1,
+  priorRois = null,
   tagEdgeM = 0.020,
 } = {}) {
   if (
@@ -247,13 +248,6 @@ export function isTablePointObservableInCamera(posL, lFromCamera, K, {
   const zCV = -(lFromCamera[8] * dx + lFromCamera[9] * dy + lFromCamera[10] * dz);
   if (!Number.isFinite(zCV) || zCV < minDistM || zCV > maxDistM) return false;
 
-  // Check foreshortened minor axis AFTER detector decimation so far or oblique tags
-  // that AprilTag cannot reliably decode on this frame are never falsely pruned.
-  const effDecimate = Number.isFinite(decimate) && decimate >= 1 ? decimate : 1;
-  const expectedEdgePx = (tagEdgeM * Math.min(K.fx, K.fy)) / zCV;
-  const expectedMinorPx = (expectedEdgePx * cosView) / effDecimate;
-  if (!Number.isFinite(expectedMinorPx) || expectedMinorPx < minExpectedMinorPx) return false;
-
   const u = K.fx * (xCV / zCV) + K.cx;
   const v = K.fy * (yCV / zCV) + K.cy;
   if (!Number.isFinite(u) || !Number.isFinite(v)) return false;
@@ -265,7 +259,18 @@ export function isTablePointObservableInCamera(posL, lFromCamera, K, {
     : 0;
   const marginX = Math.max(minBorderMarginPx, K.width * borderMarginFrac) + deadZonePx;
   const marginY = Math.max(minBorderMarginPx, K.height * borderMarginFrac) + deadZonePx;
-  return u >= marginX && u <= K.width - marginX && v >= marginY && v <= K.height - marginY;
+  if (u < marginX || u > K.width - marginX || v < marginY || v > K.height - marginY) return false;
+
+  // Check foreshortened minor axis AFTER detector decimation so far or oblique tags
+  // that AprilTag cannot reliably decode on this frame are never falsely pruned.
+  // If a two-stage priorRoi covered this marker's pixel position, it was refined at decimate = 1.
+  const inPriorRoi = Array.isArray(priorRois) && priorRois.some(
+    (b) => Array.isArray(b) && b.length >= 4 && u >= b[0] + 12 && u <= b[2] - 12 && v >= b[1] + 12 && v <= b[3] - 12,
+  );
+  const effDecimate = inPriorRoi ? 1 : (Number.isFinite(decimate) && decimate >= 1 ? decimate : 1);
+  const expectedEdgePx = (tagEdgeM * Math.min(K.fx, K.fy)) / zCV;
+  const expectedMinorPx = (expectedEdgePx * cosView) / effDecimate;
+  return Number.isFinite(expectedMinorPx) && expectedMinorPx >= minExpectedMinorPx;
 }
 
 export function createPerimeterFence(rig, {
@@ -275,17 +280,17 @@ export function createPerimeterFence(rig, {
   jumpDistanceM = 0.15,
   jumpWindowMs = 500,
   jumpConfirmM = 0.06,
-  missingFramesToRemove = 10,
-  missingMsToRemove = 3500,
+  missingFramesToRemove = 8,
+  missingMsToRemove = 2500,
   minGraceAfterSeenMs = 500,
-  minRemoveConfidence = 0.65,
+  minRemoveConfidence = 0.55,
   inViewMinDistM = 0.22,
   inViewMaxDistM = 1.30,
   inViewMinCosView = 0.50,
-  inViewBorderMarginFrac = 0.10,
-  inViewMinBorderMarginPx = 72,
+  inViewBorderMarginFrac = 0.08,
+  inViewMinBorderMarginPx = 64,
   inViewDeadZoneM = 0.04,
-  inViewMinExpectedMinorPx = 11,
+  inViewMinExpectedMinorPx = 7.0,
   tagEdgeM = 0.020,
 } = {}) {
   let anchors = extractRigAnchors(rig);
@@ -482,6 +487,7 @@ export function createPerimeterFence(rig, {
     deadZoneM: inViewDeadZoneM,
     minExpectedMinorPx: inViewMinExpectedMinorPx,
     decimate: 1,
+    priorRois: null,
     tagEdgeM,
   };
 
@@ -493,6 +499,7 @@ export function createPerimeterFence(rig, {
     confidence = 1,
     occludedIds = null,
     decimate = 1,
+    priorRois = null,
   } = {}) {
     if (markers.size === 0) {
       return { removed: [], deactivated: false, status: status() };
@@ -502,8 +509,11 @@ export function createPerimeterFence(rig, {
       ? (occludedIds instanceof Set ? occludedIds : new Set(occludedIds))
       : null;
 
+    const effDec = Number.isFinite(decimate) && decimate >= 1 ? decimate : 1;
+    const hasPriors = Array.isArray(priorRois) && priorRois.length > 0;
     if (
       !(confidence >= minRemoveConfidence) ||
+      (effDec > 2 && !hasPriors) ||
       !lFromCamera ||
       !K ||
       !Number.isFinite(atMs)
@@ -518,7 +528,8 @@ export function createPerimeterFence(rig, {
       return { removed: [], deactivated: false, status: status() };
     }
 
-    inViewOpts.decimate = Number.isFinite(decimate) && decimate >= 1 ? decimate : 1;
+    inViewOpts.decimate = effDec;
+    inViewOpts.priorRois = hasPriors ? priorRois : null;
     const toRemove = [];
     for (const [id, m] of markers) {
       if (seenSet.has(id) || occludedSet?.has(id)) {

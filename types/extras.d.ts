@@ -44,6 +44,43 @@ export function projectIndexSelectorPos(
   refProximalPos: ArrayLike<number> | null | undefined,
   offsetM?: number,
 ): Vec3 | null;
+export const TAG_ACTION_PILL_DEFAULTS: {
+  minRestMs: number;
+  maxRestPosDispM: number;
+  minRestAxisDot: number;
+  tagNearM: number;
+  pillNearM: number;
+};
+export interface TagRestState {
+  anchorPos: Vec3 | null;
+  anchorX: Vec3 | null;
+  anchorZ: Vec3 | null;
+  sinceMs: number | null;
+}
+export function createTagRestState(): TagRestState;
+export function resetTagRestState(state: TagRestState | null | undefined): void;
+export function updateTagRestState(
+  state: TagRestState | null | undefined,
+  tagMatrix: ArrayLike<number> | null | undefined,
+  nowMs: number,
+  opts?: {
+    handCoupled?: boolean;
+    minRestMs?: number;
+    maxRestPosDispM?: number;
+    minRestAxisDot?: number;
+  },
+): { isResting: boolean; restingMs: number };
+export function evaluateTagActionPills(opts?: {
+  isResting?: boolean;
+  handCoupled?: boolean;
+  recording?: boolean;
+  hasPose?: boolean;
+  minTagDist?: number;
+  minRecDist?: number;
+  minMarkDist?: number;
+  tagNearM?: number;
+  pillNearM?: number;
+}): { showRec: boolean; showMark: boolean };
 
 // src/tag-callout.mjs
 export const HOVER_CALLOUT_DEFAULTS: {

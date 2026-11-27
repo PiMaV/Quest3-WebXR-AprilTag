@@ -22,7 +22,7 @@ flowchart LR
   classDef once fill:#fde68a,stroke:#b45309,color:#000
   classDef live fill:#bfdbfe,stroke:#1d4ed8,color:#000
   classDef out fill:#bbf7d0,stroke:#15803d,color:#000
-  CAM["Passthrough camera<br/>no K, ~50 ms delay"]:::live
+  CAM["Passthrough camera<br/>image and capture timestamp"]:::live
   DET["AprilTag WASM<br/>image corners"]:::live
   CAL["1 Calibration<br/>K, viewerFromCameraGL, timeOffset"]:::once
   ORI["2 Origin Lock<br/>L-angle 350/351/352 → XRAnchor"]:::once
@@ -69,16 +69,19 @@ flowchart TD
 
 `src/anchor.mjs`, `src/anchor-audit.mjs`.
 
+Technical paper · [English](../paper/02-world-origin.qmd) | [Deutsch](../paper/02-raumursprung.qmd)
+
 ```mermaid
 flowchart TD
   OBS["Observation 350/351/352<br/>camera frame"] --> ASSOC["associateAnchorCapture<br/>interpolate XR pose at t_cap + Δt"]
   ASSOC --> EQ["worldFromL =<br/>worldFromViewer(t+Δt) × viewerFromCameraGL × cameraFromL"]
-  EQ --> COL{"createStableLCollector<br/>≥5 samples, span ≥1 s<br/>spread ≤5 mm / ≤1.5°<br/>RMS ≤1 px"}
+  EQ --> COL{"createStableLCollector<br/>≥5 samples, span ≥1 s<br/>spread ≤5 mm / ≤1.5°<br/>RMS ≤1 px default / 1.15 px demo"}
   COL -- unstable --> OBS
   COL -- stable --> MED["Median pose"]
   MED --> ANC["frame.createAnchor(rigid)"]
-  ANC --> STOP["Stop camera"]
-  STOP --> POSE["frame.getPose(anchorSpace)<br/>→ 90 FPS, no optical fallback"]
+  ANC --> POSE["Read anchor pose each XR frame"]
+  ANC --> SCAN["SCAN: camera observes tags"]
+  ANC --> MEASURE["MEASURE: camera off"]
   OBS -.-> AUD["anchor-audit<br/>check reprojection against anchor"]
   POSE -.-> AUD
 ```
@@ -86,6 +89,8 @@ flowchart TD
 ## Single Tracking
 
 detection → PnP → time alignment → motion gate (`src/detector.mjs`, `src/motion-guard.mjs`).
+
+Technical paper · [English](../paper/03-single-tag.qmd) | [Deutsch](../paper/03-einzelmarker.qmd)
 
 ```mermaid
 flowchart TD
@@ -95,10 +100,10 @@ flowchart TD
   PNP --> RMS{"Reprojection RMS ok?<br/>Frame evidence: pixels changed?"}
   RMS -- no --> X["discard"]
   RMS -- yes --> T["Time alignment<br/>viewer pose at t_cap + Δt"]
-  T --> G{"Motion gate<br/>head angular/linear velocity<br/>steady 10°/s, max 32°/s"}
-  G -- too fast --> BR["Optical L-bridge<br/>≥3 tags, RMS ≤1 px,<br/>divergence ≤4 cm / 3.5°"]
-  G -- ok --> L
-  BR --> L["lFromTag = inverse(worldFromL) × worldFromViewer × viewerFromCam × cameraFromTag"]
+  T --> BR{"Same-frame optical L available?<br/>3 tags, ≤1 px, within 4 cm / 3.5°"}
+  BR -->|"Use optical L or XR reference"| G{"Motion gate<br/>static or carried head-motion limits"}
+  G -- reject --> X
+  G -- accept --> L["lFromTag = lFromCamera × cameraFromTag"]
   L --> OUT["Tag pose in L-frame"]
 ```
 
@@ -106,27 +111,34 @@ flowchart TD
 
 Movable tags 300–349 (`src/camera.mjs`, `docs/controls.md`).
 
+Technical paper · [English](../paper/04-multi-tag-focus.qmd) | [Deutsch](../paper/04-mehrmarker-fokus.qmd)
+
 ```mermaid
 flowchart TD
-  IDS["Movable tags 300–349"] --> PRIO["Proximity priority<br/>≤45 cm, max 3 active/sibling targets"]
-  PRIO --> ROI["Focus-ROI up to 28 Hz"]
-  subgraph TWO ["Two-stage ROI"]
-    R1["Search: decimate=2<br/>large box"] --> R2["Refine: decimate=1<br/>tight box, corners"]
-    R2 --> R3["Motion-blur retry<br/>decimate=1.5"]
-  end
-  ROI --> R1
-  R3 --> MISS{"Partial miss?"}
-  MISS -- yes --> SWEEP["Recovery sweep"] --> R1
-  MISS -- no --> FRESH["Per tag: pose + timestamp"]
-  HROI["Hand-centered ROI<br/>90 Hz hand position"] --> ROI
-  FRESH --> TTL{"Fresh?<br/>~0.95 s idle / ~1.2 s recording"}
-  TTL -- no --> GONE["Remove tag<br/>(no ghost)"]
-  TTL -- yes --> SHOW["Tag follows live → prediction / coupling"]
+  C["Project tag candidates into camera coordinates"] --> R["Rank by activity and optical-axis angle<br/>20° enter / 26° exit"]
+  R --> M{"Foreground selection"}
+  M -->|"None or more than 3 active"| W["Wide search"]
+  M -->|"1 selected"| F["Single focus"]
+  M -->|"2–3 selected"| G["Multi-focus"]
+  F --> S{"Sweep due or 3 partial misses?"}
+  G --> S
+  S -->|"Yes"| B["Background or recovery sweep"]
+  S -->|"No"| A{"Only resting locked tags?"}
+  A -->|"Yes"| P["Precision ROI with local refinement"]
+  A -->|"No"| Q["Speed-first ROI<br/>large crops d=2, small d=1.5"]
+  Q --> H{"Any crop hit after retries?"}
+  P --> H
+  H -->|"No"| Z["Same-frame full search at d=3"]
+  H -->|"Yes"| U["Report seen IDs and misses to scheduler"]
+  Z --> U
+  B --> U
 ```
 
 ## Hand Coupling
 
 `src/hand-coupling.mjs`.
+
+Technical paper · [English](../paper/05-hand-coupling.qmd) | [Deutsch](../paper/05-handkopplung.qmd)
 
 ```mermaid
 stateDiagram-v2
@@ -134,14 +146,20 @@ stateDiagram-v2
   FREE --> CANDIDATE: Tag <0.30 m from hand<br/>pinch ≤6.5 cm or wand
   CANDIDATE --> COUPLED: Rigid-body coherence<br/>hand/tag motion ratio 0.55–1.65<br/>excitation ≥2.2 cm or ≥12°
   CANDIDATE --> FREE: Pass-over / external push<br/>or >0.9 s
-  COUPLED --> COUPLED: 90 Hz: handFromTag × hand pose<br/>soft adapt α=0.25 on consistent optics
+  COUPLED --> COUPLED: 90 Hz: hand pose × handFromTag<br/>soft adapt α=0.25 on consistent optics
   COUPLED --> FREE: Pinch opens (0 ms)<br/>tag stationary, hand pulls away<br/>drift > watchdog<br/>hand lost 120 ms / optics stale 520 ms
+  note right of COUPLED
+    Optical predictor stays warm. Hand history supplies the ROI pose.
+    Normal release blends back to prediction and widens the ROI for 500 ms.
+  end note
   FREE --> [*]
 ```
 
 ## Prediction
 
 Damped Constant-Velocity 6DOF (`src/tag-predictor.mjs`).
+
+Technical paper · [English](../paper/06-prediction.qmd) | [Deutsch](../paper/06-praediktion.qmd)
 
 ```mermaid
 flowchart TD
@@ -150,14 +168,14 @@ flowchart TD
   DT -- yes --> V["raw velocity<br/>v = Δpos/dt (≤1.8 m/s)<br/>ω = log(inv(prev)×cur)/dt (≤8 rad/s)"]
   V --> REV{"Direction reversal?<br/>v·v_prev < 0"}
   REV -- yes --> A1["α = 1.0"]
-  REV -- no --> A2["α = 0.58"]
+  REV -- no --> A2["α = 0.72"]
   A1 --> EMA["v ← (1−α)v_prev + α·v"]
   A2 --> EMA
   EMA --> ST[("State per tag")]
   ST --> P["predict(tagId, now)<br/>age = now − t_obs"]
   P --> STILL{"Stationary?<br/>v <1.5 cm/s and ω <4°/s"}
   STILL -- yes --> LAST["Last pose"]
-  STILL -- no --> LEAD["lead = min(0.105 s, 0.72·age) · exp(−max(0, age−0.12)/0.085)"]
+  STILL -- no --> LEAD["lead = min(0.120 s, 0.90·age) · exp(−max(0, age−0.12)/0.085)"]
   LEAD --> EXT["pose' = pose × exp(ω·lead)<br/>pos' = pos + v·lead"]
   EXT --> OUT["Rigid lead pose"]
 ```
@@ -165,6 +183,8 @@ flowchart TD
 ## Path Fusion & Smoothing
 
 `src/path-smoother.mjs`.
+
+Technical paper · [English](../paper/07-trajectory-correction.qmd) | [Deutsch](../paper/07-bahnkorrektur.qmd)
 
 ```mermaid
 flowchart LR
@@ -181,13 +201,18 @@ flowchart LR
 
 `src/perimeter-fence.mjs`.
 
+Technical paper · [English](../paper/08-perimeter.qmd) | [Deutsch](../paper/08-tischkontur.qmd)
+
 ```mermaid
 stateDiagram-v2
   [*] --> idle
   idle --> offered: TL 353 discovered
   offered --> active: user confirms
   active --> active: Marker update<br/>table-plane ray projection (z=0)<br/>yaw smoothing τ=65 ms<br/>jump >15 cm within 500 ms accepted only after 6 cm confirmation
+  active --> active: Remove marker after ≥8 eligible misses over ≥2.5 s
   note right of active
+    Check decimated minor edge ≥7 px and border dead zone.
+    Skip focus-only hits and frozen frames. Account for prior ROI coverage.
     Clockwise Polygon:
     350 → 352 → 358 → 353 → 357 → 354
     → 359 → 355 → 356 → 351 → 350

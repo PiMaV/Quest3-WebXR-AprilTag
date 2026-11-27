@@ -5,8 +5,8 @@ flowchart TD
   PNP --> RMS{"Reprojection RMS ok?<br/>Frame evidence: pixels changed?"}
   RMS -- no --> X["discard"]
   RMS -- yes --> T["Time alignment<br/>viewer pose at t_cap + Δt"]
-  T --> G{"Motion gate<br/>head angular/linear velocity<br/>steady 10°/s, max 32°/s"}
-  G -- too fast --> BR["Optical L-bridge<br/>≥3 tags, RMS ≤1 px,<br/>divergence ≤4 cm / 3.5°"]
-  G -- ok --> L
-  BR --> L["lFromTag = inverse(worldFromL) × worldFromViewer × viewerFromCam × cameraFromTag"]
+  T --> BR{"Same-frame optical L available?<br/>3 tags, ≤1 px, within 4 cm / 3.5°"}
+  BR -->|"Use optical L or XR reference"| G{"Motion gate<br/>static or carried head-motion limits"}
+  G -- reject --> X
+  G -- accept --> L["lFromTag = lFromCamera × cameraFromTag"]
   L --> OUT["Tag pose in L-frame"]

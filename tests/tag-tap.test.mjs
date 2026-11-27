@@ -7,6 +7,11 @@ import {
   classifyCursorProximity,
   INDEX_TIP_HOVER_OFFSET_M,
   projectIndexSelectorPos,
+  TAG_ACTION_PILL_DEFAULTS,
+  createTagRestState,
+  resetTagRestState,
+  updateTagRestState,
+  evaluateTagActionPills,
 } from '../src/tag-tap.mjs';
 
 // Column-major identity (flat on L-plane Z=0, outward normal +Z) placed at (tx, ty, tz).
@@ -98,4 +103,91 @@ test('projectIndexSelectorPos hovers 18 mm ahead of tip along distal axis and fa
   // Invalid tip returns null
   assert.equal(projectIndexSelectorPos(null, [0, 0, 0]), null);
   assert.equal(projectIndexSelectorPos([0, NaN, 1], [0, 0, 0]), null);
+});
+
+test('updateTagRestState requires 500 ms un-coupled stillness and resets on motion, yaw, or hand coupling', () => {
+  assert.equal(TAG_ACTION_PILL_DEFAULTS.minRestMs, 500);
+  const state = createTagRestState();
+  const base = flatTagMatrix(0.2, 0.1, 0.0);
+
+  // Initial observation starts the rest window.
+  assert.deepEqual(updateTagRestState(state, base, 1000), { isResting: false, restingMs: 0 });
+  // Small optical jitter (4 mm) does not reset the rest timer.
+  assert.deepEqual(
+    updateTagRestState(state, flatTagMatrix(0.204, 0.1, 0.0), 1499),
+    { isResting: false, restingMs: 499 },
+  );
+  assert.deepEqual(
+    updateTagRestState(state, flatTagMatrix(0.204, 0.1, 0.0), 1500),
+    { isResting: true, restingMs: 500 },
+  );
+
+  // Translation > 12 mm immediately clears rest and restarts the 500 ms window.
+  assert.deepEqual(
+    updateTagRestState(state, flatTagMatrix(0.225, 0.1, 0.0), 1600),
+    { isResting: false, restingMs: 0 },
+  );
+  assert.equal(updateTagRestState(state, flatTagMatrix(0.225, 0.1, 0.0), 2100).isResting, true);
+
+  // In-plane yaw rotation (20 deg) resets rest even with zero translation.
+  const rad = (20 * Math.PI) / 180;
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  const yawed = [
+    c, s, 0, 0,
+    -s, c, 0, 0,
+    0, 0, 1, 0,
+    0.225, 0.1, 0.0, 1,
+  ];
+  assert.deepEqual(updateTagRestState(state, yawed, 2200), { isResting: false, restingMs: 0 });
+  assert.equal(updateTagRestState(state, yawed, 2700).isResting, true);
+
+  // Hand coupling immediately clears rest and enforces a fresh 500 ms rest after release.
+  assert.deepEqual(
+    updateTagRestState(state, yawed, 2800, { handCoupled: true }),
+    { isResting: false, restingMs: 0 },
+  );
+  assert.deepEqual(updateTagRestState(state, yawed, 2850, { handCoupled: false }), { isResting: false, restingMs: 0 });
+  assert.equal(updateTagRestState(state, yawed, 3349, { handCoupled: false }).isResting, false);
+  assert.equal(updateTagRestState(state, yawed, 3350, { handCoupled: false }).isResting, true);
+
+  resetTagRestState(state);
+  assert.equal(state.anchorPos, null);
+  assert.equal(state.sinceMs, null);
+});
+
+test('evaluateTagActionPills enforces minimalism: resting + un-coupled + finger proximity (including active recording)', () => {
+  // Resting on table, no hand nearby -> no pills.
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, handCoupled: false, recording: false, hasPose: true, minTagDist: 0.40 }),
+    { showRec: false, showMark: false },
+  );
+
+  // Resting on table + finger approaches -> both [● REC] and [⏱ MARK] appear.
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, handCoupled: false, recording: false, hasPose: true, minTagDist: 0.12 }),
+    { showRec: true, showMark: true },
+  );
+
+  // Hand-coupled always hides both pills, even if finger is close or recording is active.
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, handCoupled: true, recording: false, hasPose: true, minTagDist: 0.05 }),
+    { showRec: false, showMark: false },
+  );
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, handCoupled: true, recording: true, hasPose: true, minTagDist: 0.05 }),
+    { showRec: false, showMark: false },
+  );
+
+  // Active recording while moving -> [■ STOP] stays hidden (only red tag badge/frame shows).
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: false, handCoupled: false, recording: true, hasPose: true, minTagDist: 0.05 }),
+    { showRec: false, showMark: false },
+  );
+
+  // Active recording once resting >= 500 ms + finger approaches -> [■ STOP] appears, [⏱ MARK] stays hidden.
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, handCoupled: false, recording: true, hasPose: true, minTagDist: 0.10 }),
+    { showRec: true, showMark: false },
+  );
 });

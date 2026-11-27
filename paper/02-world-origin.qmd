@@ -1,0 +1,29 @@
+---
+lang: en
+title: "Establishing a world origin with an L-shaped target"
+subtitle: "Diagram 02 · Working draft"
+---
+
+**English** · [Deutsch](02-raumursprung.html){hreflang=de lang=de} · [Paper overview](overview.html)
+
+The three tags on the stationary L-shaped target define the same physical origin in every camera view. The viewer pose changes as the user moves. Each time-aligned optical observation should nevertheless place the target at the same point in the XR world.
+
+## From image time to anchor time
+
+For capture timestamp $t_i$, fitted time offset $\Delta t$ and camera $C$ mounted on viewer $H$, the candidate world pose of the target $L$ is
+
+$$T_{W\leftarrow L,i}=T_{W\leftarrow H}(t_i+\Delta t)\,T_{H\leftarrow C}\,T_{C\leftarrow L,i}.$$
+
+The collector uses at least five distinct samples spanning at least one second. It takes the coordinate-wise median of translation and averages sign-aligned unit quaternions before normalising. The maximum deviations from this pose must stay within 5 mm and 1.5°. The library default reprojection limit is 1 px RMS. The Quest demo configures 1.15 px and soft rejection.
+
+## After handover
+
+The accepted pose seeds a native XR anchor. Subsequent XR frames query its anchor space. In SCAN, the camera can keep observing objects. MEASURE stops the camera. The historical 89–90 FPS figure describes the XR loop with an established anchor and the camera off. It cannot quantify the throughput of the new optical tracker.
+
+**Check.** Hold the target fixed while changing viewing direction. Compare the optical world pose against the anchor and log displacement and angular error. A missing native anchor pose is a tracking-loss event.
+
+## Implementation
+
+Local tracking revision `c6cb24a` · 2026-11-27. `src/anchor.mjs` · `src/anchor-audit.mjs` · `examples/quest.mjs`
+
+Run from the repository root · `node --test tests/anchor.test.mjs tests/anchor-audit.test.mjs`

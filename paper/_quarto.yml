@@ -5,9 +5,23 @@ project:
     - index.qmd
     - overview.qmd
     - 01-calibration.qmd
+    - 02-world-origin.qmd
+    - 03-single-tag.qmd
+    - 04-multi-tag-focus.qmd
+    - 05-hand-coupling.qmd
+    - 06-prediction.qmd
+    - 07-trajectory-correction.qmd
+    - 08-perimeter.qmd
     - bewegter-tag.qmd
     - uebersicht.qmd
     - 01-kalibrierung.qmd
+    - 02-raumursprung.qmd
+    - 03-einzelmarker.qmd
+    - 04-mehrmarker-fokus.qmd
+    - 05-handkopplung.qmd
+    - 06-praediktion.qmd
+    - 07-bahnkorrektur.qmd
+    - 08-tischkontur.qmd
 
 lang: en
 format:

@@ -6,7 +6,7 @@ export {extractCalibrationProfile,assertProfileDevice,importCalibrationProfile} 
 export {createLAnchorController,createStableLCollector,isRigidPose,ANCHOR_QUALITY} from './anchor.mjs';
 export {product,inverse,det4,cvToGL,poseAt,meanRigid,rigidVector,vectorRigid,identity,quatNormalize,quatDot,quatAngle,quatSlerp,matToQuat,composeRigid,anchorFeatureState,poseToRigidParts,intrinsics,observationIsFresh} from './runtime.mjs';
 export {xrExitPressed,nextExitHold,XR_EXIT_HOLD_MS,XR_EXIT_STICK_BUTTON,XR_EXIT_SECONDARY_BUTTON} from './xr-exit.mjs';
-export {pointInTagFrame,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos} from './tag-tap.mjs';
+export {pointInTagFrame,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos,TAG_ACTION_PILL_DEFAULTS,createTagRestState,resetTagRestState,updateTagRestState,evaluateTagActionPills} from './tag-tap.mjs';
 export {viewBasisAtPointL,computeHoverCardLayout,computePinPillPositions,HOVER_CALLOUT_DEFAULTS} from './tag-callout.mjs';
 export {viewerVelocityAt,resolveCameraInL,evaluateMotionGate,evaluateCarriedJumpGuard,MOTION_GATE_DEFAULTS,OPTICAL_BRIDGE_DEFAULTS,CARRIED_MOTION_GATE_DEFAULTS} from './motion-guard.mjs';
 export {buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,HAND_COUPLING_DEFAULTS} from './hand-coupling.mjs';

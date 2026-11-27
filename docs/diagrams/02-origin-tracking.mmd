@@ -1,11 +1,12 @@
 flowchart TD
   OBS["Observation 350/351/352<br/>camera frame"] --> ASSOC["associateAnchorCapture<br/>interpolate XR pose at t_cap + Δt"]
   ASSOC --> EQ["worldFromL =<br/>worldFromViewer(t+Δt) × viewerFromCameraGL × cameraFromL"]
-  EQ --> COL{"createStableLCollector<br/>≥5 samples, span ≥1 s<br/>spread ≤5 mm / ≤1.5°<br/>RMS ≤1 px"}
+  EQ --> COL{"createStableLCollector<br/>≥5 samples, span ≥1 s<br/>spread ≤5 mm / ≤1.5°<br/>RMS ≤1 px default / 1.15 px demo"}
   COL -- unstable --> OBS
   COL -- stable --> MED["Median pose"]
   MED --> ANC["frame.createAnchor(rigid)"]
-  ANC --> STOP["Stop camera"]
-  STOP --> POSE["frame.getPose(anchorSpace)<br/>→ 90 FPS, no optical fallback"]
+  ANC --> POSE["Read anchor pose each XR frame"]
+  ANC --> SCAN["SCAN: camera observes tags"]
+  ANC --> MEASURE["MEASURE: camera off"]
   OBS -.-> AUD["anchor-audit<br/>check reprojection against anchor"]
   POSE -.-> AUD

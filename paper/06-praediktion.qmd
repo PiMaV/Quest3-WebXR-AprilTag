@@ -1,0 +1,28 @@
+---
+lang: de
+title: "Die nächste Pose zwischen Kamerabildern vorhersagen"
+subtitle: "Fachdiagramm 06 · Arbeitsfassung"
+---
+
+[English](06-prediction.html){hreflang=en lang=en} · **Deutsch** · [Kapitelübersicht](uebersicht.html)
+
+Zwei optische Beobachtungen liefern eine lineare Geschwindigkeit im L-System und eine Winkelgeschwindigkeit im lokalen Tagsystem. Die Beträge sind auf 1,8 m/s und 8 rad/s begrenzt. Bei Zeitabständen außerhalb von 12–350 ms wird die Geschwindigkeit zurückgesetzt. Bei gültigem Abstand mischt der Prädiktor den Messwert mit der vorherigen Schätzung. Ein negatives Skalarprodukt der linearen Geschwindigkeiten signalisiert eine Umkehr und gibt der neuen Beobachtung volles Gewicht.
+
+## Änderung des Vorhersagehorizonts
+
+Sei $a$ das Alter der letzten Beobachtung in Sekunden. Der aktuelle Vorlauf und die vorhergesagte Position sind
+
+$$h(a)=\min(0.120,0.90a)\exp[-\max(0,a-0.120)/0.085],\qquad
+\hat p=p+vh(a).$$
+
+Die Orientierung wird mit dem lokalen Rotationsvektor $\omega h(a)$ fortgeschrieben. Unter 0,015 m/s **und** 4°/s bleibt die letzte Pose erhalten. Zuvor galten 0,58 für das Gewicht der neuen Geschwindigkeit, 0,72 für den Vorlauffaktor und 105 ms als Obergrenze. Jetzt gelten **0,72, 0,90 und 120 ms**. Bei einer 100 ms alten Beobachtung und gleichförmig 1 m/s ergibt das 90 mm statt bisher 72 mm Vorlauf. Das ist ein Rechenbeispiel. Bei einer noch unbeobachteten Umkehr kann der größere Vorlauf zum Überschwingen führen.
+
+Für die Anzeige bewegter Objekte erfasst die Demo die Differenz zwischen bisheriger Anzeige und neuer Vorhersage. Ihre Positionskomponente nimmt pro Renderintervall mit $\exp(-\Delta t/\tau)$ ab. Im optischen Aktualisierungspfad für bewegte Tags gilt $\tau=48$ ms. Der ROI-Planer kann unabhängig davon die Vorhersage zur geplanten Bildzeit abrufen. Eine geglättete Anzeige liefert keine zusätzliche optische Messung.
+
+**Prüfung.** Bei einer abrupt umkehrenden Bahn den Vorhersagefehler gegenüber der nächsten Messung vor und nach der Umkehr getrennt angeben. Gleiches Beobachtungsalter wählen, damit eine höhere Detektorrate nicht irrtümlich dem Prädiktor zugerechnet wird.
+
+## Implementierung
+
+Lokaler Tracking-Stand `c6cb24a` · 2026-11-27. `src/tag-predictor.mjs` · `examples/quest.mjs`
+
+Prüflauf im Repository · `node --test tests/tag-predictor.test.mjs`

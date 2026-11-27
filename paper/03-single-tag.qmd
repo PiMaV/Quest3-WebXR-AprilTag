@@ -1,0 +1,27 @@
+---
+lang: en
+title: "From four corners to a moving tag pose"
+subtitle: "Diagram 03 · Working draft"
+---
+
+**English** · [Deutsch](03-einzelmarker.html){hreflang=de lang=de} · [Paper overview](overview.html)
+
+A square of known edge length supplies four metric points $P_j$. Given camera intrinsics $K$ and measured image corners $u_j$, the planar pose fit seeks a camera-relative rotation and translation that minimise the corner residual. The per-corner error is
+
+$$e_{\mathrm{RMS}}=\sqrt{\frac{1}{4}\sum_{j=1}^4\|\pi_K(RP_j+t)-u_j\|^2}.$$
+
+For a nearly frontal tag, apparent edge length is approximately $f s/z$ for focal length $f$, physical edge $s$ and depth $z$. A distant tag therefore gives fewer pixels to constrain its depth. The implementation checks corner geometry, viewing angle, depth and reprojection before accepting a pose.
+
+## Which camera pose belongs to the image?
+
+The normal path composes the anchor-relative camera pose at the corrected capture time with the measured tag pose. When all three reference tags also give a joint rigid pose in that image, an optical estimate of the camera relative to the L can bridge the measurement. It must agree with the XR estimate within 4 cm and 3.5°, with at most 1 px RMS on the reference.
+
+## Tracking change on 27 November
+
+The static XR head-speed gate starts reducing confidence at 10°/s and reaches its upper angular limit at 32°/s. The carried-object path now uses **40/108°/s** for XR and **46/125°/s** with the optical bridge, previously 28/95 and 36/110. Linear speed still contributes separately. At 35°/s and negligible translation, the static path is already beyond its limit while the carried XR path is below its angular transition. This change lets plausible moving-object observations survive faster head turns. A hardware check should count accepted observations alongside position jumps at matched head speeds.
+
+## Implementation
+
+Local tracking revision `c6cb24a` · 2026-11-27. `src/rig.mjs` · `src/motion-guard.mjs` · `examples/quest.mjs`
+
+Run from the repository root · `node --test tests/rig-runtime.test.mjs tests/motion-guard.test.mjs`

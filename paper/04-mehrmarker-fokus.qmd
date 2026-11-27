@@ -1,0 +1,36 @@
+---
+lang: de
+title: "Wie mehrere Tags sich das Kamerabild teilen"
+subtitle: "Fachdiagramm 04 · Arbeitsfassung"
+---
+
+[English](04-multi-tag-focus.html){hreflang=en lang=en} · **Deutsch** · [Kapitelübersicht](uebersicht.html)
+
+Eine Vollbildsuche kann einen unbekannten Tag im ganzen Bild finden. Ein Suchfenster (ROI) konzentriert Rechenzeit auf die erwartete Position eines bekannten Tags. Im schnellen SCAN-Betrieb wählt die Demo jetzt zwischen einem Vordergrundtag, zwei bis drei Vordergrundtags und einer breiten Suche. Maßgeblich ist die **optische Achse der Kamera**. Dafür wird kein Eye-Tracking benötigt.
+
+## Auswahl und Verbleib im Fokus
+
+Für einen Punkt vor der Kamera mit Tiefe $z>0$ ist der Achswinkel $\theta=\operatorname{atan2}(\sqrt{x^2+y^2},z)$. Ein kürzlich beobachteter zentraler Kandidat tritt regulär innerhalb von 20° ein und kann bis 26° im Fokus bleiben. Die Eintrittsdistanz beträgt 1,85 m, im Fernmodus 2,50 m. Aufgezeichnete und handgekoppelte Tags haben Vorrang vor bewegten oder handnahen Kandidaten, dann folgen ruhende Tags. Mehr als drei aktive Vordergrundkandidaten lösen die breite Suche aus. Ein stabiler Fokusplatz überbrückt bis zu 1,8 s ohne optischen Treffer. Beim Verlassen des äußeren Kegels gilt regulär eine Haltefrist von 500 ms.
+
+Für bewegte Tags schätzt die Demo die Position zur geplanten Bildzeit. Bei Handkopplung nutzt sie die Handhistorie zu dieser Zeit. Nach einem bzw. zwei Fehlversuchen wächst die halbe Fensterbreite um den Faktor 1,35 bzw. 1,75 auf höchstens 260 px. Ein größeres Fenster erleichtert die Wiedererfassung und vergrößert die zu durchsuchende Fläche.
+
+## Rechenaufwand pro Bild
+
+| Bedingung | Arbeit des Detektors |
+|---|---|
+| Aktiver Vordergrund | Schneller ROI-Pfad. Ausschnitte ab 24.000 px² starten mit Dezimierung 2 und Kantenverfeinerung. Kleinere Ausschnitte starten mit 1,5 ohne Verfeinerung. Nach Fehlschlägen folgt ein weiterer Versuch. |
+| Nur ruhende, fixierte Vordergrundtags | Präzisionspfad mit engen Ausschnitten zur Verfeinerung in voller Auflösung. |
+| Alle Fokusfenster verfehlen | Vollbildsuche im selben Frame, grobe Dezimierung 3. Drei aufeinanderfolgende **Teiltreffer mit fehlenden Ziel-IDs** lösen dagegen eine zusätzliche Suchrunde aus. |
+| Geplante Hintergrundsuche | Je nach Zustand 360, 550 oder 950 ms Abstand. Ab 0,25 m/s gilt das längste Intervall. Ansonsten spielen Modus und zuletzt beobachtete Detektorzeit mit einer Budgetschwelle von 22 ms eine Rolle. |
+
+## Was „30 Hz“ hier bedeutet
+
+Zuvor begrenzte die Demo die Fokusübergabe auf 28 Hz. Im schnellen SCAN-Modus liegt die **Obergrenze der Übergaben jetzt bei 60 Hz** für Fokusbilder und geplante Hintergrundsuchen. Für die breite Suche bei aktiver Bewegung gelten **30 Hz**. Doppelte Bilder und Übergaben bei belegtem Worker werden übersprungen. Bei Obergrenzen ab 25 Hz verhindert ein Toleranzfenster von 3 ms im Videocallback, dass kleine Zeitabweichungen unnötig Bilder kosten. Ein 30-Hz-Stream liefert etwa alle 33,3 ms ein neues Bild. Eine höhere Obergrenze kann diese Bilder durchlassen, die physische Kamerarate bleibt durch den Stream vorgegeben.
+
+**Performanceprüfung.** Bei vergleichbaren Quest-Läufen Kameracallbacks/s, verschiedene übergebene Bilder/s, frische optische Treffer/s je Tag, Median und P95 der Detektorzeit sowie Wiedererfassungszeit nach Verdeckung erfassen. Einen bewegten Tag, drei Tags und einen vierten aktiven Tag für den Wechsel zur breiten Suche vergleichen. Die früheren 89–90 FPS betreffen den Ankerbetrieb. Für diesen Stand liegen im Repository keine gepaarten Durchsatzmessungen am Headset vor.
+
+## Implementierung
+
+Lokaler Tracking-Stand `c6cb24a` · 2026-11-27. `src/focus-scheduler.mjs` · `src/camera.mjs` · `src/detector.mjs` · `examples/quest.mjs`
+
+Prüflauf im Repository · `node --test tests/focus-scheduler.test.mjs tests/camera.test.mjs tests/wasm-smoke.test.mjs`

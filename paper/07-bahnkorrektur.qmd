@@ -1,0 +1,27 @@
+---
+lang: de
+title: "Eine aufgezeichnete Bahn mit optischen Beobachtungen korrigieren"
+subtitle: "Fachdiagramm 07 · Arbeitsfassung"
+---
+
+[English](07-trajectory-correction.html){hreflang=en lang=en} · **Deutsch** · [Kapitelübersicht](uebersicht.html)
+
+Zwischen optischen Beobachtungen kann das Handtracking mehrere Posen liefern. Während der Aufzeichnung gelangen sie zunächst in einen vorläufigen Puffer. Eine gültige optische Beobachtung bestätigt die Punkte bis zu ihrem Zeitstempel. Bei einer Schutzfreigabe oder einem Timeout werden ausstehende Punkte verworfen. Anzeigebahn und optisch bestätigte Bahn können daher unterschiedlich dicht abgetastet sein.
+
+## Den Endpunktfehler verteilen
+
+Für $n$ bestätigte Punkte sei $e=p_{\mathrm{optisch}}-p_n$ die Abweichung am Segmentende. Der Vektor wird bei gleicher Richtung auf höchstens 35 mm Länge begrenzt. Mit diesem Vektor $\bar e$ gilt für $i=1,\dots,n$
+
+$$p'_i=p_i+0.45\,\frac{i}{n}\bar e.$$
+
+Bei fünf Punkten und 20 mm Endpunktabweichung entlang einer Achse verschiebt sich der erste Punkt um 1,8 mm, der letzte um 9 mm. Die größte mögliche Endpunktkorrektur pro Durchlauf beträgt 15,75 mm. Ein Teil der Abweichung bleibt bestehen, um sprunghafte Übergänge zu begrenzen. Dieser Schritt ändert ausschließlich die Translation.
+
+Für die Anzeige glättet ein kurzer Binomialfilter die jüngsten inneren Bahnpunkte. Der letzte Endpunkt bleibt fest. Die Demo begrenzt die Abweichung von der Rohlinie auf 12 mm. Das Tracking-Update verändert die Übergabe zwischen Hand und Prädiktor. Die Fusionsgewichte gelten im untersuchten Stand weiter.
+
+**Prüfung.** Ein bestätigtes Segment vor der Anzeigeglättung mit den gepufferten Eingabeposen vergleichen. Korrekturrichtung, Erhalt der Orientierungen und die zeitliche Grenze an der bestätigenden optischen Aufnahme prüfen.
+
+## Implementierung
+
+Lokaler Tracking-Stand `c6cb24a` · 2026-11-27. `src/path-smoother.mjs` · `src/hand-coupling.mjs` · `examples/quest.mjs`
+
+Prüflauf im Repository · `node --test tests/path-smoother.test.mjs tests/hand-coupling.test.mjs`

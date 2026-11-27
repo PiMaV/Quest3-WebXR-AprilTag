@@ -1,15 +1,18 @@
 flowchart TD
-  IDS["Movable tags 300–349"] --> PRIO["Proximity priority<br/>≤45 cm, max 3 active/sibling targets"]
-  PRIO --> ROI["Focus-ROI up to 28 Hz"]
-  subgraph TWO ["Two-stage ROI"]
-    R1["Search: decimate=2<br/>large box"] --> R2["Refine: decimate=1<br/>tight box, corners"]
-    R2 --> R3["Motion-blur retry<br/>decimate=1.5"]
-  end
-  ROI --> R1
-  R3 --> MISS{"Partial miss?"}
-  MISS -- yes --> SWEEP["Recovery sweep"] --> R1
-  MISS -- no --> FRESH["Per tag: pose + timestamp"]
-  HROI["Hand-centered ROI<br/>90 Hz hand position"] --> ROI
-  FRESH --> TTL{"Fresh?<br/>~0.95 s idle / ~1.2 s recording"}
-  TTL -- no --> GONE["Remove tag<br/>(no ghost)"]
-  TTL -- yes --> SHOW["Tag follows live → prediction / coupling"]
+  C["Project tag candidates into camera coordinates"] --> R["Rank by activity and optical-axis angle<br/>20° enter / 26° exit"]
+  R --> M{"Foreground selection"}
+  M -->|"None or more than 3 active"| W["Wide search"]
+  M -->|"1 selected"| F["Single focus"]
+  M -->|"2–3 selected"| G["Multi-focus"]
+  F --> S{"Sweep due or 3 partial misses?"}
+  G --> S
+  S -->|"Yes"| B["Background or recovery sweep"]
+  S -->|"No"| A{"Only resting locked tags?"}
+  A -->|"Yes"| P["Precision ROI with local refinement"]
+  A -->|"No"| Q["Speed-first ROI<br/>large crops d=2, small d=1.5"]
+  Q --> H{"Any crop hit after retries?"}
+  P --> H
+  H -->|"No"| Z["Same-frame full search at d=3"]
+  H -->|"Yes"| U["Report seen IDs and misses to scheduler"]
+  Z --> U
+  B --> U
