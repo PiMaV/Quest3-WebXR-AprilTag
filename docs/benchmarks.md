@@ -13,7 +13,7 @@ Recorded on real Meta Quest 3 hardware (`OculusBrowser 157.0.0.22.15`, `Chrome 1
 | Holdout / verification consistency | `3.8–5.3 mm` / `0.63°` holdout; `0.7–5.5 mm` / `0.06–0.3°` fresh verification |
 | Cross-session repeatability (`1 m` span) | `2–4 mm` on 12 mm (`200`-series) & 20 mm (`300`-series) tags; read-only audit `6–8 mm` median |
 | Free-space cold-start detection range (`20 mm` tag) | `~1.20 m` (steady gaze, no prior tag visible) |
-| Core & automated tests | `0` external runtime dependencies in pure ES core modules (`src/`); vendored AprilTag WASM & Three.js only; `153` passing unit tests |
+| Core & automated tests | `0` external runtime dependencies in pure ES core modules (`src/`); vendored AprilTag WASM & Three.js only; `170` passing unit tests |
 
 > **Honesty & Metrology Note:** Reprojection and self-consistency metrics are not an independent physical metrology certification (`independentlyValidated: false`). Anchors are session-scoped (`persistent: false`); calibrated camera profiles persist in `localStorage` across sessions.
 

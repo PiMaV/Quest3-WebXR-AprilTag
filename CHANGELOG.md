@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.6.0] - 2026-11-27
+
+### Added
+- **Occlusion & Tracking-Gap Trail Segmentation ("Hand-Cover = Pen Lift"):** Added `TRAIL_GAP_DEFAULTS`, `shouldStartNewTrailSegment`, segment-aware `smoothLineTail(..., { breakFlags })`, and `breakFlags` index/tangent/arc-length breaks in `createPathTubeMesh` so occluded or paused recording segments break cleanly with thin `0.9 mm` neutral-grey transfer bridges (`trailGapBridgeBatch`) and silver-grey/white 3D octahedron end/start caps (`trailGapCapBatch`) instead of connecting disjoint segments directly ([`src/path-smoother.mjs`](src/path-smoother.mjs), [`src/render-batch.mjs`](src/render-batch.mjs), [`src/index.mjs`](src/index.mjs), [`examples/quest.mjs`](examples/quest.mjs), [`types/extras.d.ts`](types/extras.d.ts), [`types/index.d.ts`](types/index.d.ts), [`types/three.d.ts`](types/three.d.ts), [`tests/path-smoother.test.mjs`](tests/path-smoother.test.mjs), [`tests/render-batch.test.mjs`](tests/render-batch.test.mjs)).
+- **Radial `k1` Calibration v2, `z=0` Perimeter Landmarks & Damped Anchor Correction:** Added `CALIBRATION_SOLVER_VERSION`, `distortNormalized`, `undistortPoint`, `summarizeRadialResiduals`, `PERIMETER_LANDMARK_DEFAULTS`, `landmarkSpan2D`, `solveLandmarkConsensus`, `createDampedAnchorCorrection`, `ANCHOR_CORRECTION_DEFAULTS`, `OPTICAL_BRIDGE_DEFAULTS`, `CARRIED_MOTION_GATE_DEFAULTS`, offline calibration analysis CLI [`scripts/analyze-calibration.mjs`](scripts/analyze-calibration.mjs), and expanded the unit test suite to `170` passing tests ([`src/solver.mjs`](src/solver.mjs), [`src/rig.mjs`](src/rig.mjs), [`src/perimeter-fence.mjs`](src/perimeter-fence.mjs), [`src/motion-guard.mjs`](src/motion-guard.mjs), [`src/assistant.mjs`](src/assistant.mjs), [`src/profile.mjs`](src/profile.mjs), [`examples/quest.mjs`](examples/quest.mjs)).
+
+---
+
 ## [1.5.0] - 2026-11-27
 
 ### Added

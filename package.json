@@ -1,6 +1,6 @@
 {
   "name": "@pimav/quest3-webxr-apriltag",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Browser-native AprilTag to native WebXR Spatial Anchor registration for Meta Quest 3",
   "type": "module",
   "private": false,
