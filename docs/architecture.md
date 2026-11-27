@@ -49,7 +49,7 @@ See [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for full license attri
 
 ## Quickstart (Minimal Integration)
 
-For a complete runnable starter (~240 lines, no showcase HUD or portals), see [`examples/minimal.html`](../examples/minimal.html) and [`examples/minimal.mjs`](../examples/minimal.mjs).
+For a complete runnable starter (~520 lines, with a minimal auto-hiding in-AR status card and no showcase HUD or portals), see [`examples/minimal.html`](../examples/minimal.html) and [`examples/minimal.mjs`](../examples/minimal.mjs).
 
 ### Core Calibration → `XRAnchor` → `worldFromL` Loop
 
