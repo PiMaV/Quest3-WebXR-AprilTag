@@ -6,6 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.2.0] - 2026-11-27
+
+### Added
+- **Library Subpath Exports & Zero-Dependency TypeScript Declarations:** Added subpath exports (`./three`, `./solver`, `./scan`, `./audit`, `./xr-exit`, `./perimeter`, `./camera`, `./assistant`, `./anchor`, `./profile`, `./rig`, `./runtime`, `./detector`, workers, and `vendor/apriltag/*`), full `types/*.d.ts` definitions, [`src/three.mjs`](src/three.mjs), [`examples/minimal.html`](examples/minimal.html) + [`examples/minimal.mjs`](examples/minimal.mjs), Mermaid architecture diagrams ([`docs/diagrams.md`](docs/diagrams.md)), GitHub Actions CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), and package parity tests ([`tests/package-exports.test.mjs`](tests/package-exports.test.mjs)).
+- **Custom Tag Edge Sizes & Bundler Worker Hooks:** Added `edgeMm` / `getTagEdgeMm` overrides to `solveSingleTagPose`, `unassignedTagEdgeMm` support in [`src/detector-worker.js`](src/detector-worker.js) / [`src/camera.mjs`](src/camera.mjs), and `workerFactory` / `wasmBaseUrl` options to `createReferenceCamera`.
+- **XY Perimeter Outside Detection & Red Alarm-Bell Animation:** Added Z-invariant 2D polygon bounds checking (`signedDistanceToPolygonXY`, `evaluatePerimeterOutside`, `fence.isOutsideXY`, `PERIMETER_OUTSIDE_HYSTERESIS_M` at `+8 mm` enter / `+2 mm` exit) in [`src/perimeter-fence.mjs`](src/perimeter-fence.mjs) with GPU-animated red frame pulse, pooled `alertGlowBatch`, and red alarm-bell matrix tiles for any tracked tag leaving an active perimeter ([`examples/quest.mjs`](examples/quest.mjs)).
+- **3 mm Vertex-Colored / Dashed Trails, Turbo Speed Mode & Tablet 300/301 Demo Pair:** Added `turboColormap` / `speedToTurboColor`, vertex-colored and dashed `createPathTubeMesh` trails, `TRAIL: ID / TURBO` (`0–600 mm/s`) toggle + speed legend bar, and the built-in `300 / 301` (`Δ 60 mm`) demo pair on the Tablet/e-Ink target with fixed-anchor motion guard ([`src/path-smoother.mjs`](src/path-smoother.mjs), [`src/render-batch.mjs`](src/render-batch.mjs), [`src/motion-guard.mjs`](src/motion-guard.mjs), [`examples/quest.mjs`](examples/quest.mjs), [`examples/target.html`](examples/target.html)).
+
+### Changed
+- **Unified M.E.S.S. Generic vs. Dedicated ID Convention:** Replaced `isMovableTag` (`300–349`) with `isGenericTag` (`x00–x49` across `100–499`) so generic tags track uniformly while dedicated `x50–x99` IDs without an assigned profile warn once ([`examples/quest.mjs`](examples/quest.mjs), [`print/SOURCE.json`](print/SOURCE.json), [`docs/markers.md`](docs/markers.md), [`docs/controls.md`](docs/controls.md)).
+- **Hardened Tag Ruhezone & No-Op Batch Uploads:** Excluded stationary `locked` tags without a hand within `25 cm` from the `28 Hz` Focus-ROI queue (`buildScanFocusRois`) and added no-op dirty checks in `createInstancedPool` (`setMatrix`, `setRod`, `setPoint`) and `createAxesBatch` (`setPose`) to eliminate redundant GPU buffer uploads ([`src/render-batch.mjs`](src/render-batch.mjs), [`examples/quest.mjs`](examples/quest.mjs)).
+
+---
+
 ## [1.1.4] - 2026-11-26
 
 ### Added
