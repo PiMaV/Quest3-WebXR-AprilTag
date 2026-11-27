@@ -41,6 +41,7 @@ export interface AuditMetricStats {
 export interface AnchorAudit {
   reset(): void;
   observe(row: AnchorAuditRow | null | undefined): boolean;
+  recentRows(limit?: number): AnchorAuditRow[];
   state(): {
     samples: number;
     positionDifferenceMm: AuditMetricStats | null;

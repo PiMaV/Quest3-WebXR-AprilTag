@@ -11,6 +11,7 @@ import type {
 } from './common.js';
 
 export const PROFILE_SCHEMA: 'webxr-apriltag-profile-v1';
+export const CALIBRATION_SOLVER_VERSION: number;
 export const PIPELINE: 'rgba-gray-arena36h11-planar-capture-xrraf-v1';
 
 export interface ProfileStore {

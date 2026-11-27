@@ -1,11 +1,15 @@
 import type {
   AnchorAssociation,
+  CameraIntrinsics,
   Matrix4Array,
+  ObservedTag,
+  PlanarPoseCV,
   ReferenceObservation,
   Vec3,
   XrContext,
   XrHistoryEntry,
 } from './common.js';
+import type { PerimeterLandmark } from './perimeter-fence.js';
 
 // src/tag-tap.mjs
 export const INDEX_TIP_HOVER_OFFSET_M: number;
@@ -48,11 +52,15 @@ export const TAG_ACTION_PILL_DEFAULTS: {
   minRestMs: number;
   maxRestPosDispM: number;
   minRestAxisDot: number;
+  midAirMinZ: number;
   coupledMaxRestPosDispM: number;
   coupledMinRestAxisDot: number;
+  holdMaxRestPosDispM: number;
+  holdMinRestAxisDot: number;
   tagNearM: number;
   zoneNearM: number;
   pillNearM: number;
+  exitNearM: number;
   belowOffsetM: number;
   sideHalfSpanM: number;
   minTableZ: number;
@@ -71,11 +79,15 @@ export function updateTagRestState(
   nowMs: number,
   opts?: {
     handCoupled?: boolean;
+    pillsOpen?: boolean;
     minRestMs?: number;
     maxRestPosDispM?: number;
     minRestAxisDot?: number;
+    midAirMinZ?: number;
     coupledMaxRestPosDispM?: number;
     coupledMinRestAxisDot?: number;
+    holdMaxRestPosDispM?: number;
+    holdMinRestAxisDot?: number;
   },
 ): { isResting: boolean; restingMs: number };
 export function computeTagActionPillLayout(opts: {
@@ -92,7 +104,10 @@ export function computeTagActionPillLayout(opts: {
 export function evaluateTagActionPills(opts?: {
   isResting?: boolean;
   recording?: boolean;
+  recordAllActive?: boolean;
   hasPose?: boolean;
+  wasOpen?: boolean;
+  holding?: boolean;
   minTagDist?: number;
   minZoneDist?: number;
   minRecDist?: number;
@@ -100,6 +115,7 @@ export function evaluateTagActionPills(opts?: {
   tagNearM?: number;
   zoneNearM?: number;
   pillNearM?: number;
+  exitNearM?: number;
 }): { showRec: boolean; showMark: boolean };
 
 // src/tag-callout.mjs
@@ -158,16 +174,66 @@ export const OPTICAL_BRIDGE_DEFAULTS: Readonly<{
   allowOpticalBridge: boolean;
   minTags: number;
   maxOpticalRmsPx: number;
+  maxPerimeterRmsPx: number;
+  minPerimeterSpanMinorM: number;
+  maxTagOutlierPx: number;
   maxDivergenceM: number;
   maxDivergenceDeg: number;
 }>;
+export const ANCHOR_CORRECTION_DEFAULTS: Readonly<{
+  maxPosM: number;
+  maxAngDeg: number;
+  tauSec: number;
+  maxSpeedMps: number;
+  maxAngSpeedDegPerSec: number;
+  deadbandPosM: number;
+  deadbandAngDeg: number;
+  minConfidence: number;
+  measAlpha: number;
+}>;
 export const CARRIED_MOTION_GATE_DEFAULTS: Readonly<Record<string, number>>;
+export interface DampedAnchorCorrectionState {
+  matrix: Matrix4Array;
+  targetMatrix: Matrix4Array;
+  posMm: number;
+  angDeg: number;
+  updates: number;
+  active: boolean;
+}
+export interface DampedAnchorCorrection {
+  observeOptical(opts?: {
+    lFromCameraXrRaw?: Matrix4Array;
+    lFromCameraOpt?: Matrix4Array;
+    confidence?: number;
+  }): DampedAnchorCorrectionState;
+  step(dtSec: number): DampedAnchorCorrectionState;
+  reset(): void;
+  state(): DampedAnchorCorrectionState;
+}
 export function viewerVelocityAt(
   history: XrHistoryEntry[],
   targetTimeMs: number,
   context: XrContext | null | undefined,
   opts?: { windowMs?: number; searchPadMs?: number },
 ): { angDegPerSec: number; linMPerSec: number; dtMs: number } | null;
+export function landmarkSpan2D(tags: ObservedTag[]): { majorM: number; minorM: number; count: number };
+export function solveLandmarkConsensus(
+  tags: ObservedTag[],
+  K: CameraIntrinsics,
+  opts?: {
+    fixedIds?: number[];
+    maxTagRmsPx?: number;
+    minTags?: number;
+    minMinorSpanM?: number;
+  },
+): {
+  pose: PlanarPoseCV;
+  inliers: ObservedTag[];
+  outliers: Array<{ id: number; rmsPx: number }>;
+  rmsPx: number;
+  minorSpanM: number;
+  majorSpanM: number;
+} | null;
 export function resolveCameraInL(
   observation: ReferenceObservation | null | undefined,
   assoc: AnchorAssociation | null | undefined,
@@ -175,20 +241,34 @@ export function resolveCameraInL(
     allowOpticalBridge?: boolean;
     minTags?: number;
     maxOpticalRmsPx?: number;
+    maxPerimeterRmsPx?: number;
+    minPerimeterSpanMinorM?: number;
+    maxTagOutlierPx?: number;
     maxDivergenceM?: number;
     maxDivergenceDeg?: number;
+    perimeterLandmarks?: PerimeterLandmark[];
+    anchorCorrection?: Matrix4Array | null;
   },
 ): {
   lFromCamera: Matrix4Array;
-  source: 'optical-l' | 'xr-history';
+  source: 'optical-l' | 'optical-perimeter' | 'xr-history';
   opticalTagCount: number;
+  fixedTagCount?: number;
+  perimeterTagCount?: number;
   opticalRmsPx: number | null;
   xrDeltaMm: number | null;
   xrDeltaDeg: number | null;
+  inlierIds?: number[];
+  outliers?: Array<{ id: number; rmsPx: number }>;
+  baselineMinorM?: number;
+  baselineMajorM?: number;
 } | null;
+export function createDampedAnchorCorrection(
+  options?: Partial<Record<string, number>>,
+): DampedAnchorCorrection;
 export function evaluateMotionGate(
   velocity: { angDegPerSec: number; linMPerSec: number } | null | undefined,
-  opts?: { source?: 'optical-l' | 'xr-history' },
+  opts?: { source?: 'optical-l' | 'optical-perimeter' | 'xr-history' },
   limits?: Record<string, number>,
 ): {
   confidence: number;

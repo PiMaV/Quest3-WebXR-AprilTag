@@ -101,12 +101,16 @@ export function projectIndexSelectorPos(tipPos, refProximalPos, offsetM = INDEX_
 export const TAG_ACTION_PILL_DEFAULTS = {
   minRestMs: 500,
   maxRestPosDispM: 0.012,
-  minRestAxisDot: 0.99, // ~8.1 deg orientation tolerance when resting freely
-  coupledMaxRestPosDispM: 0.022, // ~22 mm hand-tremor tolerance when held steady in one hand
-  coupledMinRestAxisDot: 0.965, // ~15 deg tilt/yaw tolerance when held steady in one hand
+  minRestAxisDot: 0.99, // ~8.1 deg orientation tolerance when resting freely on table
+  midAirMinZ: 0.05, // > 5 cm above tabletop plane automatically uses hand-tremor tolerance
+  coupledMaxRestPosDispM: 0.024, // ~24 mm hand-tremor tolerance when held steady in one hand / mid-air
+  coupledMinRestAxisDot: 0.96, // ~16 deg tilt/yaw tolerance when held steady in one hand / mid-air
+  holdMaxRestPosDispM: 0.038, // ~38 mm hysteresis once pills are open or a hold is in progress
+  holdMinRestAxisDot: 0.92, // ~23 deg orientation hysteresis while pills are open / held
   tagNearM: 0.14,
   zoneNearM: 0.14,
   pillNearM: 0.12,
+  exitNearM: 0.20, // wider exit proximity hysteresis once pills are open
   belowOffsetM: 0.056,
   sideHalfSpanM: 0.043,
   minTableZ: 0.018,
@@ -136,11 +140,15 @@ export function updateTagRestState(
   nowMs,
   {
     handCoupled = false,
+    pillsOpen = false,
     minRestMs = TAG_ACTION_PILL_DEFAULTS.minRestMs,
     maxRestPosDispM = TAG_ACTION_PILL_DEFAULTS.maxRestPosDispM,
     minRestAxisDot = TAG_ACTION_PILL_DEFAULTS.minRestAxisDot,
+    midAirMinZ = TAG_ACTION_PILL_DEFAULTS.midAirMinZ,
     coupledMaxRestPosDispM = TAG_ACTION_PILL_DEFAULTS.coupledMaxRestPosDispM,
     coupledMinRestAxisDot = TAG_ACTION_PILL_DEFAULTS.coupledMinRestAxisDot,
+    holdMaxRestPosDispM = TAG_ACTION_PILL_DEFAULTS.holdMaxRestPosDispM,
+    holdMinRestAxisDot = TAG_ACTION_PILL_DEFAULTS.holdMinRestAxisDot,
   } = {},
 ) {
   if (!state) return { isResting: false, restingMs: 0 };
@@ -156,9 +164,6 @@ export function updateTagRestState(
     return { isResting: false, restingMs: 0 };
   }
 
-  const posLimitM = handCoupled ? coupledMaxRestPosDispM : maxRestPosDispM;
-  const axisDotLimit = handCoupled ? coupledMinRestAxisDot : minRestAxisDot;
-
   const tx = tagMatrix[12];
   const ty = tagMatrix[13];
   const tz = tagMatrix[14];
@@ -168,6 +173,14 @@ export function updateTagRestState(
   const zx = tagMatrix[8];
   const zy = tagMatrix[9];
   const zz = tagMatrix[10];
+
+  const isMidAir = Math.abs(tz) > midAirMinZ;
+  const posLimitM = pillsOpen
+    ? holdMaxRestPosDispM
+    : (handCoupled || isMidAir ? coupledMaxRestPosDispM : maxRestPosDispM);
+  const axisDotLimit = pillsOpen
+    ? holdMinRestAxisDot
+    : (handCoupled || isMidAir ? coupledMinRestAxisDot : minRestAxisDot);
 
   if (!state.anchorPos || state.sinceMs == null) {
     state.anchorPos = [tx, ty, tz];
@@ -308,7 +321,10 @@ export function computeTagActionPillLayout({
 export function evaluateTagActionPills({
   isResting = false,
   recording = false,
+  recordAllActive = false,
   hasPose = false,
+  wasOpen = false,
+  holding = false,
   minTagDist = Infinity,
   minZoneDist = Infinity,
   minRecDist = Infinity,
@@ -316,15 +332,20 @@ export function evaluateTagActionPills({
   tagNearM = TAG_ACTION_PILL_DEFAULTS.tagNearM,
   zoneNearM = TAG_ACTION_PILL_DEFAULTS.zoneNearM,
   pillNearM = TAG_ACTION_PILL_DEFAULTS.pillNearM,
+  exitNearM = TAG_ACTION_PILL_DEFAULTS.exitNearM,
 } = {}) {
   if (!hasPose || !isResting) {
     return { showRec: false, showMark: false };
   }
-  const nearZone = minZoneDist < zoneNearM || minTagDist < tagNearM;
-  const nearRec = nearZone || minRecDist < pillNearM;
-  const nearMark = nearZone || minMarkDist < pillNearM;
+  const sticky = Boolean(wasOpen || holding);
+  const tThresh = sticky ? Math.max(tagNearM, exitNearM) : tagNearM;
+  const zThresh = sticky ? Math.max(zoneNearM, exitNearM) : zoneNearM;
+  const pThresh = sticky ? Math.max(pillNearM, exitNearM) : pillNearM;
+  const nearZone = minZoneDist < zThresh || minTagDist < tThresh;
+  const nearRec = nearZone || minRecDist < pThresh;
+  const nearMark = nearZone || minMarkDist < pThresh;
   return {
-    showRec: nearRec,
+    showRec: !recordAllActive && nearRec,
     showMark: !recording && nearMark,
   };
 }

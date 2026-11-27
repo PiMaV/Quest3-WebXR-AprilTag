@@ -1,4 +1,5 @@
 import type {
+  CalibrationModelName,
   CalibrationProfile,
   CameraSample,
   DeviceIdentity,
@@ -29,6 +30,7 @@ export interface CalibrationAssistantState {
   persisted: boolean;
   verification: Record<string, unknown> | null;
   checkFailure: Record<string, unknown> | null;
+  upgradeReason: string | null;
 }
 
 export interface CalibrationAssistantOptions {
@@ -39,9 +41,10 @@ export interface CalibrationAssistantOptions {
   onChange?: (state: CalibrationAssistantState) => void;
   onProfile?: (profile: CalibrationProfile | null) => void;
   workerFactory?: () => Worker;
-  model?: 'centered-square' | 'pinhole';
+  model?: CalibrationModelName;
   scanViews?: number;
   verificationViews?: number;
+  minSolverVersion?: number | null;
 }
 
 export interface CalibrationAssistant {
@@ -55,6 +58,7 @@ export interface CalibrationAssistant {
   state(): CalibrationAssistantState;
   phase(): CalibrationPhase;
   summary(): { phase: CalibrationPhase; count: number; required: number; message: string };
+  diagnosticsData(): Record<string, unknown> | null;
   retryCheck(): boolean;
   retry(): void;
   profile(): CalibrationProfile | null;

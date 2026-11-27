@@ -5,15 +5,21 @@ import {
   FENCE_HEIGHT_M,
   PERIMETER_MARKERS,
   PERIMETER_OUTSIDE_HYSTERESIS_M,
+  PERIMETER_LANDMARK_DEFAULTS,
   isPerimeterTag,
   perimeterRole,
   projectPointToTablePlane,
+  tagCornersOnZ0,
+  fitTagSquareOnZ0,
+  triangulateTagOnZ0,
   signedDistanceToPolygonXY,
   evaluatePerimeterOutside,
   locatePerimeterCrossing,
   isTablePointObservableInCamera,
   createPerimeterFence,
 } from '../src/perimeter-fence.mjs';
+import { distortNormalized } from '../src/rig.mjs';
+import { cvToGL, inverse } from '../src/runtime.mjs';
 
 const mainRig = JSON.parse(readFileSync(new URL('../rigs/ms-qr-main-l.json', import.meta.url), 'utf8'));
 const tabletRig = JSON.parse(readFileSync(new URL('../rigs/ms-qr-tablet-l.json', import.meta.url), 'utf8'));
@@ -639,4 +645,167 @@ test('locatePerimeterCrossing resolves exact edge intersection, winding-agnostic
 
   assert.equal(fence.deactivate(), true);
   assert.equal(fence.locateCrossing([0.5175, 0.315, 0.11], [0.7175, 0.315, 0.11]), null);
+});
+
+function lookAtGL(camPos, targetPos) {
+  const fx = targetPos[0] - camPos[0], fy = targetPos[1] - camPos[1], fz = targetPos[2] - camPos[2];
+  const fl = Math.hypot(fx, fy, fz);
+  const fwd = [fx / fl, fy / fl, fz / fl];
+  const zc = [-fwd[0], -fwd[1], -fwd[2]];
+  // up = [0, 0, 1] -> x = normalize(cross(fwd, up)) = normalize([fwd[1], -fwd[0], 0])
+  let xx = fwd[1], xy = -fwd[0], xz = 0;
+  let xl = Math.hypot(xx, xy, xz);
+  if (xl < 1e-6) { xx = 1; xy = 0; xz = 0; xl = 1; }
+  const xc = [xx / xl, xy / xl, xz / xl];
+  const yc = [
+    zc[1] * xc[2] - zc[2] * xc[1],
+    zc[2] * xc[0] - zc[0] * xc[2],
+    zc[0] * xc[1] - zc[1] * xc[0],
+  ];
+  return [
+    xc[0], xc[1], xc[2], 0,
+    yc[0], yc[1], yc[2], 0,
+    zc[0], zc[1], zc[2], 0,
+    camPos[0], camPos[1], camPos[2], 1,
+  ];
+}
+
+function projectCornersFromL(corners3D, lFromCamera, K) {
+  const C = inverse(lFromCamera);
+  return corners3D.map(([x, y, z = 0]) => {
+    const gx = C[12] + C[0] * x + C[4] * y + C[8] * z;
+    const gy = C[13] + C[1] * x + C[5] * y + C[9] * z;
+    const gz = C[14] + C[2] * x + C[6] * y + C[10] * z;
+    const [dx, dy] = distortNormalized(gx / -gz, -gy / -gz, K.k1 ?? 0);
+    return { x: K.fx * dx + K.cx, y: K.fy * dy + K.cy };
+  });
+}
+
+test('tagCornersOnZ0, fitTagSquareOnZ0, and triangulateTagOnZ0 reconstruct z=0 markers with k1 and reject elevated ones', () => {
+  const K = { width: 1280, height: 1080, fx: 860, fy: 860, cx: 640, cy: 540, k1: -0.04 };
+  const trueX = 0.05, trueY = 0.72, trueYaw = 0.42;
+  const c0 = tagCornersOnZ0(trueX, trueY, trueYaw, 0.020);
+  assert.equal(c0.length, 4);
+  // Edge lengths match 20 mm
+  const e01 = Math.hypot(c0[1][0] - c0[0][0], c0[1][1] - c0[0][1]);
+  assert.ok(Math.abs(e01 - 0.020) < 1e-12);
+
+  // Single-frame 4-ray square fit on z=0 recovers position and yaw under k1 != 0.
+  const cam0 = lookAtGL([0.28, 0.45, 0.62], [trueX, trueY, 0]);
+  const pix0 = projectCornersFromL(c0.map(([x, y]) => [x, y, 0]), cam0, K);
+  const sq = fitTagSquareOnZ0(pix0, cam0, K, { edgeM: 0.020 });
+  assert.ok(sq);
+  assert.ok(Math.hypot(sq.x - trueX, sq.y - trueY) * 1000 < 0.05);
+  assert.ok(Math.abs(sq.yaw - trueYaw) * (180 / Math.PI) < 0.1);
+  assert.ok(sq.squareRmsMm < 0.05);
+
+  // Multi-view 3-DOF bundle adjustment recovers z=0 pose under pixel noise and rejects z=25mm off-plane tag.
+  const cams = [
+    lookAtGL([-0.15, 0.40, 0.58], [trueX, trueY, 0]),
+    lookAtGL([0.25, 0.38, 0.60], [trueX, trueY, 0]),
+    lookAtGL([0.35, 0.65, 0.54], [trueX, trueY, 0]),
+    lookAtGL([0.05, 0.95, 0.56], [trueX, trueY, 0]),
+    lookAtGL([-0.22, 0.75, 0.52], [trueX, trueY, 0]),
+    lookAtGL([0.12, 0.25, 0.66], [trueX, trueY, 0]),
+  ];
+  const kfsFlat = cams.map((lFromCamera, idx) => {
+    const px = projectCornersFromL(c0.map(([x, y]) => [x, y, 0]), lFromCamera, K).map((p, j) => ({
+      x: p.x + 0.15 * Math.sin(idx * 7 + j * 3),
+      y: p.y + 0.15 * Math.cos(idx * 5 + j * 11),
+    }));
+    return { lFromCamera, pixels: px, weight: 2 };
+  });
+  const triFlat = triangulateTagOnZ0(kfsFlat, K, { edgeM: 0.020 });
+  assert.ok(triFlat);
+  assert.ok(Math.hypot(triFlat.x - trueX, triFlat.y - trueY) * 1000 < 0.5, `flat xy err ${(Math.hypot(triFlat.x - trueX, triFlat.y - trueY) * 1000).toFixed(2)} mm`);
+  assert.ok(Math.abs(triFlat.yaw - trueYaw) * (180 / Math.PI) < 0.5);
+  assert.ok(triFlat.rmsPx < 0.5, `flat rmsPx=${triFlat.rmsPx}`);
+
+  const kfsRaised = cams.map((lFromCamera) => ({
+    lFromCamera,
+    pixels: projectCornersFromL(c0.map(([x, y]) => [x, y, 0.025]), lFromCamera, K),
+    weight: 2,
+  }));
+  const triRaised = triangulateTagOnZ0(kfsRaised, K, { edgeM: 0.020 });
+  assert.ok(triRaised && triRaised.rmsPx > PERIMETER_LANDMARK_DEFAULTS.maxReprojRmsPxOptical * 3, `expected high rmsPx for z=25mm, got ${triRaised?.rmsPx}`);
+});
+
+test('createPerimeterFence promotes landmarks on convergence, resists single-frame jump, demotes moved/outlier tags, and supports free-6dof', () => {
+  const K = { width: 1280, height: 1080, fx: 860, fy: 860, cx: 640, cy: 540, k1: -0.025 };
+  const trueX = 0.02, trueY = 0.85, trueYaw = 0.15;
+  const c0 = tagCornersOnZ0(trueX, trueY, trueYaw, 0.020);
+  const cams = [
+    lookAtGL([-0.20, 0.55, 0.55], [trueX, trueY, 0]),
+    lookAtGL([0.00, 0.50, 0.58], [trueX, trueY, 0]),
+    lookAtGL([0.22, 0.56, 0.56], [trueX, trueY, 0]),
+    lookAtGL([0.28, 0.78, 0.52], [trueX, trueY, 0]),
+    lookAtGL([0.02, 1.08, 0.54], [trueX, trueY, 0]),
+    lookAtGL([-0.24, 0.82, 0.50], [trueX, trueY, 0]),
+  ];
+  const fence = createPerimeterFence(mainRig);
+  assert.equal(fence.getCoordinateMode(), 'planar-z0');
+  assert.equal(fence.lockedCount(), 0);
+
+  let lockRes = null;
+  for (let i = 0; i < cams.length; i++) {
+    const lFromCamera = cams[i];
+    const camPosL = [lFromCamera[12], lFromCamera[13], lFromCamera[14]];
+    const corners = projectCornersFromL(c0.map(([x, y]) => [x, y, 0]), lFromCamera, K);
+    const lFromTag = translationMatrix(trueX + 0.002 * (i % 2 ? 1 : -1), trueY, 0);
+    const res = fence.observe(353, lFromTag, camPosL, 1000 + i * 260, {
+      weight: 0.9,
+      corners,
+      lFromCamera,
+      K,
+      minEdgePx: 18,
+      poseSource: 'optical-l',
+    });
+    if (res?.justLocked) lockRes = res;
+  }
+  assert.ok(lockRes && lockRes.justLocked);
+  assert.equal(fence.lockedCount(), 1);
+  const locked = fence.lockedLandmarks();
+  assert.equal(locked.length, 1);
+  assert.equal(locked[0].id, 353);
+  assert.ok(Math.hypot(locked[0].x - trueX, locked[0].y - trueY) * 1000 < 0.2);
+
+  // Single-frame 5 cm glitch must NOT move or unlock a locked landmark.
+  const cam = cams[0];
+  const singleGlitch = fence.observe(353, translationMatrix(trueX + 0.05, trueY, 0), [cam[12], cam[13], cam[14]], 4000, { weight: 0.9 });
+  assert.equal(singleGlitch.accepted, false);
+  assert.equal(singleGlitch.reason, 'locked-jump-pending');
+  assert.equal(fence.lockedCount(), 1);
+
+  // Second consistent frame at the new moved position (within 3 cm of first) demotes the landmark.
+  const secondMove = fence.observe(353, translationMatrix(trueX + 0.055, trueY, 0), [cam[12], cam[13], cam[14]], 4200, { weight: 0.9 });
+  assert.equal(secondMove.demoted, true);
+  assert.equal(fence.lockedCount(), 0);
+
+  // Re-lock and test consensus outlier demotion + inlier reset + free-6dof mode switch.
+  for (let i = 0; i < cams.length; i++) {
+    const lFromCamera = cams[i];
+    const camPosL = [lFromCamera[12], lFromCamera[13], lFromCamera[14]];
+    const corners = projectCornersFromL(c0.map(([x, y]) => [x, y, 0]), lFromCamera, K);
+    fence.observe(353, translationMatrix(trueX, trueY, 0), camPosL, 6000 + i * 260, {
+      weight: 0.9,
+      corners,
+      lFromCamera,
+      K,
+      minEdgePx: 18,
+      poseSource: 'optical-l',
+    });
+  }
+  assert.equal(fence.lockedCount(), 1);
+  assert.equal(fence.reportLandmarkOutlier(353, { residualPx: 3.0 }).demoted, false);
+  assert.equal(fence.reportLandmarkInlier(353), true);
+  assert.equal(fence.reportLandmarkOutlier(353, { residualPx: 7.5 }).demoted, false);
+  const dOut = fence.reportLandmarkOutlier(353, { residualPx: 8.2 });
+  assert.equal(dOut.demoted, true);
+  assert.equal(fence.lockedCount(), 0);
+
+  // Switching to free-6dof preserves z height instead of flattening to z=0.
+  assert.equal(fence.setCoordinateMode('free-6dof'), 'free-6dof');
+  const rFree = fence.observe(354, translationMatrix(0.60, 0.70, 0.14), [cam[12], cam[13], cam[14]], 9000, { weight: 1 });
+  assert.equal(rFree.accepted, true);
+  assert.ok(Math.abs(rFree.pos[2] - 0.14) < 1e-9);
 });

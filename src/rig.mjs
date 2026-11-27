@@ -18,6 +18,45 @@ const mul = (a, s) => a.map(v => v * s);
 const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
 const finite = a => a.every(Number.isFinite);
 
+/** Apply radial lens distortion `k1` to normalized camera coordinates `(x/z, y/z)`. */
+export function distortNormalized(xn, yn, k1 = 0) {
+  if (!Number.isFinite(k1) || Math.abs(k1) < 1e-12) return [xn, yn];
+  const r2 = xn * xn + yn * yn;
+  const s = 1 + k1 * r2;
+  return [xn * s, yn * s];
+}
+
+/** Invert single-parameter radial distortion (`k1`) on pixel coordinates via guarded Newton-Raphson. */
+export function undistortPoint(u, v, K) {
+  const k1 = Number.isFinite(K?.k1) ? K.k1 : 0;
+  if (!k1) return { x: u, y: v };
+  const xd = (u - K.cx) / K.fx;
+  const yd = (v - K.cy) / K.fy;
+  const rd = Math.hypot(xd, yd);
+  if (rd < 1e-12) return { x: u, y: v };
+  const rMax = k1 < 0 ? 0.98 / Math.sqrt(-3 * k1) : Infinity;
+  let r = Math.min(rd, rMax);
+  for (let i = 0; i < 8; i++) {
+    const f = r * (1 + k1 * r * r) - rd;
+    if (Math.abs(f) < 1e-11) break;
+    const df = 1 + 3 * k1 * r * r;
+    if (!(df > 0.05)) break;
+    r = Math.max(0, Math.min(rMax, r - f / df));
+  }
+  const s = r / rd;
+  return { x: K.fx * xd * s + K.cx, y: K.fy * yd * s + K.cy };
+}
+
+/** Project an OpenCV-frame 3D camera point `(px, py, pz)` into distorted pixels under `K`. */
+export function projectCameraPoint(px, py, pz, K) {
+  if (!(pz > 0)) return null;
+  const xn = px / pz;
+  const yn = py / pz;
+  const k1 = Number.isFinite(K?.k1) ? K.k1 : 0;
+  const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+  return { x: K.fx * xn * sc + K.cx, y: K.fy * yn * sc + K.cy };
+}
+
 /** Validate and scale a `webxr-apriltag-rig-v1` planar target definition. */
 export function referenceTools(g, printScale=1) {
   if(g?.schema!=='webxr-apriltag-rig-v1'||g.family!=='apriltag-36h11'||g.units!=='m'||!g.id||
@@ -57,18 +96,20 @@ function solve(rows, rhs) {
 }
 
 /**
- * Joint least-squares planar pose fit (normalized homography + analytic-Jacobian Gauss-Newton).
- * K must describe these image pixels; distortion must be removed before calling.
+ * Joint least-squares planar pose fit (normalized undistorted homography + analytic-Jacobian Gauss-Newton).
+ * Forward radial distortion `K.k1` (when present) is handled directly.
  */
 export function fitPlanarPose(tags, K) {
   const points=tags.flatMap(t=>t.points), pixels=tags.flatMap(t=>t.pixels);
   const centre=[0,1].map(j=>points.reduce((s,p)=>s+p[j],0)/points.length);
   const spread=Math.sqrt(points.reduce((s,p)=>s+(p[0]-centre[0])**2+(p[1]-centre[1])**2,0)/points.length);
   if (!(spread>1e-9)) return null;
+  const k1 = Number.isFinite(K?.k1) ? K.k1 : 0;
   const rows=[],rhs=[];
   points.forEach((p,i)=>{
     const [x,y]=p.map((v,j)=>(v-centre[j])/spread);
-    const u=(pixels[i].x-K.cx)/K.fx,v=(pixels[i].y-K.cy)/K.fy;
+    const up = k1 ? undistortPoint(pixels[i].x, pixels[i].y, K) : pixels[i];
+    const u=(up.x-K.cx)/K.fx,v=(up.y-K.cy)/K.fy;
     rows.push([x,y,1,0,0,0,-u*x,-u*y],[0,0,0,x,y,1,-v*x,-v*y]);rhs.push(u,v);
   });
   const h=solve(rows,rhs); if (!h) return null;
@@ -86,11 +127,14 @@ export function fitPlanarPose(tags, K) {
 }
 
 function pixelResiduals(pose,tags,K) {
+  const k1 = Number.isFinite(K?.k1) ? K.k1 : 0;
   const out=[];
   for(const tag of tags) for(let i=0;i<4;i++) {
     const [x,y]=tag.points[i],p=pose.t.map((v,j)=>v+pose.R[0][j]*x+pose.R[1][j]*y);
     if(p[2]<=0) return null;
-    out.push(K.fx*p[0]/p[2]+K.cx-tag.pixels[i].x,K.fy*p[1]/p[2]+K.cy-tag.pixels[i].y);
+    const xn=p[0]/p[2], yn=p[1]/p[2];
+    const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+    out.push(K.fx*xn*sc+K.cx-tag.pixels[i].x,K.fy*yn*sc+K.cy-tag.pixels[i].y);
   }
   return out.every(Number.isFinite)?out:null;
 }
@@ -105,6 +149,8 @@ const _refineA = new Float64Array(42);
 const _refineStep = new Float64Array(6);
 const _refineJu = new Float64Array(6);
 const _refineJv = new Float64Array(6);
+const _refineJxn = new Float64Array(6);
+const _refineJyn = new Float64Array(6);
 const _candR = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
 const _candT = [0, 0, 0];
 
@@ -176,6 +222,7 @@ function applyScaledIncrement(r1, r2, r3, t, step, factor, dstR, dstT) {
 
 function residualCost(r1, r2, t, tags, K) {
   const fx = K.fx, fy = K.fy, cx = K.cx, cy = K.cy;
+  const k1 = Number.isFinite(K?.k1) ? K.k1 : 0;
   const tx = t[0], ty = t[1], tz = t[2];
   const r10 = r1[0], r11 = r1[1], r12 = r1[2];
   const r20 = r2[0], r21 = r2[1], r22 = r2[2];
@@ -189,8 +236,11 @@ function residualCost(r1, r2, t, tags, K) {
       const pz = tz + r12 * x + r22 * y;
       if (!(pz > 0)) return Infinity;
       const invZ = 1 / pz;
-      const eu = fx * px * invZ + cx - pix[i].x;
-      const ev = fy * py * invZ + cy - pix[i].y;
+      const xn = px * invZ;
+      const yn = py * invZ;
+      const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+      const eu = fx * xn * sc + cx - pix[i].x;
+      const ev = fy * yn * sc + cy - pix[i].y;
       sum += eu * eu + ev * ev;
     }
   }
@@ -205,7 +255,8 @@ function refinePose(initial,tags,K) {
   let r3 = [initial.R[2][0], initial.R[2][1], initial.R[2][2]];
   let t = [initial.t[0], initial.t[1], initial.t[2]];
   const fx = K.fx, fy = K.fy, cx = K.cx, cy = K.cy;
-  const Ju = _refineJu, Jv = _refineJv, A = _refineA, step = _refineStep;
+  const k1 = Number.isFinite(K?.k1) ? K.k1 : 0;
+  const Ju = _refineJu, Jv = _refineJv, Jxn = _refineJxn, Jyn = _refineJyn, A = _refineA, step = _refineStep;
   const lineFactors = [1, 0.5, 0.25, 0.125, 0.0625];
 
   for (let iteration = 0; iteration < 15; iteration++) {
@@ -226,28 +277,62 @@ function refinePose(initial,tags,K) {
         const pz = qz + tz;
         if (!(pz > 0)) return null;
         const invZ = 1 / pz;
-        const fxZ = fx * invZ;
-        const fyZ = fy * invZ;
-        const fxXZ = fxZ * px * invZ;
-        const fyYZ = fyZ * py * invZ;
-        const eu = fxZ * px + cx - pix[i].x;
-        const ev = fyZ * py + cy - pix[i].y;
-        if (!Number.isFinite(eu) || !Number.isFinite(ev)) return null;
+        let eu, ev;
+        if (k1) {
+          const xn = px * invZ;
+          const yn = py * invZ;
+          const r2d = xn * xn + yn * yn;
+          const sc = 1 + k1 * r2d;
+          eu = fx * xn * sc + cx - pix[i].x;
+          ev = fy * yn * sc + cy - pix[i].y;
+          if (!Number.isFinite(eu) || !Number.isFinite(ev)) return null;
+          const xnZ = xn * invZ;
+          const ynZ = yn * invZ;
+          Jxn[0] = -xnZ * qy;
+          Jxn[1] = invZ * qz + xnZ * qx;
+          Jxn[2] = -invZ * qy;
+          Jxn[3] = invZ;
+          Jxn[4] = 0;
+          Jxn[5] = -xnZ;
+
+          Jyn[0] = -invZ * qz - ynZ * qy;
+          Jyn[1] = ynZ * qx;
+          Jyn[2] = invZ * qx;
+          Jyn[3] = 0;
+          Jyn[4] = invZ;
+          Jyn[5] = -ynZ;
+
+          const mxx = sc + 2 * k1 * xn * xn;
+          const myy = sc + 2 * k1 * yn * yn;
+          const mxy = 2 * k1 * xn * yn;
+          for (let r = 0; r < 6; r++) {
+            Ju[r] = fx * (mxx * Jxn[r] + mxy * Jyn[r]);
+            Jv[r] = fy * (mxy * Jxn[r] + myy * Jyn[r]);
+          }
+        } else {
+          const fxZ = fx * invZ;
+          const fyZ = fy * invZ;
+          const fxXZ = fxZ * px * invZ;
+          const fyYZ = fyZ * py * invZ;
+          eu = fxZ * px + cx - pix[i].x;
+          ev = fyZ * py + cy - pix[i].y;
+          if (!Number.isFinite(eu) || !Number.isFinite(ev)) return null;
+
+          Ju[0] = -fxXZ * qy;
+          Ju[1] = fxZ * qz + fxXZ * qx;
+          Ju[2] = -fxZ * qy;
+          Ju[3] = fxZ;
+          Ju[4] = 0;
+          Ju[5] = -fxXZ;
+
+          Jv[0] = -fyZ * qz - fyYZ * qy;
+          Jv[1] = fyYZ * qx;
+          Jv[2] = fyZ * qx;
+          Jv[3] = 0;
+          Jv[4] = fyZ;
+          Jv[5] = -fyYZ;
+        }
         cost += eu * eu + ev * ev;
-
-        Ju[0] = -fxXZ * qy;
-        Ju[1] = fxZ * qz + fxXZ * qx;
-        Ju[2] = -fxZ * qy;
-        Ju[3] = fxZ;
-        Ju[4] = 0;
-        Ju[5] = -fxXZ;
-
-        Jv[0] = -fyZ * qz - fyYZ * qy;
-        Jv[1] = fyYZ * qx;
-        Jv[2] = fyZ * qx;
-        Jv[3] = 0;
-        Jv[4] = fyZ;
-        Jv[5] = -fyYZ;
 
         for (let r = 0; r < 6; r++) {
           const ro = r * 7;
@@ -324,6 +409,7 @@ export function solveSingleTagPose(raw, K, { edgeMm = null, getTagEdgeMm = null,
   if (!pose) return null;
   const [r1, r2, r3] = pose.R;
   const t = pose.t;
+  const k1 = Number.isFinite(K?.k1) ? K.k1 : 0;
   let sqErr = 0;
   for (let i = 0; i < 4; i++) {
     const x = corners[i][0], y = corners[i][1];
@@ -331,8 +417,10 @@ export function solveSingleTagPose(raw, K, { edgeMm = null, getTagEdgeMm = null,
     const py = t[1] + r1[1] * x + r2[1] * y;
     const pz = t[2] + r1[2] * x + r2[2] * y;
     if (!(pz > 0.01)) return null;
-    const dx = K.fx * px / pz + K.cx - c[i].x;
-    const dy = K.fy * py / pz + K.cy - c[i].y;
+    const xn = px / pz, yn = py / pz;
+    const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+    const dx = K.fx * xn * sc + K.cx - c[i].x;
+    const dy = K.fy * yn * sc + K.cy - c[i].y;
     sqErr += dx * dx + dy * dy;
   }
   const rmsPx = Math.sqrt(sqErr * 0.25);
@@ -346,11 +434,14 @@ export function solveSingleTagPose(raw, K, { edgeMm = null, getTagEdgeMm = null,
 
 function residual(pose, tag, K) {
   const [r1,r2]=pose.R;
+  const k1 = Number.isFinite(K?.k1) ? K.k1 : 0;
   let sum=0;
   for (let i=0;i<4;i++) {
     const [x,y]=tag.points[i],p=pose.t.map((v,j)=>v+r1[j]*x+r2[j]*y);
     if (p[2]<=0) return Infinity;
-    sum+=(K.fx*p[0]/p[2]+K.cx-tag.pixels[i].x)**2+(K.fy*p[1]/p[2]+K.cy-tag.pixels[i].y)**2;
+    const xn=p[0]/p[2], yn=p[1]/p[2];
+    const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+    sum+=(K.fx*xn*sc+K.cx-tag.pixels[i].x)**2+(K.fy*yn*sc+K.cy-tag.pixels[i].y)**2;
   }
   return Math.sqrt(sum/4);
 }

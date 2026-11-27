@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createCalibrationAssistant} from '../src/assistant.mjs';
 import {solveCalibration} from '../src/solver.mjs';
-import {deviceIdentity,createProfileStore} from '../src/profile.mjs';
+import {deviceIdentity,createProfileStore,CALIBRATION_SOLVER_VERSION} from '../src/profile.mjs';
 import {synthetic,rig} from './synthetic.mjs';
 const wait=()=>new Promise(r=>setTimeout(r,0));
 function worker(){return {terminate(){this.closed=true;},postMessage(data){queueMicrotask(()=>{
@@ -83,4 +83,97 @@ test('verification tolerates minor negative clock skew, rejects rigid outliers a
   }
   assert.equal(a.state().phase,'ready');
   assert.ok(await store.load(device));
+});
+
+test('radial model upgrade ignores incompatible centered-square cache, retains backup on verify failure, and exports diagnosticsData',async()=>{
+  const dataSq=synthetic({count:80}),memory=new Map(),store=createProfileStore({getItem:k=>memory.get(k)??null,setItem:(k,v)=>memory.set(k,v)});
+  const device=await deviceIdentity({trackLabel:'Synthetic',sourceSize:[1280,1080],trackSettings:{deviceId:'A',resizeMode:'none'}},rig,'Test');
+  const feedRow=(a,row,history,latency=350)=>{
+    const sample={serial:row.serial,generation:1,context:{sessionId:'synthetic',spaceEpoch:0},imageSize:[1280,1080],sourceSize:[1280,1080],
+      submittedAtPerformanceMs:row.captureTime+Math.min(80,latency/2),videoFrameMetadata:{captureTime:row.captureTime},frameEvidence:{fresh:true}};
+    const now=row.captureTime+latency;
+    a.observe({tags:row.tags},sample,history.filter(p=>p.xrRafTimeMs<=now),now);
+  };
+  const aSq=createCalibrationAssistant({rig,device,imageSize:[1280,1080],store,workerFactory:worker,model:'centered-square'});
+  await aSq.begin();
+  for(const row of dataSq.rows){feedRow(aSq,row,dataSq.history);await wait();if(aSq.state().phase==='ready')break;}
+  const oldProfile=await store.load(device);
+  assert.equal(oldProfile.model,'centered-square');
+
+  // New assistant configured with 'centered-radial' must bypass the legacy 'centered-square' cache
+  // and collect fresh views without erasing oldProfile until verification passes.
+  const dataRad=synthetic({k1:-0.08,noise:0.12,count:80});
+  const aRad=createCalibrationAssistant({rig,device,imageSize:[1280,1080],store,workerFactory:worker,model:'centered-radial'});
+  await aRad.begin();
+  assert.equal(aRad.state().phase,'scanning');
+  assert.equal((await store.load(device)).id,oldProfile.id);
+
+  for(const row of dataRad.rows){feedRow(aRad,row,dataRad.history);await wait();if(aRad.state().phase==='ready')break;}
+  assert.equal(aRad.state().phase,'ready');
+  assert.equal(aRad.profile().model,'centered-radial');
+  assert.ok(Math.abs(aRad.profile().distCoeffs[0]-(-0.08))<0.005);
+
+  const diag=aRad.diagnosticsData();
+  assert.ok(diag?.fit?.rows?.length>=30);
+  assert.ok(diag?.fit?.history?.length>=2);
+  assert.ok(diag?.verification?.rows?.length>=10);
+});
+
+test('radial assistant triggers solver-upgraded and sanity-check rescans while keeping old cache until re-verified',async()=>{
+  const dataRad=synthetic({k1:-0.08,noise:0.12,count:80});
+  const memory=new Map(),store=createProfileStore({getItem:k=>memory.get(k)??null,setItem:(k,v)=>memory.set(k,v)});
+  const device=await deviceIdentity({trackLabel:'Synthetic',sourceSize:[1280,1080],trackSettings:{deviceId:'A',resizeMode:'none'}},rig,'Test');
+  const feedRow=(a,row,latency=350)=>{
+    const sample={serial:row.serial,generation:1,context:{sessionId:'synthetic',spaceEpoch:0},imageSize:[1280,1080],sourceSize:[1280,1080],
+      submittedAtPerformanceMs:row.captureTime+Math.min(80,latency/2),videoFrameMetadata:{captureTime:row.captureTime},frameEvidence:{fresh:true}};
+    const now=row.captureTime+latency;
+    a.observe({tags:row.tags},sample,dataRad.history.filter(p=>p.xrRafTimeMs<=now),now);
+  };
+
+  // Seed store with a valid v1 radial profile (solverVersion: 1).
+  const a0=createCalibrationAssistant({rig,device,imageSize:[1280,1080],store,workerFactory:worker,model:'centered-radial',minSolverVersion:false});
+  await a0.begin();
+  for(const row of dataRad.rows){feedRow(a0,row);await wait();if(a0.state().phase==='ready')break;}
+  const v1Prof=await store.load(device);
+  assert.ok(v1Prof);
+  await store.save({...v1Prof,solverVersion:1,id:'v1-rad'});
+
+  // Current assistant enforces CALIBRATION_SOLVER_VERSION -> triggers 'solver-upgraded' rescan, keeping backup until verified.
+  const aUp=createCalibrationAssistant({rig,device,imageSize:[1280,1080],store,workerFactory:worker,model:'centered-radial'});
+  await aUp.begin();
+  assert.equal(aUp.state().phase,'scanning');
+  assert.equal(aUp.state().upgradeReason,'solver-upgraded');
+  assert.equal((await store.load(device)).id,'v1-rad');
+
+  // Seed store with current solverVersion but degraded planarFx vs jointFx (> 8% drift) -> triggers 'sanity-check'.
+  await store.save({
+    ...v1Prof,
+    id:'drifted-v2',
+    solverVersion:CALIBRATION_SOLVER_VERSION,
+    validation:{...v1Prof.validation,planarFx:v1Prof.K.fx*1.12,jointFx:v1Prof.K.fx},
+  });
+  const aSanity=createCalibrationAssistant({rig,device,imageSize:[1280,1080],store,workerFactory:worker,model:'centered-radial'});
+  await aSanity.begin();
+  assert.equal(aSanity.state().phase,'scanning');
+  assert.equal(aSanity.state().upgradeReason,'sanity-check');
+  assert.equal((await store.load(device)).id,'drifted-v2');
+
+  // High validation P95 (>= 6.5 mm) also triggers 'sanity-check'.
+  await store.save({
+    ...v1Prof,
+    id:'high-p95-v2',
+    solverVersion:CALIBRATION_SOLVER_VERSION,
+    validation:{...v1Prof.validation,planarFx:v1Prof.K.fx,jointFx:v1Prof.K.fx,positionP95Mm:7.2},
+  });
+  const aP95=createCalibrationAssistant({rig,device,imageSize:[1280,1080],store,workerFactory:worker,model:'centered-radial'});
+  await aP95.begin();
+  assert.equal(aP95.state().phase,'scanning');
+  assert.equal(aP95.state().upgradeReason,'sanity-check');
+
+  // Completing the scan replaces the flagged cache with a verified v2 profile.
+  for(const row of dataRad.rows){feedRow(aP95,row);await wait();if(aP95.state().phase==='ready')break;}
+  assert.equal(aP95.state().phase,'ready');
+  const upgraded=await store.load(device);
+  assert.equal(upgraded.solverVersion,CALIBRATION_SOLVER_VERSION);
+  assert.notEqual(upgraded.id,'high-p95-v2');
 });

@@ -43,9 +43,12 @@ export function observeIndependentTool(raw,spec,K,association,limits=TOOL_SCAN_L
   const tag={id:raw.id,points:spec.tagCorners,pixels:c},pose=fitPlanarPose([tag],K);if(!pose)return null;
   const incidence=-pose.R[2].reduce((s,v,i)=>s+v*pose.t[i],0)/Math.hypot(...pose.t);
   if(incidence<Math.cos(limits.maxIncidenceDeg*Math.PI/180))return null;
+  const k1=Number.isFinite(K.k1)?K.k1:0;
   let sum=0;
   for(let i=0;i<4;i++){const [x,y]=spec.tagCorners[i],p=pose.t.map((v,j)=>v+pose.R[0][j]*x+pose.R[1][j]*y);
-    if(p[2]<=.01)return null;sum+=(K.fx*p[0]/p[2]+K.cx-c[i].x)**2+(K.fy*p[1]/p[2]+K.cy-c[i].y)**2;}
+    if(p[2]<=.01)return null;
+    const xn=p[0]/p[2],yn=p[1]/p[2],sc=k1?1+k1*(xn*xn+yn*yn):1;
+    sum+=(K.fx*xn*sc+K.cx-c[i].x)**2+(K.fy*yn*sc+K.cy-c[i].y)**2;}
   const rms=Math.sqrt(sum/4);if(!Number.isFinite(rms)||rms>limits.maxRmsPx)return null;
   const lFromCamera=product(inverse(association.worldFromAnchor),association.worldFromCamera);
   const lFromTool=product(lFromCamera,cvToGL(pose));if(!isRigidPose(lFromTool))return null;

@@ -34,12 +34,13 @@ export function auditAnchorObservation(observation,sample,association,rig){
   const delta=rigidVector(product(inverse(association.worldFromAnchor),worldFromOpticalL));
   const flip=[1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,0,1];
   const cameraCVFromNativeL=product(flip,inverse(association.worldFromCamera),association.worldFromAnchor);
-  let total=0,n=0;const projections=[];
+  let total=0,n=0;const projections=[],k1=Number.isFinite(K?.k1)?K.k1:0;
   for(const tag of tags){const predicted=[];let sum=0;
     for(let i=0;i<4;i++){
       const [x,y]=tag.points[i],p=[0,1,2].map(j=>cameraCVFromNativeL[j]*x+cameraCVFromNativeL[4+j]*y+cameraCVFromNativeL[12+j]);
       if(p[2]<=.01)return null;
-      const pixel={x:K.fx*p[0]/p[2]+K.cx,y:K.fy*p[1]/p[2]+K.cy};predicted.push(pixel);
+      const xn=p[0]/p[2],yn=p[1]/p[2],sc=k1?1+k1*(xn*xn+yn*yn):1;
+      const pixel={x:K.fx*xn*sc+K.cx,y:K.fy*yn*sc+K.cy};predicted.push(pixel);
       sum+=(pixel.x-tag.pixels[i].x)**2+(pixel.y-tag.pixels[i].y)**2;
     }
     total+=sum;n+=4;projections.push({id:tag.id,observed:structuredClone(tag.pixels),predicted,rmsPx:Math.sqrt(sum/4)});
@@ -63,8 +64,12 @@ export function createAnchorAudit({maxSamples=120}={}){
     if(seen.has(id)||row.captureTime<=lastCapture)return false;
     seen.add(id);lastCapture=row.captureTime;rows.push(structuredClone(row));if(rows.length>maxSamples)rows.shift();return true;
   }
+  function recentRows(limit=24){
+    const n=Number.isFinite(limit)?Math.max(0,Math.floor(limit)):24;
+    return n?structuredClone(rows.slice(-n)):[];
+  }
   function state(){return {samples:rows.length,positionDifferenceMm:stats(rows.map(r=>r.positionDifferenceMm)),
     orientationDifferenceDeg:stats(rows.map(r=>r.orientationDifferenceDeg)),nativePredictionRmsPx:stats(rows.map(r=>r.nativePredictionRmsPx)),
     independentPhysicalAccuracy:false,usedToCorrectAnchor:false};}
-  return {reset,observe,state};
+  return {reset,observe,recentRows,state};
 }

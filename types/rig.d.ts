@@ -44,6 +44,9 @@ export interface ObserveReferenceOptions {
 }
 
 export function requiredTagEdgeMm(markerId: number): number;
+export function distortNormalized(xn: number, yn: number, k1?: number): [number, number];
+export function undistortPoint(u: number, v: number, K: CameraIntrinsics): PixelPoint;
+export function projectCameraPoint(px: number, py: number, pz: number, K: CameraIntrinsics): PixelPoint | null;
 export function referenceTools(
   g: RigDefinition,
   printScale?: number,

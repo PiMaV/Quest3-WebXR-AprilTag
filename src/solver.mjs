@@ -2,6 +2,7 @@
 // No device profile or user recording is embedded in this solver.
 import {fitPlanarPose,incrementPose} from './rig.mjs';
 import {cvToGL,product,inverse,rigidVector,vectorRigid,meanRigid,poseAt} from './runtime.mjs';
+import {CALIBRATION_SOLVER_VERSION} from './profile.mjs';
 const sq=a=>a.reduce((s,x)=>s+x*x,0);
 const percentile=(a,p)=>{const s=a.slice().sort((x,y)=>x-y);return s[Math.min(s.length-1,Math.floor(s.length*p))]??Infinity;};
 export function linear(A,b) {
@@ -20,16 +21,34 @@ function normal(J,r,n=J[0].length){
   return {A,b};
 }
 export function projectResidual(pose,tags,K){
+  const k1=Number.isFinite(K?.k1)?K.k1:0;
   const r=[];
   for(const t of tags)for(let i=0;i<t.points.length;i++){
     const [x,y]=t.points[i],p=pose.t.map((v,j)=>v+pose.R[0][j]*x+pose.R[1][j]*y);
     if(p[2]<=.01)return null;
-    r.push(K.fx*p[0]/p[2]+K.cx-t.pixels[i].x,K.fy*p[1]/p[2]+K.cy-t.pixels[i].y);
+    const xn=p[0]/p[2],yn=p[1]/p[2],sc=k1?1+k1*(xn*xn+yn*yn):1;
+    r.push(K.fx*xn*sc+K.cx-t.pixels[i].x,K.fy*yn*sc+K.cy-t.pixels[i].y);
   }
   return r.every(Number.isFinite)?r:null;
 }
-const modelK=(g,size,model)=>({width:size[0],height:size[1],fx:Math.exp(g[0]),fy:Math.exp(model==='pinhole'?g[1]:g[0]),
-  cx:model==='pinhole'?g[2]*size[0]:size[0]/2,cy:model==='pinhole'?g[3]*size[1]:size[1]/2});
+const isRadialModel=model=>model==='centered-radial'||model==='pinhole-radial';
+const isFreePinhole=model=>model==='pinhole'||model==='pinhole-radial';
+const modelK=(g,size,model)=>{
+  const free=isFreePinhole(model),rad=isRadialModel(model);
+  return {width:size[0],height:size[1],fx:Math.exp(g[0]),fy:Math.exp(free?g[1]:g[0]),
+    cx:free?g[2]*size[0]:size[0]/2,cy:free?g[3]*size[1]:size[1]/2,k1:rad?g[free?4:1]:0};
+};
+const initialModelG=(size,model,initK=null)=>{
+  const fx=initK?.fx??.8*size[0],fy=initK?.fy??.8*size[0];
+  const cx=initK?initK.cx/size[0]:.5,cy=initK?initK.cy/size[1]:.5;
+  const k1=Number.isFinite(initK?.k1)?initK.k1:0;
+  if(model==='pinhole')return [Math.log(fx),Math.log(fy),cx,cy];
+  if(model==='pinhole-radial')return [Math.log(fx),Math.log(fy),cx,cy,k1];
+  if(model==='centered-radial')return [Math.log(fx),k1];
+  return [Math.log(fx)];
+};
+const isPlausibleK=(KK,size)=>KK.fx>size[0]*.2&&KK.fx<size[0]*4&&KK.fy>size[0]*.2&&KK.fy<size[0]*4&&
+  KK.cx>0&&KK.cx<size[0]&&KK.cy>0&&KK.cy<size[1]&&Math.abs(KK.k1||0)<.45;
 const huberDelta=3;
 const huberCost=r=>r.reduce((s,v)=>{const u=v/huberDelta;return s+2*huberDelta*huberDelta*(Math.sqrt(1+u*u)-1);},0);
 function buildSchur(rows,poses,g,size,model,damping){
@@ -56,9 +75,9 @@ function buildSchur(rows,poses,g,size,model,damping){
   }
   return {S,b,locals};
 }
-/** Fit camera intrinsics (`centered-square` or `pinhole`) via Pseudo-Huber Schur-complement BA. */
+/** Fit camera intrinsics (`centered-square`, `centered-radial`, `pinhole`, or `pinhole-radial`) via Pseudo-Huber Schur-complement BA. */
 export function fitIntrinsics(rows,size,{model='centered-square',maxIterations=60}={}){
-  let g=model==='pinhole'?[Math.log(.8*size[0]),Math.log(.8*size[0]),.5,.5]:[Math.log(.8*size[0])];
+  let g=initialModelG(size,model);
   const n=g.length;
   let poses=rows.map(r=>fitPlanarPose(r.tags,modelK(g,size,model)));
   if(poses.some(p=>!p))throw new Error('Could not solve marker perspectives');
@@ -73,7 +92,7 @@ export function fitIntrinsics(rows,size,{model='centered-square',maxIterations=6
     for(let i=0;i<n;i++)S[i][i]+=damping*Math.max(1,S[i][i]);
     const dg=linear(S,b);if(!dg)throw new Error('Camera intrinsics are not yet observable');
     const next=g.map((v,i)=>v+dg[i]),KK=modelK(next,size,model);
-    const plausible=KK.fx>size[0]*.2&&KK.fx<size[0]*4&&KK.fy>size[0]*.2&&KK.fy<size[0]*4&&KK.cx>0&&KK.cx<size[0]&&KK.cy>0&&KK.cy<size[1];
+    const plausible=isPlausibleK(KK,size);
     const pp=poses.map((p,k)=>{
       const updated=incrementPose(p,locals[k].z.map((v,i)=>v-locals[k].W.reduce((s,w,j)=>s+w[i]*dg[j],0)));
       // A planar pose has competing minima near frontal views. Restart from
@@ -90,7 +109,18 @@ export function fitIntrinsics(rows,size,{model='centered-square',maxIterations=6
   const finalSchur=buildSchur(rows,poses,g,size,model,0)?.S??buildSchur(rows,poses,g,size,model,1e-9)?.S??null;
   const points=rows.reduce((s,r)=>s+r.tags.length*4,0),variance=error/Math.max(1,2*points-6*rows.length-n);
   const std=g.map((_,i)=>{if(!finalSchur)return Infinity;const e=Array(n).fill(0);e[i]=1;const col=linear(finalSchur,e);return col&&col[i]>0?Math.sqrt(col[i]*variance):Infinity;});
-  return {K:modelK(g,size,model),model,rmsPx:Math.sqrt(rawSq(g,poses)/points),std,poses};
+  return {K:modelK(g,size,model),model,rmsPx:Math.sqrt(rawSq(g,poses)/points),std,poses,schur:finalSchur};
+}
+function cholesky(S){
+  if(!Array.isArray(S)||!S.length)return null;
+  const n=S.length,L=Array.from({length:n},()=>Array(n).fill(0));
+  for(let i=0;i<n;i++)for(let j=0;j<=i;j++){
+    let sum=S[i][j];
+    for(let k=0;k<j;k++)sum-=L[i][k]*L[j][k];
+    if(i===j){if(!(sum>1e-12))return null;L[i][j]=Math.sqrt(sum);}
+    else L[i][j]=sum/L[j][j];
+  }
+  return L;
 }
 function lm(fun,initial,{maxIterations=70}={}){
   let x=initial.slice(),r=fun(x),lambda=.001;
@@ -169,7 +199,7 @@ export function fitHandEye(rows,history,K){
     timeOffsetMs:fit.x[12]*1000,cost:fit.cost,delaySpreadMs,convergedSeeds:equivalent.length,usedViews:validRows.length};
 }
 /** Check whether calibration views span two non-collinear head rotation axes and >= 10 cm translation. */
-export function diversity(rows,history){
+export function diversity(rows,history,imageSize=null){
   const poses=rows.map(r=>poseAt(history,r.captureTime)).filter(Boolean);
   if(poses.length<3)return {ok:false,reason:'Time-matched XR poses missing'};
   const inv=inverse(poses[0]),vectors=poses.map(p=>rigidVector(product(inv,p)).slice(0,3));
@@ -189,13 +219,30 @@ export function diversity(rows,history){
   const reason=(maxAngle>.2&&area>.015&&maxTransM<.10)
     ?'Move head wider & closer/farther around multiple axes (>= 10 cm)'
     :'Rotate head around multiple axes and vary distance/side-to-side (>= 10 cm)';
+  let maxCornerRadiusFrac=null,visitedQuadrants=null;
+  if(Array.isArray(imageSize)&&imageSize[0]>0&&imageSize[1]>0){
+    const hw=imageSize[0]*.5,hh=imageSize[1]*.5;
+    let maxR=0;const quads=new Set();
+    for(const r of rows){
+      const ps=r.tags.flatMap(t=>t.pixels);if(!ps.length)continue;
+      let sx=0,sy=0;
+      for(const p of ps){
+        sx+=p.x;sy+=p.y;
+        const rf=Math.hypot((p.x-hw)/hw,(p.y-hh)/hh);
+        if(rf>maxR)maxR=rf;
+      }
+      const cx=sx/ps.length,cy=sy/ps.length;
+      quads.add((cx>=hw?1:0)|(cy>=hh?2:0));
+    }
+    maxCornerRadiusFrac=maxR;visitedQuadrants=quads.size;
+  }
   return {ok,maxAngleDeg:maxAngle*180/Math.PI,rotationArea:area,translationSpanM:maxTransM,imageCentreSpanPx:(()=>{
     const centres=rows.map(r=>{const ps=r.tags.flatMap(t=>t.pixels);return ['x','y'].map(k=>ps.reduce((s,p)=>s+p[k],0)/ps.length);});
     return [0,1].map(i=>Math.max(...centres.map(p=>p[i]))-Math.min(...centres.map(p=>p[i])));
-  })(),reason};
+  })(),maxCornerRadiusFrac,visitedQuadrants,reason};
 }
 function jointReprojectionErrors(rows,history,K,X,L,offsetMs){
-  const invX=inverse(X),out=[];
+  const invX=inverse(X),k1=Number.isFinite(K?.k1)?K.k1:0,out=[];
   for(const r of rows){
     const H=poseAt(history,r.captureTime+offsetMs);if(!H)return null;
     const C=product(invX,inverse(H),L);
@@ -203,7 +250,8 @@ function jointReprojectionErrors(rows,history,K,X,L,offsetMs){
       const [tx,ty]=t.points[i];
       const px=C[12]+C[0]*tx+C[4]*ty,py=C[13]+C[1]*tx+C[5]*ty,pz=C[14]+C[2]*tx+C[6]*ty;
       const zCV=-pz;if(!(zCV>.02))return null;
-      out.push(K.fx*(px/zCV)+K.cx-t.pixels[i].x,K.fy*(-py/zCV)+K.cy-t.pixels[i].y);
+      const xn=px/zCV,yn=-py/zCV,sc=k1?1+k1*(xn*xn+yn*yn):1;
+      out.push(K.fx*xn*sc+K.cx-t.pixels[i].x,K.fy*yn*sc+K.cy-t.pixels[i].y);
     }
   }
   return out.length&&out.every(Number.isFinite)?out:null;
@@ -212,19 +260,83 @@ function jointReprojectionRms(rows,history,K,X,L,offsetMs){
   const e=jointReprojectionErrors(rows,history,K,X,L,offsetMs);
   return e?Math.sqrt(sq(e)/(e.length/2)):Infinity;
 }
-function refineJointCalibration(validRows,history,initK,hand,{imageSize,model='centered-square'}){
-  const [W,H]=imageSize;
+/** Aggregate corner reprojection residuals across normalized radius bins and image quadrants. */
+export function summarizeRadialResiduals(rows,K,{poses=null,history=null,viewerFromCameraGL=null,worldFromRig=null,timeOffsetMs=0}={}){
+  const mkAcc=()=>({count:0,sumSq:0,sumRad:0,sumDx:0,sumDy:0});
+  const fin=a=>({count:a.count,rmsPx:a.count?Math.sqrt(a.sumSq/a.count):0,
+    meanRadialPx:a.count?a.sumRad/a.count:0,meanDxPx:a.count?a.sumDx/a.count:0,meanDyPx:a.count?a.sumDy/a.count:0});
+  const inner=mkAcc(),mid=mkAcc(),outer=mkAcc(),all=mkAcc();
+  const qAcc={tl:mkAcc(),tr:mkAcc(),bl:mkAcc(),br:mkAcc()},radii=[];
+  const k1=Number.isFinite(K?.k1)?K.k1:0;
+  const useJoint=Boolean(history&&viewerFromCameraGL&&worldFromRig);
+  const invX=useJoint?inverse(viewerFromCameraGL):null;
+  const pushAcc=(acc,dx,dy,rad)=>{acc.count++;acc.sumSq+=dx*dx+dy*dy;acc.sumRad+=rad;acc.sumDx+=dx;acc.sumDy+=dy;};
+  for(let ri=0;ri<rows.length;ri++){
+    const row=rows[ri];
+    let C=null,pose=null;
+    if(useJoint){
+      const H=poseAt(history,row.captureTime+timeOffsetMs);if(!H)continue;
+      C=product(invX,inverse(H),worldFromRig);
+    }else{
+      pose=poses?.[ri]??fitPlanarPose(row.tags,K);if(!pose)continue;
+    }
+    for(const tag of row.tags)for(let i=0;i<tag.points.length;i++){
+      const [tx,ty]=tag.points[i],obs=tag.pixels[i];
+      let xn,yn;
+      if(useJoint){
+        const px=C[12]+C[0]*tx+C[4]*ty,py=C[13]+C[1]*tx+C[5]*ty,pz=C[14]+C[2]*tx+C[6]*ty;
+        const zCV=-pz;if(!(zCV>.02))continue;
+        xn=px/zCV;yn=-py/zCV;
+      }else{
+        const px=pose.t[0]+pose.R[0][0]*tx+pose.R[1][0]*ty;
+        const py=pose.t[1]+pose.R[0][1]*tx+pose.R[1][1]*ty;
+        const pz=pose.t[2]+pose.R[0][2]*tx+pose.R[1][2]*ty;
+        if(!(pz>.01))continue;
+        xn=px/pz;yn=py/pz;
+      }
+      const sc=k1?1+k1*(xn*xn+yn*yn):1;
+      const dx=K.fx*xn*sc+K.cx-obs.x,dy=K.fy*yn*sc+K.cy-obs.y;
+      if(!Number.isFinite(dx)||!Number.isFinite(dy))continue;
+      const rx=(obs.x-K.cx)/K.fx,ry=(obs.y-K.cy)/K.fy,r=Math.hypot(rx,ry);
+      const rPx=Math.hypot(obs.x-K.cx,obs.y-K.cy);
+      const radPx=rPx>1e-9?(dx*(obs.x-K.cx)+dy*(obs.y-K.cy))/rPx:0;
+      radii.push(r);pushAcc(all,dx,dy,radPx);
+      if(r<.25)pushAcc(inner,dx,dy,radPx);
+      else if(r<.45)pushAcc(mid,dx,dy,radPx);
+      else pushAcc(outer,dx,dy,radPx);
+      const qKey=(obs.y<K.cy?'t':'b')+(obs.x<K.cx?'l':'r');
+      pushAcc(qAcc[qKey],dx,dy,radPx);
+    }
+  }
+  radii.sort((a,b)=>a-b);
+  return {totalCorners:all.count,rmsPx:fin(all).rmsPx,
+    rMax:radii.length?radii.at(-1):0,rP95:radii.length?radii[Math.min(radii.length-1,Math.floor(radii.length*.95))]:0,
+    inner:fin(inner),mid:fin(mid),outer:fin(outer),
+    quadrants:{tl:fin(qAcc.tl),tr:fin(qAcc.tr),bl:fin(qAcc.bl),br:fin(qAcc.br)}};
+}
+function refineJointCalibration(validRows,history,initK,hand,{imageSize,model='centered-square',opticalPrior=null}){
   const init=[
     ...rigidVector(hand.viewerFromCameraGL),
     ...rigidVector(hand.worldFromRig),
     Math.max(-.24,Math.min(.24,hand.timeOffsetMs/1000)),
-    ...(model==='pinhole'?[Math.log(initK.fx),Math.log(initK.fy),initK.cx/W,initK.cy/H]:[Math.log(initK.fx)]),
+    ...initialModelG(imageSize,model,initK),
   ];
   const fun=x=>{
     const KK=modelK(x.slice(13),imageSize,model);
-    if(!(KK.fx>W*.2&&KK.fx<W*4&&KK.fy>W*.2&&KK.fy<W*4&&KK.cx>0&&KK.cx<W&&KK.cy>0&&KK.cy<H))return null;
+    if(!isPlausibleK(KK,imageSize))return null;
     const err=jointReprojectionErrors(validRows,history,KK,vectorRigid(x.slice(0,6)),vectorRigid(x.slice(6,12)),x[12]*1000);
-    return err?err.map(v=>v*.5):null;
+    if(!err)return null;
+    const out=err.map(v=>v*.5);
+    if(opticalPrior?.L&&opticalPrior?.g0&&opticalPrior.wOpt>0){
+      const dg=x.slice(13).map((v,i)=>v-opticalPrior.g0[i]);
+      const s=.5*opticalPrior.wOpt;
+      for(let i=0;i<dg.length;i++){
+        let v=0;
+        for(let j=i;j<dg.length;j++)v+=opticalPrior.L[j][i]*dg[j];
+        out.push(s*v);
+      }
+    }
+    return out;
   };
   const fit=lm(fun,init,{maxIterations:30});
   const x=fit.x;
@@ -233,7 +345,8 @@ function refineJointCalibration(validRows,history,initK,hand,{imageSize,model='c
   const worldFromRig=vectorRigid(x.slice(6,12));
   const timeOffsetMs=x[12]*1000;
   const r0=fun(x);
-  let fxStd=Infinity;
+  const gLen=x.length-13;
+  let intrinsicStd=Array(gLen).fill(Infinity);
   if(r0){
     const n=x.length,J=r0.map(()=>Array(n));
     let ok=true;
@@ -244,25 +357,27 @@ function refineJointCalibration(validRows,history,initK,hand,{imageSize,model='c
     }
     if(ok){
       const {A}=normal(J,r0,n);
-      const e13=Array(n).fill(0);e13[13]=1;
-      const col=linear(A,e13);
       const dof=Math.max(1,r0.length-n);
       const variance=sq(r0)/dof;
-      if(col&&col[13]>0)fxStd=Math.sqrt(col[13]*variance);
+      intrinsicStd=intrinsicStd.map((_,k)=>{
+        const idx=13+k,e=Array(n).fill(0);e[idx]=1;
+        const col=linear(A,e);
+        return col&&col[idx]>0?Math.sqrt(col[idx]*variance):Infinity;
+      });
     }
   }
   const jointTrainingRmsPx=jointReprojectionRms(validRows,history,K,viewerFromCameraGL,worldFromRig,timeOffsetMs);
-  return {K,viewerFromCameraGL,worldFromRig,timeOffsetMs,jointTrainingRmsPx,fxStd};
+  return {K,viewerFromCameraGL,worldFromRig,timeOffsetMs,jointTrainingRmsPx,fxStd:intrinsicStd[0],intrinsicStd};
 }
 /** Full camera intrinsics, hand-eye, capture delay, joint BA refinement, and 80/20 holdout solver. */
 export function solveCalibration({rows,history,imageSize,model='centered-square'},progress=()=>{}){
   if(rows.length<30)throw new Error('At least 30 distinct multi-tag views required');
   const scope=rows[0].scope;
   if(rows.some(r=>r.scope!==scope)||history.some(p=>p.scope!==scope))throw new Error('Camera or XR space changed: collect again');
-  if(!diversity(rows,history).ok)throw new Error(diversity(rows,history).reason);
+  if(!diversity(rows,history,imageSize).ok)throw new Error(diversity(rows,history,imageSize).reason);
   // Last fifth is never fitted: this also exposes motion-dependent overfitting.
   const cut=Math.floor(rows.length*.8),training=rows.slice(0,cut),held=rows.slice(cut);
-  if(!diversity(training,history).ok)throw new Error('Collect more diverse head motions and distance');
+  if(!diversity(training,history,imageSize).ok)throw new Error('Collect more diverse head motions and distance');
   progress('Fitting camera model');const fit=fitIntrinsics(training,imageSize,{model});
   progress('Solving camera-headset transform and delay');const hand0=fitHandEye(training,history,fit.K);
   const validTraining=training.filter(r=>hasContinuousHistory(history,r.captureTime-250,r.captureTime+250));
@@ -271,37 +386,51 @@ export function solveCalibration({rows,history,imageSize,model='centered-square'
   const initJointRms=jointReprojectionRms(jointRows,history,fit.K,hand0.viewerFromCameraGL,hand0.worldFromRig,hand0.timeOffsetMs);
   progress('Refining focal length & hand-eye jointly');
   let finalK=fit.K,finalX=hand0.viewerFromCameraGL,finalL=hand0.worldFromRig,finalOffset=hand0.timeOffsetMs;
-  let jointTrainingRmsPx=initJointRms,jointFxStd=Infinity;
+  let jointTrainingRmsPx=initJointRms,jointIntrinsicStd=fit.std.map(()=>Infinity);
+  const priorL=fit.schur?cholesky(fit.schur):null;
+  const wOpt=Math.min(4.0,Math.max(1.0,(initJointRms/Math.max(.25,fit.rmsPx))*.7));
+  const opticalPrior=priorL?{g0:initialModelG(imageSize,model,fit.K),L:priorL,wOpt}:null;
   try{
-    const joint=refineJointCalibration(jointRows,history,fit.K,hand0,{imageSize,model});
-    if(Number.isFinite(joint.jointTrainingRmsPx)&&joint.jointTrainingRmsPx<=initJointRms+.05){
+    const joint=refineJointCalibration(jointRows,history,fit.K,hand0,{imageSize,model,opticalPrior});
+    if(Number.isFinite(joint.jointTrainingRmsPx)&&joint.jointTrainingRmsPx<=initJointRms+.15){
       finalK=joint.K;finalX=joint.viewerFromCameraGL;finalL=joint.worldFromRig;finalOffset=joint.timeOffsetMs;
-      jointTrainingRmsPx=joint.jointTrainingRmsPx;jointFxStd=joint.fxStd;
+      jointTrainingRmsPx=joint.jointTrainingRmsPx;jointIntrinsicStd=joint.intrinsicStd;
     }
   }catch{ /* keep decoupled fit if joint step fails */ }
   const worlds=worldPoses(held,history,finalK,finalX,finalOffset);
   const validation=consistency(worlds,finalL);
-  const errors=held.flatMap(r=>{
-    const pose=fitPlanarPose(r.tags,finalK),e=pose&&projectResidual(pose,r.tags,finalK);return e??[1e6];
+  const heldPoses=held.map(r=>fitPlanarPose(r.tags,finalK));
+  const errors=held.flatMap((r,i)=>{
+    const pose=heldPoses[i],e=pose&&projectResidual(pose,r.tags,finalK);return e??[1e6];
   });
   const heldRms=Math.sqrt(sq(errors)/(errors.length/2));
   const jointHeldOutRmsPx=jointReprojectionRms(held,history,finalK,finalX,finalL,finalOffset);
-  const fxStd=Number.isFinite(jointFxStd)?Math.min(fit.std[0],jointFxStd):fit.std[0];
-  const uncertainty=fxStd<.05&&(model!=='pinhole'||(fit.std[1]<.05&&fit.std[2]<.04&&fit.std[3]<.04));
+  const intrinsicStd=fit.std.map((s,i)=>Number.isFinite(jointIntrinsicStd[i])?Math.min(s,jointIntrinsicStd[i]):s);
+  const free=isFreePinhole(model),rad=isRadialModel(model);
+  const uncertainty=intrinsicStd[0]<.05&&
+    (!free||(intrinsicStd[1]<.05&&intrinsicStd[2]<.04&&intrinsicStd[3]<.04))&&
+    (!rad||intrinsicStd[free?4:1]<.06);
   const camT=finalX.slice(12,15);
   const offsetSafe=Math.abs(finalOffset)<230,translationSafe=Math.hypot(camT[0],camT[1],camT[2])<.16&&Math.abs(camT[2])<.09;
   const delayIdentified=hand0.convergedSeeds>=2&&hand0.delaySpreadMs<15;
-  const passed=uncertainty&&offsetSafe&&translationSafe&&delayIdentified&&fit.rmsPx<1&&heldRms<1.2&&
+  const k1=finalK.k1??0,k1Safe=Math.abs(k1)<.45;
+  const passed=uncertainty&&offsetSafe&&translationSafe&&delayIdentified&&k1Safe&&fit.rmsPx<1&&heldRms<1.2&&
     validation.positionP95Mm<8.5&&validation.angleP95Deg<1.5&&jointHeldOutRmsPx<10.0;
-  return {K:finalK,distCoeffs:[0,0,0,0,0],
+  const assumptions=[
+    ...(free?[]:['square pixels','centered principal point']),
+    rad?'radial distortion k1':'zero distortion',
+    'fixed stationary target','nominal print scale',
+  ];
+  const radialResiduals=summarizeRadialResiduals(held,finalK,{poses:heldPoses});
+  const jointRadialResiduals=summarizeRadialResiduals(held,finalK,{history,viewerFromCameraGL:finalX,worldFromRig:finalL,timeOffsetMs:finalOffset});
+  return {K:finalK,distCoeffs:[k1,0,0,0,0],
     viewerFromCameraGL:finalX,worldFromRig:finalL,timeOffsetMs:finalOffset,
     cost:hand0.cost,delaySpreadMs:hand0.delaySpreadMs,convergedSeeds:hand0.convergedSeeds,usedViews:hand0.usedViews,
-    model,
-    assumptions:model==='centered-square'?['square pixels','centered principal point','zero distortion','fixed stationary target','nominal print scale']:
-      ['zero distortion','fixed stationary target','nominal print scale'],
+    model,solverVersion:CALIBRATION_SOLVER_VERSION,assumptions,
     validation:{...validation,passed,trainingViews:training.length,heldOutViews:held.length,
       trainingRmsPx:fit.rmsPx,heldOutRmsPx:heldRms,jointTrainingRmsPx,jointHeldOutRmsPx,
-      planarFx:fit.K.fx,jointFx:finalK.fx,intrinsicStd:[fxStd,...fit.std.slice(1)],
+      planarFx:fit.K.fx,jointFx:finalK.fx,planarK1:fit.K.k1??0,jointK1:k1,intrinsicStd,
+      radialResiduals,jointRadialResiduals,
       uncertainty,offsetSafe,translationSafe,delayIdentified},
     independentlyValidated:false};
 }

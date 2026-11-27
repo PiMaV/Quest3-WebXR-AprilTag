@@ -152,8 +152,11 @@ export function projectPriorRois({
     const xCV = xGL, yCV = -yGL, zCV = -zGL;
     if (!Number.isFinite(zCV) || zCV < itemMinDist || zCV > itemMaxDist) continue;
 
-    const u = K.fx * (xCV / zCV) + K.cx;
-    const v = K.fy * (yCV / zCV) + K.cy;
+    const k1 = Number.isFinite(K.k1) ? K.k1 : 0;
+    const xn = xCV / zCV, yn = yCV / zCV;
+    const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+    const u = K.fx * xn * sc + K.cx;
+    const v = K.fy * yn * sc + K.cy;
     if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
     if (u < -halfPx || u > width + halfPx || v < -halfPx || v > height + halfPx) continue;
 

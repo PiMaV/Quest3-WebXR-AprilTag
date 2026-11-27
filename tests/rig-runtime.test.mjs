@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {observeReference,referenceTools,fitPlanarPose,solveSingleTagPose,incrementPose,requiredTagEdgeMm} from '../src/rig.mjs';
+import {observeReference,referenceTools,fitPlanarPose,solveSingleTagPose,incrementPose,requiredTagEdgeMm,distortNormalized,undistortPoint,projectCameraPoint} from '../src/rig.mjs';
 import {cvToGL,product,inverse,poseAt,meanRigid,rigidVector,vectorRigid,observationIsFresh} from '../src/runtime.mjs';
 import {prepareRgbaFrame,prepareGrayFrame,grayFingerprint,frameEvidence} from '../src/frame-evidence.mjs';
 import {xrExitPressed,nextExitHold,XR_EXIT_HOLD_MS} from '../src/xr-exit.mjs';
@@ -311,4 +311,101 @@ test('solveSingleTagPose supports custom edgeMm and getTagEdgeMm overrides witho
   assert.equal(solveSingleTagPose({id:0,corners},K,{edgeMm:-10}),null);
   assert.equal(solveSingleTagPose({id:0,corners},K,{edgeMm:NaN}),null);
   assert.equal(solveSingleTagPose({id:0,corners},K,{getTagEdgeMm:()=>{throw new Error('boom');}}),null);
+});
+
+test('distortNormalized, undistortPoint, fitPlanarPose, and solveSingleTagPose handle radial distortion k1 accurately',()=>{
+  const Kbase={width:1280,height:1080,fx:886.3,fy:886.3,cx:640,cy:540};
+  for(const k1 of [-0.15,-0.08,0,0.08]){
+    const K={...Kbase,k1};
+    for(const [xn,yn] of [[0,0],[0.25,0.15],[-0.45,0.35],[0.62,-0.52]]){
+      const [xd,yd]=distortNormalized(xn,yn,k1);
+      const u=K.fx*xd+K.cx,v=K.fy*yd+K.cy;
+      const back=undistortPoint(u,v,K);
+      const ux=K.fx*xn+K.cx,uy=K.fy*yn+K.cy;
+      assert.ok(Math.hypot(back.x-ux,back.y-uy)<1e-6,`roundtrip failed for k1=${k1}`);
+    }
+  }
+  // Fold-safety guard for extreme corner under strong barrel distortion.
+  const extreme=undistortPoint(2400,1900,{...Kbase,k1:-0.25});
+  assert.ok(Number.isFinite(extreme.x)&&Number.isFinite(extreme.y));
+
+  // Oblique 45 deg outer-field tag at X=0.25m, Z=0.50m under k1=-0.08 and k1=+0.06.
+  const half=0.010,local=[[-half,-half],[half,-half],[half,half],[-half,half]];
+  const gtGL=vectorRigid([0.65,-0.25,0.15,0.22,-0.12,-0.52]);
+  for(const k1 of [-0.08,0.06]){
+    const K={...Kbase,k1};
+    const corners=local.map(([x,y])=>{
+      const wx=gtGL[0]*x+gtGL[4]*y+gtGL[12];
+      const wy=gtGL[1]*x+gtGL[5]*y+gtGL[13];
+      const wz=gtGL[2]*x+gtGL[6]*y+gtGL[14];
+      return projectCameraPoint(wx,-wy,-wz,K);
+    });
+    const solved=solveSingleTagPose({id:305,corners},K,{maxRmsPx:0.5});
+    assert.ok(solved);
+    assert.ok(solved.rmsPx<1e-9,`expected <1e-9 rmsPx, got ${solved.rmsPx}`);
+    const d=rigidVector(product(inverse(gtGL),cvToGL(solved.pose)));
+    assert.ok(Math.hypot(...d.slice(0,3))<1e-9);
+    assert.ok(Math.hypot(...d.slice(3,6))<1e-9);
+
+    // Multi-tag planar rig recovery with radial distortion.
+    const rigTags=rig.tools[0].tags.map(tag=>({
+      id:tag.id,
+      points:tag.corners,
+      pixels:tag.corners.map(([x,y])=>{
+        const wx=gtGL[0]*x+gtGL[4]*y+gtGL[12];
+        const wy=gtGL[1]*x+gtGL[5]*y+gtGL[13];
+        const wz=gtGL[2]*x+gtGL[6]*y+gtGL[14];
+        return projectCameraPoint(wx,-wy,-wz,K);
+      }),
+    }));
+    const rigPose=fitPlanarPose(rigTags,K);
+    assert.ok(rigPose);
+    const rd=rigidVector(product(inverse(gtGL),cvToGL(rigPose)));
+    assert.ok(Math.hypot(...rd)<1e-9);
+  }
+
+  // Analytic distorted 2x6 Jacobian optimality check on noisy outer-field tag corners.
+  const Krad={...Kbase,k1:-0.08};
+  const noisyCorners=local.map(([x,y],i)=>{
+    const wx=gtGL[0]*x+gtGL[4]*y+gtGL[12];
+    const wy=gtGL[1]*x+gtGL[5]*y+gtGL[13];
+    const wz=gtGL[2]*x+gtGL[6]*y+gtGL[14];
+    const p=projectCameraPoint(wx,-wy,-wz,Krad);
+    return {x:p.x+(i%2===0?0.35:-0.32),y:p.y+(i<2?-0.30:0.34)};
+  });
+  const noisySolved=solveSingleTagPose({id:305,corners:noisyCorners},Krad,{maxRmsPx:1.0});
+  assert.ok(noisySolved&&noisySolved.rmsPx<0.5);
+  const costDist=pose=>{
+    let s=0;
+    for(let i=0;i<4;i++){
+      const [x,y]=local[i];
+      const px=pose.t[0]+pose.R[0][0]*x+pose.R[1][0]*y;
+      const py=pose.t[1]+pose.R[0][1]*x+pose.R[1][1]*y;
+      const pz=pose.t[2]+pose.R[0][2]*x+pose.R[1][2]*y;
+      const p=projectCameraPoint(px,py,pz,Krad);
+      s+=(p.x-noisyCorners[i].x)**2+(p.y-noisyCorners[i].y)**2;
+    }
+    return s;
+  };
+  const baseC=costDist(noisySolved.pose),eps=1e-6;
+  for(let j=0;j<6;j++){
+    const sp=[0,0,0,0,0,0];sp[j]=eps;
+    const sm=[0,0,0,0,0,0];sm[j]=-eps;
+    const grad=Math.abs(costDist(incrementPose(noisySolved.pose,sp))-costDist(incrementPose(noisySolved.pose,sm)))/(2*eps);
+    assert.ok(grad<1e-4,`distorted Jacobian gradient along dim ${j} too high: ${grad}`);
+  }
+
+  // Border-tag pitfall check: raw corners inside [0..width, 0..height] whose undistorted corners exceed sensor edge must still succeed.
+  const borderGL=vectorRigid([0.05,-0.05,0,0.365,-0.28,-0.50]);
+  const borderCorners=local.map(([x,y])=>{
+    const wx=borderGL[0]*x+borderGL[4]*y+borderGL[12];
+    const wy=borderGL[1]*x+borderGL[5]*y+borderGL[13];
+    const wz=borderGL[2]*x+borderGL[6]*y+borderGL[14];
+    return projectCameraPoint(wx,-wy,-wz,Krad);
+  });
+  assert.ok(borderCorners.every(p=>p.x>=0&&p.x<Krad.width&&p.y>=0&&p.y<Krad.height));
+  assert.ok(borderCorners.some(p=>{const u=undistortPoint(p.x,p.y,Krad);return u.x>=Krad.width||u.y>=Krad.height;}));
+  const borderSolved=solveSingleTagPose({id:305,corners:borderCorners},Krad,{maxRmsPx:0.5});
+  assert.ok(borderSolved);
+  assert.ok(borderSolved.rmsPx<1e-9);
 });

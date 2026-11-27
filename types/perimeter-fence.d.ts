@@ -1,9 +1,46 @@
-import type { Matrix4Array, RigDefinition, Vec3 } from './common.js';
+import type { CameraIntrinsics, Matrix4Array, PixelPoint, RigDefinition, Vec2, Vec3 } from './common.js';
 
 export const FENCE_HEIGHT_M: number;
 export const PERIMETER_TRIGGER_TAG_ID: number;
 export const PERIMETER_OUTSIDE_HYSTERESIS_M: Readonly<{ enterOutsideM: number; exitOutsideM: number }>;
+export const PERIMETER_LANDMARK_DEFAULTS: Readonly<{
+  minKeyframes: number;
+  maxKeyframes: number;
+  minKeyframeDistM: number;
+  minKeyframeAngleDeg: number;
+  minBaselineM: number;
+  minParallaxDeg: number;
+  minSpanMs: number;
+  minConfidence: number;
+  minEdgePx: number;
+  minCosView: number;
+  maxSquareFitRmsMm: number;
+  maxPosSpreadMm: number;
+  maxYawSpreadDeg: number;
+  maxReprojRmsPxXr: number;
+  maxReprojRmsPxOptical: number;
+  outlierDemoteStreak: number;
+  severeOutlierPx: number;
+  severeOutlierStreak: number;
+  lockedJumpDemoteM: number;
+}>;
 export const PERIMETER_MARKERS: ReadonlyArray<Readonly<{ id: number; role: string }>>;
+
+export type PerimeterCoordinateMode = 'planar-z0' | 'free-6dof';
+export type PerimeterLandmarkState = 'tracking' | 'locked' | 'demoted' | 'fixed';
+
+export interface PerimeterLandmark {
+  id: number;
+  role: string;
+  x: number;
+  y: number;
+  yaw: number;
+  points: [Vec2, Vec2, Vec2, Vec2];
+  rmsPx: number;
+  baselineM: number;
+  parallaxDeg: number;
+  views: number;
+}
 
 export interface PerimeterOutsideResult {
   outside: boolean;
@@ -34,6 +71,8 @@ export interface PerimeterVertex {
   matrix?: Matrix4Array;
   lastAt: number;
   updates: number;
+  landmarkState?: PerimeterLandmarkState;
+  landmarkRmsPx?: number | null;
 }
 
 export interface PerimeterFence {
@@ -42,6 +81,8 @@ export interface PerimeterFence {
   isActive(): boolean;
   isOffered(): boolean;
   status(): 'idle' | 'offered' | 'active';
+  getCoordinateMode(): PerimeterCoordinateMode;
+  setCoordinateMode(nextMode: PerimeterCoordinateMode): PerimeterCoordinateMode;
   triggerMarker(): Omit<PerimeterVertex, 'fixed' | 'updates'> | null;
   activate(opts?: { force?: boolean }): boolean;
   deactivate(): boolean;
@@ -52,11 +93,22 @@ export interface PerimeterFence {
     lFromTag: Matrix4Array,
     cameraPosL: Vec3 | null,
     atMs: number,
-    opts?: { weight?: number },
+    opts?: {
+      weight?: number;
+      corners?: PixelPoint[] | null;
+      lFromCamera?: Matrix4Array | null;
+      K?: CameraIntrinsics | null;
+      minEdgePx?: number;
+      poseSource?: string;
+    },
   ): {
     accepted: boolean;
     isNew: boolean;
     justOffered?: boolean;
+    justLocked?: boolean;
+    demoted?: boolean;
+    locked?: boolean;
+    landmarkState?: PerimeterLandmarkState;
     status?: 'idle' | 'offered' | 'active';
     id: number;
     role: string;
@@ -88,6 +140,13 @@ export interface PerimeterFence {
   step(dtSec: number): boolean;
   orderedVertices(): PerimeterVertex[];
   discoveredMarkers(): PerimeterVertex[];
+  lockedLandmarks(): PerimeterLandmark[];
+  lockedCount(): number;
+  reportLandmarkInlier(tagId: number): boolean;
+  reportLandmarkOutlier(
+    tagId: number,
+    opts?: { residualPx?: number },
+  ): { demoted: boolean; id: number; role?: string; residualPx?: number; streak?: number } | null;
   dynamicCount(): number;
   isOutsideXY(
     posL: ArrayLike<number> | null | undefined,
@@ -103,13 +162,23 @@ export interface PerimeterFence {
     status: 'idle' | 'offered' | 'active';
     active: boolean;
     offered: boolean;
+    coordinateMode: PerimeterCoordinateMode;
     triggerTagId: number;
     heightM: number;
     dynamicCount: number;
+    lockedCount: number;
     totalDynamicMarkers: number;
     perimeterM: number;
     areaM2: number;
-    vertices: Array<{ id: number; role: string; fixed: boolean; posL: Vec3; updates: number }>;
+    vertices: Array<{
+      id: number;
+      role: string;
+      fixed: boolean;
+      posL: Vec3;
+      updates: number;
+      landmarkState: PerimeterLandmarkState;
+      landmarkRmsPx: number | null;
+    }>;
   };
 }
 
@@ -130,6 +199,45 @@ export function projectPointToTablePlane(
     maxHorizontalShiftM?: number;
   },
 ): Vec3;
+export function tagCornersOnZ0(x: number, y: number, yaw: number, edgeM?: number): [Vec2, Vec2, Vec2, Vec2];
+export function fitTagSquareOnZ0(
+  cornersPx: ReadonlyArray<PixelPoint>,
+  lFromCamera: Matrix4Array,
+  K: CameraIntrinsics,
+  opts?: {
+    edgeM?: number;
+    minCameraHeightM?: number;
+    minRayDrop?: number;
+    maxDistM?: number;
+  },
+): {
+  x: number;
+  y: number;
+  yaw: number;
+  squareRmsMm: number;
+  cornersL: [Vec2, Vec2, Vec2, Vec2];
+  rayDir: Vec3;
+  distM: number;
+  cosView: number;
+} | null;
+export function triangulateTagOnZ0(
+  keyframes: ReadonlyArray<{ lFromCamera: Matrix4Array; pixels: ReadonlyArray<PixelPoint>; weight?: number }>,
+  K: CameraIntrinsics,
+  opts?: {
+    edgeM?: number;
+    maxIterations?: number;
+    huberDeltaPx?: number;
+  },
+): {
+  x: number;
+  y: number;
+  yaw: number;
+  rmsPx: number;
+  corners: [Vec2, Vec2, Vec2, Vec2];
+  views: number;
+  stdXYMm: number;
+  stdYawDeg: number;
+} | null;
 export function polygonMetricsXY(vertices: Array<{ pos: Vec3 }>): { perimeterM: number; areaM2: number };
 export function signedDistanceToPolygonXY(
   x: number,
@@ -185,5 +293,7 @@ export function createPerimeterFence(
     inViewDeadZoneM?: number;
     inViewMinExpectedMinorPx?: number;
     tagEdgeM?: number;
+    coordinateMode?: PerimeterCoordinateMode;
+    landmark?: Partial<Record<string, number>>;
   },
 ): PerimeterFence;

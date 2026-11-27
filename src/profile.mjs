@@ -2,6 +2,7 @@ import {poseAt} from './runtime.mjs';
 import {isRigidPose} from './anchor.mjs';
 export const PROFILE_SCHEMA='webxr-apriltag-profile-v1';
 export const PIPELINE='rgba-gray-arena36h11-planar-capture-xrraf-v1';
+export const CALIBRATION_SOLVER_VERSION=2;
 const stable=v=>JSON.stringify(v,(_,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))):x);
 export async function digest(v){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(stable(v)))),b=>b.toString(16).padStart(2,'0')).join('');}
 /** Compute a SHA-256 device + camera-mode + rig identity key for calibration profile scoping. */
@@ -22,7 +23,10 @@ export function validateCalibration(p){
     p.K.width!==p.imageSize[0]||p.K.height!==p.imageSize[1]||
     !isRigidPose(p.viewerFromCameraGL)||!Number.isFinite(p.timeOffsetMs)||Math.abs(p.timeOffsetMs)>=230||
     !camT||Math.hypot(camT[0],camT[1],camT[2])>=0.16||Math.abs(camT[2])>=0.09||
-    p.distCoeffs?.length!==5||p.distCoeffs.some(x=>x!==0)||
+    !Array.isArray(p.distCoeffs)||p.distCoeffs.length!==5||!p.distCoeffs.every(Number.isFinite)||
+    Math.abs(p.distCoeffs[0])>=0.45||p.distCoeffs.slice(1).some(x=>x!==0)||
+    (p.K.k1!==undefined&&(!Number.isFinite(p.K.k1)||Math.abs(p.K.k1-p.distCoeffs[0])>=1e-6))||
+    (p.solverVersion!==undefined&&(!Number.isInteger(p.solverVersion)||p.solverVersion<1))||
     p.validation?.passed!==true||p.verification?.passed!==true||p.independentlyValidated!==false||
     (p.validation.positionP95Mm!=null&&p.validation.positionP95Mm>=8.5)||
     (p.validation.angleP95Deg!=null&&p.validation.angleP95Deg>=1.5)||
@@ -57,7 +61,8 @@ export function calibratedCameraModel(p,imageSize,sourceSize,label,userAgent,set
     (settings.focusMode??null)!==p.device.mode.focusMode)
     throw new Error('Camera or image mode changed. Please re-verify the profile.');
   const [w,h]=imageSize,[sw,sh]=p.imageSize;if(Math.abs(w/h-sw/sh)>.001)throw new Error('Image aspect ratio changed');
-  return {width:w,height:h,fx:p.K.fx*w/sw,fy:p.K.fy*h/sh,cx:p.K.cx*w/sw,cy:p.K.cy*h/sh};
+  const k1=Number.isFinite(p.distCoeffs?.[0])?p.distCoeffs[0]:(Number.isFinite(p.K?.k1)?p.K.k1:0);
+  return {width:w,height:h,fx:p.K.fx*w/sw,fy:p.K.fy*h/sh,cx:p.K.cx*w/sw,cy:p.K.cy*h/sh,k1};
 }
 export function profileCameraConstraints(p,devices=[],supported={}){
   const [width,height]=p.device.mode.sourceSize,device=devices.find(d=>d.label===p.device.trackLabel&&d.kind==='videoinput');

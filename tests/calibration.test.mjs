@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {Matrix4,Vector3,Quaternion,Euler} from '../vendor/three/three.module.js';
 import {solveCalibration,fitIntrinsics} from '../src/solver.mjs';
 import {product,inverse,rigidVector,vectorRigid} from '../src/runtime.mjs';
-import {deviceIdentity,createProfileStore,PROFILE_SCHEMA,PIPELINE,calibratedCameraModel,extractCalibrationProfile,importCalibrationProfile,validateCalibration,viewerPoseHorizon,createObservationBuffer} from '../src/profile.mjs';
+import {deviceIdentity,createProfileStore,PROFILE_SCHEMA,CALIBRATION_SOLVER_VERSION,PIPELINE,calibratedCameraModel,extractCalibrationProfile,importCalibrationProfile,validateCalibration,viewerPoseHorizon,createObservationBuffer} from '../src/profile.mjs';
 import {synthetic,rig} from './synthetic.mjs';
 for(const model of ['centered-square','pinhole'])test(`${model}: recovers camera, hand/eye and delay from diverse unseen poses`,()=>{
   const d=synthetic({pinhole:model==='pinhole'}),r=solveCalibration({...d,model});
@@ -121,4 +121,59 @@ test('joint BA decouples fx and depth z on shallow head tilt and validateCalibra
   const realWorldVal={...good,validation:{...good.validation,positionP95Mm:4.5,jointHeldOutRmsPx:4.8},
     verification:{passed:true,positionP95Mm:6.2,angleP95Deg:0.8}};
   assert.equal(validateCalibration(realWorldVal).id,'ok');
+});
+
+for(const [model,k1True] of [['centered-radial',-0.08],['centered-radial',0.05],['pinhole-radial',-0.08]]){
+  test(`${model} (k1=${k1True}): recovers k1, intrinsics, hand/eye, delay and drops outer residuals`,()=>{
+    const d=synthetic({pinhole:model==='pinhole-radial',k1:k1True,noise:0.12,count:72});
+    const r=solveCalibration({...d,model});
+    assert.equal(r.validation.passed,true);
+    assert.ok(Math.abs(r.distCoeffs[0]-k1True)<0.004,`k1 error too large: ${r.distCoeffs[0]} vs ${k1True}`);
+    assert.ok(Math.abs(r.K.fx-d.truth.K.fx)<5,`fx error: ${r.K.fx} vs ${d.truth.K.fx}`);
+    assert.ok(Math.abs(r.K.fy-d.truth.K.fy)<5,`fy error: ${r.K.fy} vs ${d.truth.K.fy}`);
+    assert.ok(Math.abs(r.timeOffsetMs-d.truth.delay)<3);
+    assert.ok(r.validation.radialResiduals.outer.rmsPx<0.25);
+
+    if(model==='centered-radial'&&k1True===-0.08){
+      const base=solveCalibration({...d,model:'centered-square'});
+      assert.ok(r.validation.radialResiduals.outer.rmsPx<base.validation.radialResiduals.outer.rmsPx*0.5);
+    }
+
+    const prof={...r,schema:PROFILE_SCHEMA,id:'rad-ok',imageSize:[1280,1080],pipeline:PIPELINE,
+      device:{key:'k',rigHash:'rh',pipeline:PIPELINE,trackLabel:'c',userAgent:'ua',mode:{sourceSize:[1280,1080],resizeMode:null,zoom:null,focusMode:null}},
+      verification:{passed:true,positionP95Mm:2.5,angleP95Deg:0.6}};
+    assert.equal(validateCalibration(prof).id,'rad-ok');
+    const scaled=calibratedCameraModel(prof,[640,540],[1280,1080],'c','ua',{});
+    assert.ok(Math.abs(scaled.k1-r.distCoeffs[0])<1e-9);
+    assert.throws(()=>validateCalibration({...prof,distCoeffs:[-0.50,0,0,0,0]}),/validated/);
+    assert.throws(()=>validateCalibration({...prof,distCoeffs:[-0.08,0.01,0,0,0]}),/validated/);
+    assert.throws(()=>validateCalibration({...prof,K:{...prof.K,k1:0}}),/validated/);
+    assert.equal(r.solverVersion,CALIBRATION_SOLVER_VERSION);
+  });
+}
+
+test('fitIntrinsics exports SPD Schur matrix and validateCalibration validates solverVersion cleanly',()=>{
+  const dSq=synthetic({count:45});
+  const fitSq=fitIntrinsics(dSq.rows,[1280,1080],{model:'centered-square'});
+  assert.equal(fitSq.schur.length,1);
+  assert.ok(Number.isFinite(fitSq.schur[0][0])&&fitSq.schur[0][0]>0);
+
+  const dRad=synthetic({k1:-0.08,noise:0.12,count:60});
+  const fitRad=fitIntrinsics(dRad.rows,[1280,1080],{model:'centered-radial'});
+  assert.equal(fitRad.schur.length,2);
+  assert.ok(fitRad.schur[0][0]>0&&fitRad.schur[1][1]>0);
+  const detS=fitRad.schur[0][0]*fitRad.schur[1][1]-fitRad.schur[0][1]*fitRad.schur[1][0];
+  assert.ok(detS>0,'centered-radial Schur must be positive definite');
+
+  const r=solveCalibration({...dRad,model:'centered-radial'});
+  assert.equal(r.solverVersion,CALIBRATION_SOLVER_VERSION);
+  const base={
+    ...r,schema:PROFILE_SCHEMA,id:'sv-ok',imageSize:[1280,1080],pipeline:PIPELINE,
+    device:{key:'k',rigHash:'rh',pipeline:PIPELINE},
+    verification:{passed:true,positionP95Mm:2.5,angleP95Deg:0.6},
+  };
+  assert.equal(validateCalibration(base).solverVersion,CALIBRATION_SOLVER_VERSION);
+  for(const bad of [0,-1,1.5,'2',NaN]){
+    assert.throws(()=>validateCalibration({...base,solverVersion:bad}),/validated/);
+  }
 });

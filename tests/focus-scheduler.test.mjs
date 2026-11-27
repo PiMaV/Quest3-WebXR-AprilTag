@@ -127,10 +127,10 @@ test('multi-focus holds lost-in-cone tag across 500 ms dropout with expanded ROI
   assert.deepEqual(pExpired.tagIds, [300]);
 });
 
-test('cone hysteresis keeps tag at 23 deg, demotes after >500 ms outside 26 deg, and yields resting 2nd-class tags to moving foreground', () => {
+test('cone hysteresis keeps tag at 29 deg, demotes after >500 ms outside 32 deg, and yields resting 2nd-class tags to moving foreground', () => {
   const sched = createFocusScheduler();
 
-  // Promote #300 at 0 deg and #301 at 16 deg (inside 20 deg cone)
+  // Promote #300 at 0 deg and #301 at 16 deg (inside 26 deg cone)
   const x16 = Math.tan((16 * Math.PI) / 180);
   const p0 = sched.plan({
     candidates: [
@@ -142,40 +142,40 @@ test('cone hysteresis keeps tag at 23 deg, demotes after >500 ms outside 26 deg,
   });
   assert.equal(p0.mode, 'multi-focus');
 
-  // Rotate head so #301 sits at 23 deg (between enter 20 deg and exit 26 deg) -> hysteresis keeps multi-focus!
-  const x23 = Math.tan((23 * Math.PI) / 180);
-  const p23 = sched.plan({
+  // Rotate head so #301 sits at 29 deg (between enter 26 deg and exit 32 deg) -> hysteresis keeps multi-focus!
+  const x29 = Math.tan((29 * Math.PI) / 180);
+  const p29 = sched.plan({
     candidates: [
       { tagId: 300, pos: [0, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1200, apparentEdgePx: 40 },
-      { tagId: 301, pos: [x23, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1200, apparentEdgePx: 40 },
+      { tagId: 301, pos: [x29, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1200, apparentEdgePx: 40 },
     ],
     worldFromAnchor: I, worldFromViewer: I, viewerFromCameraGL: I,
     K, width: K.width, height: K.height, nowMs: 1200,
   });
-  assert.equal(p23.mode, 'multi-focus');
+  assert.equal(p29.mode, 'multi-focus');
 
-  // Move #301 outside 26 deg (to 30 deg): still kept for < outOfConeHoldMs (500 ms), then demoted at >= 500 ms.
-  const x30 = Math.tan((30 * Math.PI) / 180);
-  const p30Start = sched.plan({
+  // Move #301 outside 32 deg (to 35 deg): still kept for < outOfConeHoldMs (500 ms), then demoted at >= 500 ms.
+  const x35 = Math.tan((35 * Math.PI) / 180);
+  const p35Start = sched.plan({
     candidates: [
       { tagId: 300, pos: [0, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1400, apparentEdgePx: 40 },
-      { tagId: 301, pos: [x30, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1400, apparentEdgePx: 40 },
+      { tagId: 301, pos: [x35, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1400, apparentEdgePx: 40 },
     ],
     worldFromAnchor: I, worldFromViewer: I, viewerFromCameraGL: I,
     K, width: K.width, height: K.height, nowMs: 1400,
   });
-  assert.equal(p30Start.mode, 'multi-focus');
+  assert.equal(p35Start.mode, 'multi-focus');
 
-  const p30Demote = sched.plan({
+  const p35Demote = sched.plan({
     candidates: [
       { tagId: 300, pos: [0, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1950, apparentEdgePx: 40 },
-      { tagId: 301, pos: [x30, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1950, apparentEdgePx: 40 },
+      { tagId: 301, pos: [x35, 0, -1.0], halfPx: 100, moving: true, lastOpticalAtMs: 1950, apparentEdgePx: 40 },
     ],
     worldFromAnchor: I, worldFromViewer: I, viewerFromCameraGL: I,
     K, width: K.width, height: K.height, nowMs: 1950,
   });
-  assert.equal(p30Demote.mode, 'single-focus');
-  assert.deepEqual(p30Demote.tagIds, [300]);
+  assert.equal(p35Demote.mode, 'single-focus');
+  assert.deepEqual(p35Demote.tagIds, [300]);
 
   // Resting 2nd-class background tag (#302, locked >= 2500 ms) yields immediately when #300 moves in center!
   const pYield = sched.plan({
@@ -188,6 +188,25 @@ test('cone hysteresis keeps tag at 23 deg, demotes after >500 ms outside 26 deg,
   });
   assert.equal(pYield.mode, 'single-focus');
   assert.deepEqual(pYield.tagIds, [300]);
+});
+
+test('viewer-axis gaze cone tracks two symmetric frontal tags in multi-focus despite Quest 3 right-offset camera', () => {
+  const sched = createFocusScheduler();
+  // Real Quest 3 right RGB camera offset (+3.33 cm X, -0.43 cm Y, -4.54 cm Z in viewer GL frame).
+  const questRightCam = vectorRigid([0, 0, 0, 0.0333, -0.0043, -0.0454]);
+
+  // Two tags held symmetrically 25 cm apart (±12.5 cm) at 50 cm distance in front of the viewer.
+  const plan = sched.plan({
+    candidates: [
+      { tagId: 300, pos: [-0.125, -0.03, -0.50], halfPx: 100, locked: true, lastOpticalAtMs: 1000, apparentEdgePx: 36 },
+      { tagId: 301, pos: [0.125, -0.03, -0.50], halfPx: 100, locked: true, lastOpticalAtMs: 1000, apparentEdgePx: 36 },
+    ],
+    worldFromAnchor: I, worldFromViewer: I, viewerFromCameraGL: questRightCam,
+    K, width: K.width, height: K.height, nowMs: 1000,
+  });
+  assert.equal(plan.mode, 'multi-focus');
+  assert.deepEqual(plan.tagIds.slice().sort(), [300, 301]);
+  assert.equal(plan.rois.length, 2);
 });
 
 test('adaptive 1-3 Hz background sweeps use decimate=3 while moving, decimate=2 when locked, and wide fallback for >=4 active tags', () => {

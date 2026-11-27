@@ -2,7 +2,7 @@ import {referenceTools} from './rig.mjs';
 import {diversity,consistency,projectResidual} from './solver.mjs';
 import {fitPlanarPose} from './rig.mjs';
 import {cvToGL,observationIsFresh,poseAt,product} from './runtime.mjs';
-import {PROFILE_SCHEMA,PIPELINE,createProfileStore} from './profile.mjs';
+import {PROFILE_SCHEMA,PIPELINE,CALIBRATION_SOLVER_VERSION,createProfileStore} from './profile.mjs';
 const clone=v=>structuredClone(v);
 /**
  * Create the guided calibration and cached-profile verification state machine
@@ -10,27 +10,67 @@ const clone=v=>structuredClone(v);
  */
 export function createCalibrationAssistant({rig,device,imageSize,store=createProfileStore(),onChange=()=>{},
   onProfile=()=>{},workerFactory=()=>new Worker(new URL('./calibration-worker.mjs',import.meta.url),{type:'module'}),model='centered-square',
-  scanViews=36,verificationViews=10}={}){
+  scanViews=36,verificationViews=10,minSolverVersion=null}={}){
+  const isRadialModel=model==='centered-radial'||model==='pinhole-radial';
+  const effMinSolverVersion=minSolverVersion!==null?minSolverVersion:(isRadialModel?CALIBRATION_SOLVER_VERSION:null);
   const ids=referenceTools(rig)[0].tags.map(t=>t.id);
   let phase='idle',message='Prepare camera and enter AR',rows=[],seen=new Set(),lastCapture=-Infinity,scope=null;
   let candidate=null,profile=null,job=null,token=0,worker=null,timeout=null,verification=null,persisted=false,disposed=false,nextFitAt=scanViews,fitRows=[],checkFailure=null;
+  let lastFitCapture=null,lastVerificationCapture=null,upgradeReason=null;
+  function sliceHistoryForRows(rowList,histList,padMs=300){
+    if(!Array.isArray(rowList)||!rowList.length||!Array.isArray(histList)||!histList.length)return [];
+    let minT=Infinity,maxT=-Infinity;
+    for(const r of rowList){if(r.captureTime<minT)minT=r.captureTime;if(r.captureTime>maxT)maxT=r.captureTime;}
+    const t0=minT-padMs,t1=maxT+padMs,out=[];
+    for(const p of histList){
+      if(p.xrRafTimeMs<t0||p.xrRafTimeMs>t1||!p.worldFromViewer)continue;
+      out.push({xrRafTimeMs:p.xrRafTimeMs,worldFromViewer:Array.from(p.worldFromViewer),scope:p.scope??scope});
+    }
+    return out;
+  }
   function state(){return {phase,message,count:rows.length,required:phase==='scanning'?nextFitAt:phase==='solving'?rows.length:verificationViews,
-    profileId:profile?.id??candidate?.id??null,persisted,verification:clone(verification),checkFailure:clone(checkFailure)};}
+    profileId:profile?.id??candidate?.id??null,persisted,verification:clone(verification),checkFailure:clone(checkFailure),upgradeReason};}
   function notify(){onChange(state());}
   function resetRows(){rows=[];seen=new Set();lastCapture=-Infinity;nextFitAt=scanViews;}
   function cancel(){++token;clearTimeout(timeout);timeout=null;worker?.terminate();worker=null;job=null;}
   function beginScan(why='Keep the L-angle still. Move head closer/farther, left/right, and up/down.'){
-    cancel();candidate=null;profile=null;verification=null;checkFailure=null;persisted=false;resetRows();phase='scanning';message=why;onProfile(null);notify();
+    cancel();candidate=null;profile=null;verification=null;checkFailure=null;persisted=false;upgradeReason=null;lastFitCapture=null;lastVerificationCapture=null;resetRows();phase='scanning';message=why;onProfile(null);notify();
   }
   async function begin({force=false}={}){
     cancel();const request=token;let cached=force?null:await store.load(device);if(disposed||request!==token)return;
+    upgradeReason=null;
+    if(cached){
+      if(cached.model&&cached.model!==model){
+        cached=null;upgradeReason='model-changed';
+      }else if(effMinSolverVersion&&(cached.solverVersion??1)<effMinSolverVersion){
+        cached=null;upgradeReason='solver-upgraded';
+      }else if(effMinSolverVersion!=null){
+        const val=cached.validation;
+        const pFx=val?.planarFx,jFx=val?.jointFx;
+        const fxDrift=Number.isFinite(pFx)&&pFx>0&&Number.isFinite(jFx)?Math.abs(pFx-jFx)/pFx:1;
+        if(!Number.isFinite(jFx)||fxDrift>0.08||(val?.positionP95Mm!=null&&val.positionP95Mm>=6.5)){
+          cached=null;upgradeReason='sanity-check';
+        }
+      }
+    }
     if(cached&&cached.imageSize.some((v,i)=>v!==imageSize[i])){
       const [w,h]=imageSize,[sw,sh]=cached.imageSize;
       if(Math.abs(w/h-sw/sh)>.001)cached=null;
-      else{cached=clone(cached);cached.K={width:w,height:h,fx:cached.K.fx*w/sw,fy:cached.K.fy*h/sh,cx:cached.K.cx*w/sw,cy:cached.K.cy*h/sh};cached.imageSize=clone(imageSize);}
+      else{
+        cached=clone(cached);
+        const k1=Number.isFinite(cached.distCoeffs?.[0])?cached.distCoeffs[0]:(Number.isFinite(cached.K?.k1)?cached.K.k1:0);
+        cached.K={width:w,height:h,fx:cached.K.fx*w/sw,fy:cached.K.fy*h/sh,cx:cached.K.cx*w/sw,cy:cached.K.cy*h/sh,k1};
+        cached.imageSize=clone(imageSize);
+      }
     }
-    resetRows();scope=null;candidate=cached;profile=null;verification=null;checkFailure=null;persisted=Boolean(cached);onProfile(null);
-    phase=cached?'checking':'scanning';message=cached?'Verifying saved profile: look at the L-angle and shift your head slightly.':'Keep the L-angle still. Move head around multiple axes and vary distance.';notify();
+    resetRows();scope=null;candidate=cached;profile=null;verification=null;checkFailure=null;persisted=Boolean(cached);lastFitCapture=null;lastVerificationCapture=null;onProfile(null);
+    phase=cached?'checking':'scanning';
+    message=cached?'Verifying saved profile: look at the L-angle and shift your head slightly.'
+      :(upgradeReason==='solver-upgraded'?'Solver upgraded (v2 radial+optical BA): sweep around L-angle & image edges to recalibrate.'
+        :(upgradeReason==='sanity-check'?'Cached profile flagged by sanity check: recalibrate around L-angle & image edges.'
+          :(upgradeReason==='model-changed'?'Camera model updated: keep L-angle still, sweep around halo and toward image edges.'
+            :'Keep the L-angle still. Move head around multiple axes and vary distance.')));
+    notify();
   }
   function failed(why){cancel();phase='failed';message=why;candidate=null;profile=null;onProfile(null);notify();}
   function fit(history){
@@ -38,6 +78,7 @@ export function createCalibrationAssistant({rig,device,imageSize,store=createPro
     // Keep those observations, but fit only rows already bracketed by XR history.
     const captured=clone(rows.filter(r=>r.captureTime-251>=history[0].xrRafTimeMs&&r.captureTime+251<=history.at(-1).xrRafTimeMs));
     if(captured.length<30)return;
+    lastFitCapture={model,imageSize:clone(imageSize),rigId:rig?.id??null,rows:clone(captured),history:sliceHistoryForRows(captured,history)};
     const request=++token;phase='solving';message='Solving calibration…';notify();
     worker=workerFactory();timeout=setTimeout(()=>{if(request===token)failed('Calibration solver timed out. Please try again.');},60000);
     worker.onerror=e=>{if(request===token)failed(`Calibration solver failed: ${e.message}`);};
@@ -112,14 +153,20 @@ export function createCalibrationAssistant({rig,device,imageSize,store=createPro
     const signature=JSON.stringify(tags.map(t=>[t.id,t.pixels]));if(seen.has(signature))return state();
     seen.add(signature);lastCapture=cap;rows.push({scope,captureTime:cap,tags:clone(tags),serial:sample.serial});
     if(phase==='scanning'){
-      const diverse=diversity(rows,valid);
-      if(rows.length>=nextFitAt&&diverse.ok){fit(valid);return state();}
+      const diverse=diversity(rows,valid,imageSize);
+      const isRadial=model==='centered-radial'||model==='pinhole-radial';
+      const needEdge=isRadial&&rows.length<Math.max(nextFitAt+12,48)&&(diverse.maxCornerRadiusFrac??1)<0.55;
+      if(rows.length>=nextFitAt&&diverse.ok&&!needEdge){fit(valid);return state();}
       if(rows.length>180){failed('More distinct perspectives needed instead of repeated views. Rotate head around multiple axes.');return state();}
-      message=diverse.ok?'Keep varying viewpoints while the L-angle stays stationary.':diverse.reason;notify();return state();
+      message=!diverse.ok?diverse.reason:(needEdge?'Sweep head so the L-angle also visits image edges/corners.':'Keep varying viewpoints while the L-angle stays stationary.');
+      notify();return state();
     }
     const paired=[];
     for(const r of rows){const h=poseAt(valid,r.captureTime+candidate.timeOffsetMs);if(h)paired.push({row:r,h});}
     if(paired.length>=verificationViews){
+      const verRows=paired.slice(0,30).map(p=>p.row);
+      lastVerificationCapture={kind:phase,profileId:candidate?.id??null,imageSize:clone(imageSize),
+        rows:clone(verRows),history:sliceHistoryForRows(verRows,valid)};
       const poses=[],errors=[];let motion=0;
       for(let i=0;i<paired.length;i++){
         const {row:r,h}=paired[i];
@@ -174,7 +221,8 @@ export function createCalibrationAssistant({rig,device,imageSize,store=createPro
   }
   return {begin,observe,state,phase:()=>phase,
     summary:()=>({phase,count:rows.length,required:phase==='scanning'?nextFitAt:phase==='solving'?rows.length:verificationViews,message}),
+    diagnosticsData:()=>(lastFitCapture||lastVerificationCapture)?clone({fit:lastFitCapture,verification:lastVerificationCapture}):null,
     retryCheck,retry:()=>beginScan(),profile:()=>profile&&clone(profile),
-    reset(){cancel();scope=null;resetRows();phase='idle';candidate=null;profile=null;onProfile(null);notify();},
-    dispose(){disposed=true;cancel();profile=null;candidate=null;phase='disposed';}};
+    reset(){cancel();scope=null;resetRows();phase='idle';candidate=null;profile=null;upgradeReason=null;lastFitCapture=null;lastVerificationCapture=null;onProfile(null);notify();},
+    dispose(){disposed=true;cancel();profile=null;candidate=null;upgradeReason=null;lastFitCapture=null;lastVerificationCapture=null;phase='disposed';}};
 }

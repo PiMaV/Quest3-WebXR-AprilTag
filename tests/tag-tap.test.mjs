@@ -143,17 +143,27 @@ test('updateTagRestState requires 500 ms stillness, supports bimanual hand-coupl
   assert.deepEqual(updateTagRestState(state, yawed, 2200), { isResting: false, restingMs: 0 });
   assert.equal(updateTagRestState(state, yawed, 2700).isResting, true);
 
-  // Hand-coupled tag tolerates 18 mm natural hand tremor when held steady in one hand...
+  // Hand-coupled tag tolerates 20 mm natural hand tremor when held steady in one hand...
   const heldBase = flatTagMatrix(0.3, 0.2, 0.4);
   resetTagRestState(state);
   assert.deepEqual(updateTagRestState(state, heldBase, 3000, { handCoupled: true }), { isResting: false, restingMs: 0 });
   assert.deepEqual(
-    updateTagRestState(state, flatTagMatrix(0.318, 0.2, 0.4), 3500, { handCoupled: true }),
+    updateTagRestState(state, flatTagMatrix(0.320, 0.2, 0.4), 3500, { handCoupled: true }),
     { isResting: true, restingMs: 500 },
   );
-  // ...but moving the held object (> 22 mm) immediately resets rest.
+  // Mid-air tag (z = 0.4 m) ALSO gets hand-tremor tolerance even when handCoupled is false!
+  assert.equal(
+    updateTagRestState(state, flatTagMatrix(0.320, 0.2, 0.4), 3600, { handCoupled: false }).isResting,
+    true,
+  );
+  // Once pills are open (pillsOpen: true), hysteresis tolerates 32 mm sway during a bimanual hold...
+  assert.equal(
+    updateTagRestState(state, flatTagMatrix(0.332, 0.2, 0.4), 3700, { handCoupled: false, pillsOpen: true }).isResting,
+    true,
+  );
+  // ...but moving decisively (> 38 mm) resets rest immediately.
   assert.deepEqual(
-    updateTagRestState(state, flatTagMatrix(0.340, 0.2, 0.4), 3600, { handCoupled: true }),
+    updateTagRestState(state, flatTagMatrix(0.345, 0.2, 0.4), 3800, { handCoupled: false, pillsOpen: true }),
     { isResting: false, restingMs: 0 },
   );
 
@@ -242,5 +252,25 @@ test('evaluateTagActionPills enforces resting + bottom-zone/finger proximity (in
   assert.deepEqual(
     evaluateTagActionPills({ isResting: true, recording: true, hasPose: true, minZoneDist: 0.10 }),
     { showRec: true, showMark: false },
+  );
+
+  // Active REC ALL suppresses the individual [● REC / ■ STOP] pill while still allowing [⏱ MARK] when not recording.
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, recording: false, recordAllActive: true, hasPose: true, minZoneDist: 0.10 }),
+    { showRec: false, showMark: true },
+  );
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, recording: true, recordAllActive: true, hasPose: true, minZoneDist: 0.10 }),
+    { showRec: false, showMark: false },
+  );
+
+  // Open/hold hysteresis keeps pills open at 17 cm (< 20 cm exitNearM) and closes once > 20 cm.
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, recording: false, hasPose: true, wasOpen: true, minZoneDist: 0.17 }),
+    { showRec: true, showMark: true },
+  );
+  assert.deepEqual(
+    evaluateTagActionPills({ isResting: true, recording: false, hasPose: true, wasOpen: true, minZoneDist: 0.22 }),
+    { showRec: false, showMark: false },
   );
 });

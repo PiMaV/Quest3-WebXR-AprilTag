@@ -3,7 +3,7 @@ import {
   createReferenceCamera,createCalibrationAssistant,createLAnchorController,deviceIdentity,
   createObservationBuffer,fitPlanarPose,solveSingleTagPose,requiredTagEdgeMm,product,inverse,cvToGL,meanRigid,rigidVector,
   xrExitPressed,nextExitHold,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos,createTagRestState,resetTagRestState,updateTagRestState,computeTagActionPillLayout,evaluateTagActionPills,computeHoverCardLayout,computePinPillPositions,HOVER_CALLOUT_DEFAULTS,
-  viewerVelocityAt,resolveCameraInL,evaluateMotionGate,evaluateCarriedJumpGuard,CARRIED_MOTION_GATE_DEFAULTS,
+  viewerVelocityAt,resolveCameraInL,evaluateMotionGate,evaluateCarriedJumpGuard,CARRIED_MOTION_GATE_DEFAULTS,createDampedAnchorCorrection,
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
   createPerfTracker,ADAPTIVE_QUALITY_MODES,createAdaptiveQualityController,
@@ -85,7 +85,7 @@ function ensureRenderer(){
 }
 function warmupSceneShaders(r,scn,cam){
   if(!r||shadersWarmed)return;
-  const targets=[root,hudRig,fenceGroup,inspectRoot,portalRoot,trailGroup,handLabelsGroup,toastSprite,warpBannerSprite];
+  const targets=[root,hudRig,leaveConfirmMesh,fenceGroup,inspectRoot,portalRoot,trailGroup,handLabelsGroup,toastSprite,warpBannerSprite];
   const prevVis=targets.map(o=>o.visible);
   for(const o of targets)o.visible=true;
   const tmpGeo=new THREE.BufferGeometry();
@@ -218,7 +218,7 @@ function makeHudGrabHandle(panelH){
 }
 const hudRayDotMat=new THREE.MeshBasicMaterial({color:0xfde047,transparent:true,opacity:0.95,depthTest:false,depthWrite:false});
 const hudRayDot=new THREE.Mesh(new THREE.SphereGeometry(0.007,12,12),hudRayDotMat);
-hudRayDot.visible=false;hudRayDot.renderOrder=1002;scene.add(hudRayDot);
+hudRayDot.visible=false;hudRayDot.renderOrder=1003;scene.add(hudRayDot);
 const _hudRaycaster=new THREE.Raycaster();
 const _hudRayOrigin=new THREE.Vector3();
 const _hudRayDir=new THREE.Vector3();
@@ -579,6 +579,21 @@ let hold={sinceMs:null,progress:0,fire:false},lastHud=0,lastStabilitySample=0,ex
 const isEntryRecording=entry=>Boolean(entry&&(entry.recording||entry.autoRecording));
 let hudLeftKey='',hudTopKey='',hudSlot=0,lastRightHud=0,hudGrabResetDone=true;
 function resetHudCache(){hudLeftKey='';hudTopKey='';lastHud=0;lastRightHud=0;hudSlot=0;}
+const anchorDriftCorrection=createDampedAnchorCorrection();
+let lastShownUpgradeReason='';
+function handleCalibrationStatus(s){
+  status(`${s.phase} · ${s.count}/${s.required} · ${s.message}`);
+  if(s.phase==='scanning'&&s.upgradeReason&&s.upgradeReason!==lastShownUpgradeReason){
+    lastShownUpgradeReason=s.upgradeReason;
+    const msg=s.upgradeReason==='solver-upgraded'
+      ?'↺ KALIBRIERUNG AKTUALISIERT (v2) · BITTE KURZ SCANNEN'
+      :(s.upgradeReason==='sanity-check'
+        ?'↺ PROFIL-CHECK FEHLGESCHLAGEN · NEU KALIBRIEREN'
+        :'↺ KAMERAMODELL AKTUALISIERT · BITTE KURZ SCANNEN');
+    showHudToast(msg,'#38bdf8',3200);
+    pushDiagEvent({type:'calibration-upgrade-rescan',reason:s.upgradeReason,atPerformanceMs:performance.now()});
+  }
+}
 let axHoldSince=null,axLongFired=false;
 const leftFistToggle=createFistToggleController({holdMs:850,deadzoneMs:220,cooldownMs:1400,maxSpeedMps:0.14});
 const rightFistToggle=createFistToggleController({holdMs:800,deadzoneMs:220,cooldownMs:1400,maxSpeedMps:0.14});
@@ -697,7 +712,8 @@ root.add(showcaseGroup);
 const showcaseCanvas=document.createElement('canvas');
 showcaseCanvas.width=960;showcaseCanvas.height=460;
 const showcaseTex=makeUiTexture(showcaseCanvas);
-const showcaseSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:showcaseTex,transparent:true,depthTest:false,depthWrite:false}));
+showcaseTex.colorSpace=THREE.SRGBColorSpace;
+const showcaseSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:showcaseTex,transparent:true,depthTest:false,depthWrite:false,toneMapped:false}));
 showcaseSprite.scale.set(SHOWCASE_W_M,SHOWCASE_H_M,1);
 showcaseSprite.renderOrder=15;
 showcaseGroup.add(showcaseSprite);
@@ -706,74 +722,184 @@ const showcaseImages={mess:null,wetter:null};
 let showcaseOpen=false,showcaseHoverZone=null,showcasePokeZone=null,showcasePokeSince=0;
 let showcaseNavState=null; // {url, title, subtitle, accentCss, startedAt, durationMs, navigated}
 
-// Explicit 2-step "Leave Demo?" confirmation modal in hudRig (guards external links so users never leave the XR demo by accident).
-const LEAVE_W_M=0.46,LEAVE_H_M=0.18;
+// Explicit 2-step "Leave Demo?" confirmation modal in world space (near-field reach for direct finger poke + far raycast).
+const LEAVE_W_M=0.36,LEAVE_H_M=0.176;
+const LEAVE_CANVAS_W=840,LEAVE_CANVAS_H=410;
+const LEAVE_SPAWN_DIST_M=0.42,LEAVE_MIN_TABLE_H_M=0.14,LEAVE_AUTO_CLOSE_DIST_M=1.5;
+const LEAVE_SELECT_GRACE_MS=250,LEAVE_POKE_GRACE_MS=450;
+const LEAVE_CANCEL_POKE_MS=220,LEAVE_CONFIRM_POKE_MS=450;
 const leaveConfirmCanvas=document.createElement('canvas');
-leaveConfirmCanvas.width=840;leaveConfirmCanvas.height=330;
+leaveConfirmCanvas.width=LEAVE_CANVAS_W;leaveConfirmCanvas.height=LEAVE_CANVAS_H;
 const leaveConfirmTex=makeUiTexture(leaveConfirmCanvas);
+leaveConfirmTex.colorSpace=THREE.SRGBColorSpace;
 const leaveConfirmMesh=new THREE.Mesh(
   new THREE.PlaneGeometry(LEAVE_W_M,LEAVE_H_M),
-  new THREE.MeshBasicMaterial({map:leaveConfirmTex,transparent:true,side:THREE.DoubleSide,depthTest:false,depthWrite:false}),
+  new THREE.MeshBasicMaterial({map:leaveConfirmTex,transparent:true,side:THREE.DoubleSide,depthTest:false,depthWrite:false,toneMapped:false}),
 );
-leaveConfirmMesh.position.set(0,0.03,-0.92);
 leaveConfirmMesh.visible=false;
 leaveConfirmMesh.renderOrder=1002;
-hudRig.add(leaveConfirmMesh);
-let leaveConfirmState=null; // {host, url, accentCss}
+scene.add(leaveConfirmMesh);
+const _lcEye=new THREE.Vector3();
+const _lcFwd=new THREE.Vector3();
+const _lcPos=new THREE.Vector3();
+const _lcTableO=new THREE.Vector3();
+const _lcTableN=new THREE.Vector3();
+const _lcProbeW=new THREE.Vector3();
+const _lcProbeL=new THREE.Vector3();
+const _lcSurfaceW=new THREE.Vector3();
+let leaveConfirmState=null; // {host, url, accentCss, openedAt}
 let leaveConfirmHover=null; // 'confirm' | 'cancel' | null
+let leaveConfirmPokeZone=null; // 'confirm' | 'cancel' | null
+let leaveConfirmPokeSince=0;
+let leaveConfirmNeedsPlacement=false;
+let lastLeaveConfirmKey='';
 
-function drawLeaveConfirm(){
+function placeLeaveConfirm(pose,world){
+  const vm=pose?.transform?.matrix;
+  if(!vm)return;
+  _lcEye.set(vm[12],vm[13],vm[14]);
+  _lcFwd.set(-vm[8],-vm[9],-vm[10]);
+  if(_lcFwd.lengthSq()<1e-6)_lcFwd.set(0,0,-1);
+  else _lcFwd.normalize();
+
+  const horiz=Math.hypot(_lcFwd.x,_lcFwd.z);
+  if(horiz<0.05){
+    let hx=vm[4],hz=vm[6],hl=Math.hypot(hx,hz);
+    if(hl<1e-4){hx=0;hz=-1;hl=1;}
+    const clampedY=-0.82;
+    const xzScale=Math.sqrt(1-clampedY*clampedY)/hl;
+    _lcFwd.set(hx*xzScale,clampedY,hz*xzScale);
+  }else{
+    const clampedY=Math.max(-0.82,Math.min(0.42,_lcFwd.y));
+    const xzScale=Math.sqrt(1-clampedY*clampedY)/horiz;
+    _lcFwd.set(_lcFwd.x*xzScale,clampedY,_lcFwd.z*xzScale);
+  }
+
+  const levelFactor=Math.max(0,Math.min(1,(_lcFwd.y+0.50)/0.35));
+  _lcPos.copy(_lcEye).addScaledVector(_lcFwd,LEAVE_SPAWN_DIST_M);
+  _lcPos.y-=levelFactor*0.035;
+
+  if(world){
+    _lcTableO.set(world[12],world[13],world[14]);
+    _lcTableN.set(world[8],world[9],world[10]);
+    if(_lcTableN.lengthSq()>1e-6){
+      _lcTableN.normalize();
+      if(_lcTableN.dot(_lcProbeW.copy(_lcEye).sub(_lcTableO))<0)_lcTableN.negate();
+      const hAbove=_lcProbeW.copy(_lcPos).sub(_lcTableO).dot(_lcTableN);
+      if(hAbove<LEAVE_MIN_TABLE_H_M){
+        _lcPos.addScaledVector(_lcTableN,LEAVE_MIN_TABLE_H_M-hAbove);
+      }
+    }
+  }
+
+  const dist=_lcPos.distanceTo(_lcEye);
+  if(dist>1e-4){
+    const clampedDist=Math.max(0.34,Math.min(0.48,dist));
+    if(clampedDist!==dist){
+      _lcPos.sub(_lcEye).multiplyScalar(clampedDist/dist).add(_lcEye);
+    }
+  }else{
+    _lcPos.copy(_lcEye).addScaledVector(_lcFwd,0.38);
+  }
+
+  leaveConfirmMesh.position.copy(_lcPos);
+  leaveConfirmMesh.up.set(0,1,0);
+  leaveConfirmMesh.lookAt(_lcEye);
+  leaveConfirmMesh.updateMatrixWorld(true);
+}
+
+function drawLeaveConfirm(pokeProg=0){
   if(!leaveConfirmState)return;
-  const {host,accentCss}=leaveConfirmState;
+  const {host}=leaveConfirmState;
+  const prog=Math.max(0,Math.min(1,pokeProg));
+  const key=`${host}|${leaveConfirmHover||''}|${leaveConfirmPokeZone||''}|${Math.round(prog*20)}`;
+  if(key===lastLeaveConfirmKey)return;
+  lastLeaveConfirmKey=key;
   const ctx=leaveConfirmCanvas.getContext('2d');
-  ctx.clearRect(0,0,840,330);
+  ctx.clearRect(0,0,LEAVE_CANVAS_W,LEAVE_CANVAS_H);
   ctx.fillStyle='rgba(7,11,22,0.97)';
-  ctx.beginPath();ctx.roundRect(8,8,824,314,22);ctx.fill();
+  ctx.beginPath();ctx.roundRect(8,8,LEAVE_CANVAS_W-16,LEAVE_CANVAS_H-16,22);ctx.fill();
   ctx.strokeStyle='#f59e0b';ctx.lineWidth=4.5;ctx.stroke();
 
   ctx.fillStyle='#fbbf24';ctx.font='bold 34px system-ui,sans-serif';ctx.textAlign='center';
-  ctx.fillText('⚠ LEAVE THIS DEMO?',420,62);
+  ctx.fillText('⚠ LEAVE THIS DEMO?',420,60,780);
   ctx.fillStyle='#f8fafc';ctx.font='600 23px system-ui,sans-serif';
-  ctx.fillText(`Visit ${host} -> you will leave this XR demo`,420,110);
+  ctx.fillText(`Visit ${host} -> you will leave this XR demo`,420,108,780);
   ctx.fillStyle='#94a3b8';ctx.font='500 20px system-ui,sans-serif';
-  ctx.fillText('The XR session will end and you will not return automatically.',420,146);
+  ctx.fillText('The XR session will end and you will not return automatically.',420,144,780);
 
   // Confirm button (left)
   const cHot=leaveConfirmHover==='confirm';
-  ctx.fillStyle=cHot?'#f59e0b':'rgba(245,158,11,0.22)';
-  ctx.beginPath();ctx.roundRect(44,196,420,88,16);ctx.fill();
-  ctx.strokeStyle=cHot?'#fef08a':'#f59e0b';ctx.lineWidth=cHot?4:3;ctx.stroke();
-  ctx.fillStyle=cHot?'#0f172a':'#fef3c7';ctx.font='bold 24px system-ui,sans-serif';
-  ctx.fillText(`↗ LEAVE & OPEN ${host}`,254,249);
+  const cProg=leaveConfirmPokeZone==='confirm'?prog:0;
+  ctx.fillStyle=cHot?(cProg>0?'rgba(72,42,8,0.96)':'#f59e0b'):'rgba(245,158,11,0.22)';
+  ctx.beginPath();ctx.roundRect(38,192,416,132,18);ctx.fill();
+  if(cProg>0){
+    ctx.save();
+    ctx.beginPath();ctx.roundRect(38,192,416,132,18);ctx.clip();
+    ctx.fillStyle='rgba(245,158,11,0.34)';
+    ctx.fillRect(38,192,416*cProg,132);
+    ctx.fillStyle='#f59e0b';
+    ctx.fillRect(38,310,416*cProg,14);
+    ctx.restore();
+  }
+  ctx.beginPath();ctx.roundRect(38,192,416,132,18);
+  ctx.strokeStyle=cHot?'#fef08a':'#f59e0b';ctx.lineWidth=cHot?4.5:3;ctx.stroke();
+  ctx.fillStyle=(cHot&&cProg===0)?'#0f172a':'#fef3c7';ctx.font='bold 25px system-ui,sans-serif';
+  ctx.fillText('↗ LEAVE & OPEN',246,246,384);
+  ctx.fillStyle=(cHot&&cProg===0)?'#1e293b':'#fde68a';ctx.font='600 20px ui-monospace,monospace';
+  ctx.fillText(host,246,284,384);
 
   // Cancel / Stay button (right)
   const sHot=leaveConfirmHover==='cancel';
-  ctx.fillStyle=sHot?'#4ade80':'rgba(51,65,85,0.82)';
-  ctx.beginPath();ctx.roundRect(496,196,300,88,16);ctx.fill();
-  ctx.strokeStyle=sHot?'#bbf7d0':'#64748b';ctx.lineWidth=sHot?4:3;ctx.stroke();
-  ctx.fillStyle=sHot?'#0f172a':'#f8fafc';ctx.font='bold 24px system-ui,sans-serif';
-  ctx.fillText('✕ STAY IN DEMO',646,249);
+  const sProg=leaveConfirmPokeZone==='cancel'?prog:0;
+  ctx.fillStyle=sHot?(sProg>0?'rgba(14,58,34,0.96)':'#4ade80'):'rgba(34,197,94,0.22)';
+  ctx.beginPath();ctx.roundRect(486,192,316,132,18);ctx.fill();
+  if(sProg>0){
+    ctx.save();
+    ctx.beginPath();ctx.roundRect(486,192,316,132,18);ctx.clip();
+    ctx.fillStyle='rgba(34,197,94,0.36)';
+    ctx.fillRect(486,192,316*sProg,132);
+    ctx.fillStyle='#22c55e';
+    ctx.fillRect(486,310,316*sProg,14);
+    ctx.restore();
+  }
+  ctx.beginPath();ctx.roundRect(486,192,316,132,18);
+  ctx.strokeStyle=sHot?'#bbf7d0':'#4ade80';ctx.lineWidth=sHot?4.5:3;ctx.stroke();
+  ctx.fillStyle=(sHot&&sProg===0)?'#0f172a':'#f0fdf4';ctx.font='bold 26px system-ui,sans-serif';
+  ctx.fillText('✕ STAY IN DEMO',644,246,288);
+  ctx.fillStyle=(sHot&&sProg===0)?'#14532d':'#86efac';ctx.font='500 19px system-ui,sans-serif';
+  ctx.fillText('Return to AR',644,284,288);
 
+  ctx.fillStyle='#94a3b8';ctx.font='500 18px system-ui,sans-serif';
+  ctx.fillText('Touch a button with your finger, or point & pinch / trigger',420,368,780);
   ctx.textAlign='left';
   leaveConfirmTex.needsUpdate=true;
 }
 function openLeaveConfirm(host,url,accentCss='#38bdf8'){
-  leaveConfirmState={host,url,accentCss};
+  leaveConfirmState={host,url,accentCss,openedAt:performance.now()};
   leaveConfirmHover=null;
-  leaveConfirmMesh.visible=true;
-  drawLeaveConfirm();
+  leaveConfirmPokeZone=null;
+  leaveConfirmPokeSince=0;
+  leaveConfirmNeedsPlacement=true;
+  lastLeaveConfirmKey='';
+  leaveConfirmMesh.visible=false;
+  drawLeaveConfirm(0);
   playModeTick('scan');
 }
 function closeLeaveConfirm(){
   leaveConfirmState=null;
   leaveConfirmHover=null;
+  leaveConfirmPokeZone=null;
+  leaveConfirmPokeSince=0;
+  leaveConfirmNeedsPlacement=false;
+  lastLeaveConfirmKey='';
   leaveConfirmMesh.visible=false;
 }
 function classifyLeaveConfirmUv(u,v){
-  const cx=u*840,cy=(1-v)*330;
-  if(cy>=188&&cy<=296){
-    if(cx>=36&&cx<=472)return 'confirm';
-    if(cx>=488&&cx<=804)return 'cancel';
+  const cx=u*LEAVE_CANVAS_W,cy=(1-v)*LEAVE_CANVAS_H;
+  if(cy>=180&&cy<=338){
+    if(cx>=26&&cx<=462)return 'confirm';
+    if(cx>=478&&cx<=814)return 'cancel';
   }
   return null;
 }
@@ -787,6 +913,7 @@ function executeLeaveConfirm(action,now){
   if(action==='confirm'){
     const {host,url,accentCss}=leaveConfirmState;
     closeLeaveConfirm();
+    showcaseOpen=false;showcaseGroup.visible=false;showcaseHoverZone=null;showcasePokeZone=null;showcasePokeSince=0;
     showcaseNavState={
       url,
       title:`Visit ${host}`,
@@ -831,9 +958,12 @@ function drawShowcasePanel(){
     const ix=card.x+14,iy=92,iw=412,ih=212;
     ctx.save();
     ctx.beginPath();ctx.roundRect(ix,iy,iw,ih,10);ctx.clip();
+    ctx.fillStyle='#070c18';ctx.fillRect(ix,iy,iw,ih);
     if(card.img&&card.img.complete&&card.img.naturalWidth>0){
       const scale=iw/card.img.naturalWidth;
       const dw=iw,dh=card.img.naturalHeight*scale;
+      ctx.imageSmoothingEnabled=true;
+      ctx.imageSmoothingQuality='high';
       ctx.drawImage(card.img,ix,iy,dw,dh);
     }else{
       ctx.fillStyle='#1e293b';ctx.fillRect(ix,iy,iw,ih);
@@ -1285,19 +1415,19 @@ const zRingBatch=createInstancedPool(
 );
 const recOrbBatch=createInstancedPool(
   _recOrbGeo,
-  new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.35,depthTest:false,depthWrite:false}),
+  new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.35,depthTest:true,depthWrite:false}),
   64,
   {renderOrder:11,name:'recOrbBatch'},
 );
 const closeOrbBatch=createInstancedPool(
   _closeOrbGeo,
-  new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.90,depthTest:false,depthWrite:false}),
+  new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.90,depthTest:true,depthWrite:false}),
   16,
   {renderOrder:13,name:'closeOrbBatch'},
 );
 const axesBatch=createAxesBatch(64);
 const badgeAtlas=createBadgeAtlas({width:1024,height:2304,cellW:256,cellH:96});
-const badgeMesh=createBillboardAtlasMesh(badgeAtlas,96,{renderOrder:12,depthTest:false});
+const badgeMesh=createBillboardAtlasMesh(badgeAtlas,96,{renderOrder:12,depthTest:true});
 const tagFaceAtlas=createBadgeAtlas({width:512,height:1024,cellW:128,cellH:128});
 const tagFaceMesh=createOrientedAtlasMesh(tagFaceAtlas,32,{renderOrder:6,depthTest:true,depthWrite:false});
 root.add(
@@ -2414,7 +2544,7 @@ setRodSegment(tlOfferStem,0,0,0.002,0,0,0.046,0.0014);
 tlOfferGroup.add(tlOfferStem);
 const tlOfferCanvas=document.createElement('canvas');tlOfferCanvas.width=440;tlOfferCanvas.height=188;
 const tlOfferTex=makeUiTexture(tlOfferCanvas);
-const tlOfferCard=new THREE.Sprite(new THREE.SpriteMaterial({map:tlOfferTex,transparent:true,depthTest:false,depthWrite:false}));
+const tlOfferCard=new THREE.Sprite(new THREE.SpriteMaterial({map:tlOfferTex,transparent:true,depthTest:true,depthWrite:false}));
 tlOfferCard.scale.set(0.168,0.072,1);
 tlOfferCard.position.set(0,0,0.076);
 tlOfferCard.renderOrder=14;
@@ -2579,7 +2709,7 @@ modePillGroup.position.set(0.11,-0.048,0.032);
 root.add(modePillGroup);
 const modePillCanvas=document.createElement('canvas');modePillCanvas.width=280;modePillCanvas.height=96;
 const modePillTex=makeUiTexture(modePillCanvas);
-const modePillSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modePillTex,transparent:true,depthTest:false,depthWrite:false}));
+const modePillSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modePillTex,transparent:true,depthTest:true,depthWrite:false}));
 modePillSprite.position.set(-0.064,0.002,0.012);
 modePillSprite.scale.set(0.086,0.030,1);
 modePillSprite.renderOrder=14;
@@ -2587,7 +2717,7 @@ modePillGroup.add(modePillSprite);
 
 const modeRecAllCanvas=document.createElement('canvas');modeRecAllCanvas.width=264;modeRecAllCanvas.height=96;
 const modeRecAllTex=makeUiTexture(modeRecAllCanvas);
-const modeRecAllSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeRecAllTex,transparent:true,depthTest:false,depthWrite:false}));
+const modeRecAllSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeRecAllTex,transparent:true,depthTest:true,depthWrite:false}));
 modeRecAllSprite.position.set(0.028,0.002,0.012);
 modeRecAllSprite.scale.set(0.084,0.030,1);
 modeRecAllSprite.renderOrder=14;
@@ -2595,7 +2725,7 @@ modePillGroup.add(modeRecAllSprite);
 
 const modeInfoCanvas=document.createElement('canvas');modeInfoCanvas.width=96;modeInfoCanvas.height=96;
 const modeInfoTex=makeUiTexture(modeInfoCanvas);
-const modeInfoSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeInfoTex,transparent:true,depthTest:false,depthWrite:false}));
+const modeInfoSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeInfoTex,transparent:true,depthTest:true,depthWrite:false}));
 modeInfoSprite.position.set(0.092,0.002,0.012);
 modeInfoSprite.scale.set(0.030,0.030,1);
 modeInfoSprite.renderOrder=14;
@@ -2603,7 +2733,7 @@ modePillGroup.add(modeInfoSprite);
 
 const modeFenceCanvas=document.createElement('canvas');modeFenceCanvas.width=240;modeFenceCanvas.height=96;
 const modeFenceTex=makeUiTexture(modeFenceCanvas);
-const modeFenceSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeFenceTex,transparent:true,depthTest:false,depthWrite:false}));
+const modeFenceSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeFenceTex,transparent:true,depthTest:true,depthWrite:false}));
 modeFenceSprite.position.set(-0.082,-0.036,-0.010);
 modeFenceSprite.scale.set(0.074,0.030,1);
 modeFenceSprite.renderOrder=14;
@@ -2611,7 +2741,7 @@ modePillGroup.add(modeFenceSprite);
 
 const modeColorCanvas=document.createElement('canvas');modeColorCanvas.width=256;modeColorCanvas.height=96;
 const modeColorTex=makeUiTexture(modeColorCanvas);
-const modeColorSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeColorTex,transparent:true,depthTest:false,depthWrite:false}));
+const modeColorSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeColorTex,transparent:true,depthTest:true,depthWrite:false}));
 modeColorSprite.position.set(0,-0.036,-0.010);
 modeColorSprite.scale.set(0.076,0.030,1);
 modeColorSprite.renderOrder=14;
@@ -2619,7 +2749,7 @@ modePillGroup.add(modeColorSprite);
 
 const modeClearCanvas=document.createElement('canvas');modeClearCanvas.width=240;modeClearCanvas.height=96;
 const modeClearTex=makeUiTexture(modeClearCanvas);
-const modeClearSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeClearTex,transparent:true,depthTest:false,depthWrite:false}));
+const modeClearSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeClearTex,transparent:true,depthTest:true,depthWrite:false}));
 modeClearSprite.position.set(0.082,-0.036,-0.010);
 modeClearSprite.scale.set(0.074,0.030,1);
 modeClearSprite.renderOrder=14;
@@ -2628,7 +2758,7 @@ modePillGroup.add(modeClearSprite);
 const turboBarCanvas=document.createElement('canvas');turboBarCanvas.width=560;turboBarCanvas.height=92;
 const turboBarTex=makeUiTexture(turboBarCanvas);
 turboBarTex.colorSpace=THREE.SRGBColorSpace;
-const turboBarSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:turboBarTex,transparent:true,depthTest:false,depthWrite:false}));
+const turboBarSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:turboBarTex,transparent:true,depthTest:true,depthWrite:false}));
 turboBarSprite.position.set(0,-0.078,-0.016);
 turboBarSprite.scale.set(0.240,0.039,1);
 turboBarSprite.visible=false;
@@ -2637,7 +2767,7 @@ modePillGroup.add(turboBarSprite);
 
 const modeHelpCanvas=document.createElement('canvas');modeHelpCanvas.width=560;modeHelpCanvas.height=318;
 const modeHelpTex=makeUiTexture(modeHelpCanvas);
-const modeHelpSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeHelpTex,transparent:true,depthTest:false,depthWrite:false}));
+const modeHelpSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeHelpTex,transparent:true,depthTest:true,depthWrite:false}));
 modeHelpSprite.position.set(0.010,0.110,0.034);
 modeHelpSprite.scale.set(0.255,0.145,1);
 modeHelpSprite.visible=false;
@@ -2911,6 +3041,16 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
     return;
   }
   modePillGroup.visible=true;
+  if(leaveConfirmState){
+    hoveredModePill=false;hoveredModeMain=false;hoveredModeRecAll=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;
+    modePillPokeSince=null;modePillPokeConsumed=false;
+    modeRecAllPokeSince=null;modeRecAllPokeConsumed=false;
+    modeFencePokeSince=null;modeFencePokeConsumed=false;
+    modeClearPokeSince=null;modeClearPokeConsumed=false;
+    modeColorPokeSince=null;modeColorPokeConsumed=false;
+    modeInfoPokeSince=null;modeInfoPokeConsumed=false;
+    return;
+  }
   const itemCount=userItemCount();
   const probes=frameInputs.getProbesL();
   const gx=modePillGroup.position.x,gy=modePillGroup.position.y,gz=modePillGroup.position.z;
@@ -3186,49 +3326,143 @@ const LEFT_HAND_TINT_MEASURE=0x6fcf97,LEFT_HAND_TINT_SCAN=0xe07a7a;
 const RIGHT_HAND_TINT_IDLE=0x7dd3fc,RIGHT_HAND_TINT_REC_ALL=0xef4444;
 // Joint order of XRHand (WebXR spec): wrist, thumb(4), index(5), middle(5), ring(5), pinky(5) = 25.
 const HAND_TINT_CHAINS=[[0,1,2,3,4],[0,5,6,7,8,9],[0,10,11,12,13,14],[0,15,16,17,18,19],[0,20,21,22,23,24]];
-const HAND_TINT_MAX=128;
-const _tintMats=new Float32Array(25*16);
+const HAND_PALM_LOOP=[0,1,2,6,11,16,21,20];
+const HAND_TINT_MAX=64,HAND_BONE_MAX=88,HAND_PALM_VERTS_MAX=2*32*3;
+const _tintMats=new Float32Array(25*16),_tintRadii=new Float32Array(25);
 const _tintColLeftMeasure=new THREE.Color(LEFT_HAND_TINT_MEASURE),_tintColLeftScan=new THREE.Color(LEFT_HAND_TINT_SCAN);
 const _tintColRightIdle=new THREE.Color(RIGHT_HAND_TINT_IDLE),_tintColRightRecAll=new THREE.Color(RIGHT_HAND_TINT_REC_ALL);
-const handTintMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.22,depthTest:false,depthWrite:false});
-const handTintMesh=new THREE.InstancedMesh(new THREE.SphereGeometry(1,8,6),handTintMat,HAND_TINT_MAX);
-handTintMesh.frustumCulled=false;handTintMesh.renderOrder=990;handTintMesh.visible=false;handTintMesh.count=0;
+let handOcclusionEnabled=true,handTintEnabled=false;
+const handOccluderMat=new THREE.MeshBasicMaterial({colorWrite:false,depthWrite:true,depthTest:true,side:THREE.DoubleSide});
+const handTintMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.22,depthTest:false,depthWrite:false,side:THREE.DoubleSide});
+const handTintMesh=new THREE.InstancedMesh(new THREE.SphereGeometry(1,12,10),handOccluderMat,HAND_TINT_MAX);
+handTintMesh.frustumCulled=false;handTintMesh.renderOrder=-10;handTintMesh.visible=false;handTintMesh.count=0;
 handTintMesh.setColorAt(0,_tintColLeftMeasure);scene.add(handTintMesh);
-function appendHandTintSpheres(handInput,col,matArr,colArr,n){
-  if(!handInput?.fillJointMatrices||!handInput.fillJointMatrices(_tintMats))return n;
-  const startN=n,cr=col.r,cg=col.g,cb=col.b;
-  const put=(x,y,z,r)=>{
-    if(n>=HAND_TINT_MAX)return;
-    const m=n*16,c=n*3;n++;
-    matArr[m]=r;matArr[m+1]=0;matArr[m+2]=0;matArr[m+3]=0;
-    matArr[m+4]=0;matArr[m+5]=r;matArr[m+6]=0;matArr[m+7]=0;
-    matArr[m+8]=0;matArr[m+9]=0;matArr[m+10]=r;matArr[m+11]=0;
-    matArr[m+12]=x;matArr[m+13]=y;matArr[m+14]=z;matArr[m+15]=1;
-    colArr[c]=cr;colArr[c+1]=cg;colArr[c+2]=cb;
+const handBoneMesh=new THREE.InstancedMesh(new THREE.CylinderGeometry(1,1,1,12,1,true),handOccluderMat,HAND_BONE_MAX);
+handBoneMesh.frustumCulled=false;handBoneMesh.renderOrder=-10;handBoneMesh.visible=false;handBoneMesh.count=0;
+handBoneMesh.setColorAt(0,_tintColLeftMeasure);scene.add(handBoneMesh);
+const handPalmPosArr=new Float32Array(HAND_PALM_VERTS_MAX*3);
+const handPalmGeo=new THREE.BufferGeometry();
+handPalmGeo.setAttribute('position',new THREE.BufferAttribute(handPalmPosArr,3));
+handPalmGeo.setDrawRange(0,0);
+const handPalmMesh=new THREE.Mesh(handPalmGeo,handOccluderMat);
+handPalmMesh.frustumCulled=false;handPalmMesh.renderOrder=-10;handPalmMesh.visible=false;
+scene.add(handPalmMesh);
+const _handUpY=new THREE.Vector3(0,1,0),_handDir=new THREE.Vector3(),_handPos=new THREE.Vector3(),_handScale=new THREE.Vector3(),_handQuat=new THREE.Quaternion(),_handMat4=new THREE.Matrix4();
+function fallbackJointRadius(idx){return idx===0?0.020:(idx%5===4?0.0095:(idx%5===1?0.0155:0.0120));}
+function appendHandOccluder(handInput,col,sphereMatArr,sphereColArr,boneMatArr,boneColArr,palmArr,counts){
+  if(!handInput?.fillJointMatrices||!handInput.fillJointMatrices(_tintMats))return;
+  const hasRadii=Boolean(handInput.fillJointRadii&&handInput.fillJointRadii(_tintRadii));
+  const cr=col.r,cg=col.g,cb=col.b;
+  const jR=idx=>{
+    const r=hasRadii?_tintRadii[idx]:NaN;
+    return (Number.isFinite(r)&&r>0.004&&r<0.045)?r*1.20:fallbackJointRadius(idx);
   };
-  for(const chain of HAND_TINT_CHAINS){
-    let px=0,py=0,pz=0,has=false;
-    for(const idx of chain){
-      const o=idx*16,x=_tintMats[o+12],y=_tintMats[o+13],z=_tintMats[o+14];
-      if(!Number.isFinite(x)){has=false;continue;}
-      const r=idx===0?0.016:(idx%5===4)?0.0085:0.0105;
-      if(has)put((px+x)/2,(py+y)/2,(pz+z)/2,r*0.95);
-      if(!(idx===0&&n>startN))put(x,y,z,r);
-      px=x;py=y;pz=z;has=true;
-    }
+  const pushBone=(ia,ib,scaleR=1)=>{
+    if(counts.bones>=HAND_BONE_MAX)return;
+    const oa=ia*16,ob=ib*16;
+    const ax=_tintMats[oa+12],ay=_tintMats[oa+13],az=_tintMats[oa+14];
+    const bx=_tintMats[ob+12],by=_tintMats[ob+13],bz=_tintMats[ob+14];
+    if(!Number.isFinite(ax)||!Number.isFinite(bx))return;
+    const dx=bx-ax,dy=by-ay,dz=bz-az,len=Math.hypot(dx,dy,dz);
+    if(len<1e-4)return;
+    const r=Math.max(jR(ia),jR(ib))*scaleR;
+    _handDir.set(dx/len,dy/len,dz/len);
+    if(_handDir.y<-0.9999)_handQuat.set(1,0,0,0);
+    else _handQuat.setFromUnitVectors(_handUpY,_handDir);
+    _handPos.set((ax+bx)*0.5,(ay+by)*0.5,(az+bz)*0.5);
+    _handScale.set(r,len,r);
+    _handMat4.compose(_handPos,_handQuat,_handScale);
+    const bIdx=counts.bones++;
+    _handMat4.toArray(boneMatArr,bIdx*16);
+    const bc=bIdx*3;boneColArr[bc]=cr;boneColArr[bc+1]=cg;boneColArr[bc+2]=cb;
+  };
+  // 1. Joint spheres (25 joints per hand)
+  for(let idx=0;idx<25;idx++){
+    if(counts.spheres>=HAND_TINT_MAX)break;
+    const o=idx*16,x=_tintMats[o+12],y=_tintMats[o+13],z=_tintMats[o+14];
+    if(!Number.isFinite(x))continue;
+    const r=jR(idx);
+    const m=counts.spheres*16,c=counts.spheres*3;counts.spheres++;
+    sphereMatArr[m]=r;sphereMatArr[m+1]=0;sphereMatArr[m+2]=0;sphereMatArr[m+3]=0;
+    sphereMatArr[m+4]=0;sphereMatArr[m+5]=r;sphereMatArr[m+6]=0;sphereMatArr[m+7]=0;
+    sphereMatArr[m+8]=0;sphereMatArr[m+9]=0;sphereMatArr[m+10]=r;sphereMatArr[m+11]=0;
+    sphereMatArr[m+12]=x;sphereMatArr[m+13]=y;sphereMatArr[m+14]=z;sphereMatArr[m+15]=1;
+    sphereColArr[c]=cr;sphereColArr[c+1]=cg;sphereColArr[c+2]=cb;
   }
-  return n;
+  // 2. Continuous bone cylinders + rounded palm perimeter capsules (zero gaps, smooth outer hand edges)
+  for(const chain of HAND_TINT_CHAINS){
+    for(let k=1;k<chain.length;k++)pushBone(chain[k-1],chain[k],1.0);
+  }
+  for(let i=0;i<HAND_PALM_LOOP.length;i++){
+    pushBone(HAND_PALM_LOOP[i],HAND_PALM_LOOP[(i+1)%HAND_PALM_LOOP.length],1.05);
+  }
+  // 3. Solid extruded palm hull (eliminates gaps across the palm and thumb-index web)
+  let cx=0,cy=0,cz=0;
+  for(let i=0;i<8;i++){
+    const o=HAND_PALM_LOOP[i]*16;
+    if(!Number.isFinite(_tintMats[o+12]))return;
+    cx+=_tintMats[o+12];cy+=_tintMats[o+13];cz+=_tintMats[o+14];
+  }
+  cx/=8;cy/=8;cz/=8;
+  const wx=_tintMats[12],wy=_tintMats[13],wz=_tintMats[14];
+  const mpx=_tintMats[11*16+12]-wx,mpy=_tintMats[11*16+13]-wy,mpz=_tintMats[11*16+14]-wz;
+  const ipx=_tintMats[6*16+12]-_tintMats[21*16+12],ipy=_tintMats[6*16+13]-_tintMats[21*16+13],ipz=_tintMats[6*16+14]-_tintMats[21*16+14];
+  let nx=mpy*ipz-mpz*ipy,ny=mpz*ipx-mpx*ipz,nz=mpx*ipy-mpy*ipx;
+  const nLen=Math.hypot(nx,ny,nz);
+  if(nLen<1e-5)return;
+  nx/=nLen;ny/=nLen;nz/=nLen;
+  const halfT=Math.max(0.014,Math.min(0.024,jR(10)*1.18));
+  const pushTri=(ax,ay,az,bx,by,bz,px,py,pz)=>{
+    let v=counts.palmVerts*3;
+    if(counts.palmVerts+3>HAND_PALM_VERTS_MAX)return;
+    palmArr[v]=ax;palmArr[v+1]=ay;palmArr[v+2]=az;
+    palmArr[v+3]=bx;palmArr[v+4]=by;palmArr[v+5]=bz;
+    palmArr[v+6]=px;palmArr[v+7]=py;palmArr[v+8]=pz;
+    counts.palmVerts+=3;
+  };
+  const ctx=cx+nx*halfT,cty=cy+ny*halfT,ctz=cz+nz*halfT;
+  const cbx=cx-nx*halfT,cby=cy-ny*halfT,cbz=cz-nz*halfT;
+  for(let i=0;i<8;i++){
+    const oa=HAND_PALM_LOOP[i]*16,ob=HAND_PALM_LOOP[(i+1)%8]*16;
+    const ax=_tintMats[oa+12],ay=_tintMats[oa+13],az=_tintMats[oa+14];
+    const bx=_tintMats[ob+12],by=_tintMats[ob+13],bz=_tintMats[ob+14];
+    const atx=ax+nx*halfT,aty=ay+ny*halfT,atz=az+nz*halfT;
+    const btx=bx+nx*halfT,bty=by+ny*halfT,btz=bz+nz*halfT;
+    const abx=ax-nx*halfT,aby=ay-ny*halfT,abz=az-nz*halfT;
+    const bbx=bx-nx*halfT,bby=by-ny*halfT,bbz=bz-nz*halfT;
+    pushTri(ctx,cty,ctz,atx,aty,atz,btx,bty,btz);
+    pushTri(cbx,cby,cbz,bbx,bby,bbz,abx,aby,abz);
+    pushTri(atx,aty,atz,abx,aby,abz,btx,bty,btz);
+    pushTri(btx,bty,btz,abx,aby,abz,bbx,bby,bbz);
+  }
+}
+function hideHandOccluders(){
+  handTintMesh.visible=false;handBoneMesh.visible=false;handPalmMesh.visible=false;
 }
 function updateHandTints(leftHandInput,rightHandInput,scanMode,recAllMode,show){
-  // Single InstancedMesh for both hands (<=98 spheres): 0 extra draw calls and 1 GPU upload only when visible.
-  if(!show){handTintMesh.visible=false;return;}
-  const matArr=handTintMesh.instanceMatrix.array,colArr=handTintMesh.instanceColor.array;
-  let n=0;
-  n=appendHandTintSpheres(leftHandInput,scanMode?_tintColLeftScan:_tintColLeftMeasure,matArr,colArr,n);
-  n=appendHandTintSpheres(rightHandInput,recAllMode?_tintColRightRecAll:_tintColRightIdle,matArr,colArr,n);
-  if(n===0){handTintMesh.visible=false;return;}
-  handTintMesh.count=n;handTintMesh.instanceMatrix.needsUpdate=true;handTintMesh.instanceColor.needsUpdate=true;
-  handTintMesh.visible=true;
+  // Solid watertight hand depth-occluder (joint spheres + continuous bone cylinders + extruded palm hull):
+  // defaults to invisible depth-only occlusion so 3D lines, tags, and pills behind the user's real Passthrough hands
+  // are cleanly occluded without gaps; optional color tint remains toggleable.
+  if(!show||(!handOcclusionEnabled&&!handTintEnabled)){hideHandOccluders();return;}
+  const wantMat=handTintEnabled?handTintMat:handOccluderMat;
+  const wantOrder=handTintEnabled?990:-10;
+  for(const mesh of [handTintMesh,handBoneMesh,handPalmMesh]){
+    if(mesh.material!==wantMat)mesh.material=wantMat;
+    if(mesh.renderOrder!==wantOrder)mesh.renderOrder=wantOrder;
+  }
+  const counts={spheres:0,bones:0,palmVerts:0};
+  appendHandOccluder(leftHandInput,scanMode?_tintColLeftScan:_tintColLeftMeasure,handTintMesh.instanceMatrix.array,handTintMesh.instanceColor.array,handBoneMesh.instanceMatrix.array,handBoneMesh.instanceColor.array,handPalmPosArr,counts);
+  appendHandOccluder(rightHandInput,recAllMode?_tintColRightRecAll:_tintColRightIdle,handTintMesh.instanceMatrix.array,handTintMesh.instanceColor.array,handBoneMesh.instanceMatrix.array,handBoneMesh.instanceColor.array,handPalmPosArr,counts);
+  if(counts.spheres===0&&counts.bones===0&&counts.palmVerts===0){hideHandOccluders();return;}
+  handTintMesh.count=counts.spheres;handTintMesh.instanceMatrix.needsUpdate=true;
+  if(handTintEnabled)handTintMesh.instanceColor.needsUpdate=true;
+  handTintMesh.visible=counts.spheres>0;
+  handBoneMesh.count=counts.bones;handBoneMesh.instanceMatrix.needsUpdate=true;
+  if(handTintEnabled)handBoneMesh.instanceColor.needsUpdate=true;
+  handBoneMesh.visible=counts.bones>0;
+  handPalmGeo.attributes.position.needsUpdate=true;
+  handPalmGeo.setDrawRange(0,counts.palmVerts);
+  handPalmMesh.visible=counts.palmVerts>0;
 }
 
 function updateFingertipCursors(frameInputs,pose,{hideLeft=false,hideRight=false}={}){
@@ -3768,6 +4002,7 @@ function collectFrameInputs(frame,world,pose){
           src,kind:'hand',handedness,probeId:`hand:${src.handedness||'unknown'}`,
           hand:src.hand,getJoint,getIndexTipWorld,getTargetRayPose,
           fillJointMatrices:out=>{try{return Boolean(frame.fillPoses?.(src.hand.values(),space,out));}catch{return false;}},
+          fillJointRadii:out=>{try{return Boolean(frame.fillJointRadii?.(src.hand.values(),out));}catch{return false;}},
           getCtrlPose:()=>null,getCtrlTipWorld:()=>null,
         };
         inputs.push(item);
@@ -3822,6 +4057,7 @@ function collectFrameInputs(frame,world,pose){
 function resetSpatialPortals(){
   hoveredPortal=null;portalHoldId=null;portalHoldSinceMs=0;portalWarpState=null;showcaseNavState=null;
   closeLeaveConfirm();
+  hudRayDot.visible=false;
   centerConfirmUntilMs=0;
   warpBannerSprite.visible=false;
   showcaseOpen=false;showcaseGroup.visible=false;showcaseHoverZone=null;showcasePokeZone=null;showcasePokeSince=0;
@@ -3858,35 +4094,107 @@ function classifyShowcaseUv(u,v){
   return null;
 }
 
-function updateLeaveConfirm(frameInputs,pose,now){
+function updateLeaveConfirm(frameInputs,pose,now,world=null){
   if(!leaveConfirmState||!pose||!session||!space){
     leaveConfirmHover=null;
+    leaveConfirmPokeZone=null;
+    leaveConfirmPokeSince=0;
     return;
   }
-  hudRig.updateMatrixWorld(true);
-  let nextHover=null;
+  if(leaveConfirmNeedsPlacement){
+    placeLeaveConfirm(pose,world);
+    leaveConfirmNeedsPlacement=false;
+    leaveConfirmMesh.visible=true;
+  }
+  const vm=pose.transform.matrix;
+  _lcEye.set(vm[12],vm[13],vm[14]);
+  if(_lcEye.distanceTo(leaveConfirmMesh.position)>LEAVE_AUTO_CLOSE_DIST_M){
+    closeLeaveConfirm();
+    playModeTick('unpin');
+    return;
+  }
+  leaveConfirmMesh.updateMatrixWorld(true);
+
+  let nextHover=null,directPoke=false,pointerOnPanel=false,bestZDist=Infinity;
+  // Pass 1: Direct near-field fingertip / controller-tip touch.
   for(const inp of frameInputs.inputs){
-    const rp=inp.getTargetRayPose();
-    if(!rp)continue;
-    const rm=rp.transform.matrix;
-    _hudRayOrigin.set(rm[12],rm[13],rm[14]);
-    _hudRayDir.set(-rm[8],-rm[9],-rm[10]).normalize();
-    _hudRaycaster.set(_hudRayOrigin,_hudRayDir);
-    const hits=_hudRaycaster.intersectObject(leaveConfirmMesh,false);
-    if(hits.length&&hits[0].uv){
-      const z=classifyLeaveConfirmUv(hits[0].uv.x,hits[0].uv.y);
-      if(z){
+    const tipW=inp.kind==='hand'?inp.getIndexTipWorld():inp.getCtrlTipWorld();
+    if(!tipW)continue;
+    _lcProbeL.set(tipW[0],tipW[1],tipW[2]);
+    leaveConfirmMesh.worldToLocal(_lcProbeL);
+    const u=_lcProbeL.x/LEAVE_W_M+0.5;
+    const v=_lcProbeL.y/LEAVE_H_M+0.5;
+    const zDist=Math.abs(_lcProbeL.z);
+    if(u>=-0.04&&u<=1.04&&v>=-0.06&&v<=1.06&&zDist<0.095){
+      recordProbeProximity(inp.probeId,zDist);
+      const z=classifyLeaveConfirmUv(u,v);
+      const better=(z&&!nextHover)||(Boolean(z)===Boolean(nextHover)&&zDist<bestZDist);
+      if(better){
+        bestZDist=zDist;
+        pointerOnPanel=true;
         nextHover=z;
+        directPoke=Boolean(z&&zDist<0.040);
+        const clampedX=Math.max(-LEAVE_W_M/2,Math.min(LEAVE_W_M/2,_lcProbeL.x));
+        const clampedY=Math.max(-LEAVE_H_M/2,Math.min(LEAVE_H_M/2,_lcProbeL.y));
+        _lcSurfaceW.set(clampedX,clampedY,0.002);
+        leaveConfirmMesh.localToWorld(_lcSurfaceW);
         hudRayDot.visible=true;
-        hudRayDot.position.copy(hits[0].point);
-        break;
+        hudRayDot.position.copy(_lcSurfaceW);
+        hudRayDotMat.color.setHex(z?(z==='cancel'?0x4ade80:0xfde047):0x7dd3fc);
+        hudRayDot.scale.setScalar(z?(directPoke?1.15:0.95):0.65);
       }
     }
   }
-  if(nextHover!==leaveConfirmHover){
-    leaveConfirmHover=nextHover;
-    drawLeaveConfirm();
+
+  // Pass 2: Far ray-aim fallback whenever direct touch is not hovering a button.
+  if(!nextHover){
+    for(const inp of frameInputs.inputs){
+      const rp=inp.getTargetRayPose();
+      if(!rp)continue;
+      const rm=rp.transform.matrix;
+      _hudRayOrigin.set(rm[12],rm[13],rm[14]);
+      _hudRayDir.set(-rm[8],-rm[9],-rm[10]).normalize();
+      _hudRaycaster.set(_hudRayOrigin,_hudRayDir);
+      const hits=_hudRaycaster.intersectObject(leaveConfirmMesh,false);
+      if(hits.length&&hits[0].uv){
+        const z=classifyLeaveConfirmUv(hits[0].uv.x,hits[0].uv.y);
+        if(z||!pointerOnPanel){
+          pointerOnPanel=true;
+          nextHover=z;
+          hudRayDot.visible=true;
+          hudRayDot.position.copy(hits[0].point);
+          hudRayDotMat.color.setHex(z?(z==='cancel'?0x4ade80:0xfde047):0x7dd3fc);
+          hudRayDot.scale.setScalar(z?1.0:0.65);
+          if(z)break;
+        }
+      }
+    }
   }
+
+  // Pass 3: Direct-poke dwell with spawn grace period.
+  let pokeProg=0;
+  const pokeArmed=(now-leaveConfirmState.openedAt)>=LEAVE_POKE_GRACE_MS;
+  if(directPoke&&nextHover&&pokeArmed){
+    if(leaveConfirmPokeZone!==nextHover){
+      leaveConfirmPokeZone=nextHover;
+      leaveConfirmPokeSince=now;
+    }else{
+      const dur=nextHover==='cancel'?LEAVE_CANCEL_POKE_MS:LEAVE_CONFIRM_POKE_MS;
+      pokeProg=Math.min(1,(now-leaveConfirmPokeSince)/dur);
+      if(pokeProg>=1){
+        const act=nextHover;
+        leaveConfirmPokeZone=null;leaveConfirmPokeSince=0;
+        executeLeaveConfirm(act,now);
+        return;
+      }
+    }
+  }else{
+    leaveConfirmPokeZone=null;
+    leaveConfirmPokeSince=0;
+  }
+
+  leaveConfirmHover=nextHover;
+  drawLeaveConfirm(pokeProg);
 }
 
 const _scViewerL=new THREE.Vector3();
@@ -3939,6 +4247,13 @@ function updateSpatialPortals(frameInputs,world,anPhase,asPhase,now,pose=null){
         window.location.assign(targetUrl);
       }
     }
+    return;
+  }
+
+  if(leaveConfirmState){
+    if(showcaseOpen)showcaseGroup.visible=false;
+    showcaseHoverZone=null;showcasePokeZone=null;showcasePokeSince=0;
+    hoveredPortal=null;portalHoldId=null;portalHoldSinceMs=0;
     return;
   }
 
@@ -6028,7 +6343,12 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       resetTagRestState(entry.pillRestState);
       continue;
     }
-    const rest=updateTagRestState(entry.pillRestState,entry.displayMatrix,now,{handCoupled:entry.handCoupled});
+    const wasOpen=Boolean(entry.recOrbVisible||entry.markOrbVisible);
+    const holding=entry.recHoldSince!=null||entry.markHoldSince!=null;
+    const rest=updateTagRestState(entry.pillRestState,entry.displayMatrix,now,{
+      handCoupled:entry.handCoupled,
+      pillsOpen:wasOpen||holding,
+    });
     const tx=entry.displayMatrix[12],ty=entry.displayMatrix[13],tz=entry.displayMatrix[14];
     // Both [● REC] and [⏱ MARK] sit side-by-side below the tag (or in front of flat tabletop tags toward the viewer)
     // so the approaching hand never occludes the camera-to-tag line of sight. Active recording centers [■ STOP] below.
@@ -6064,7 +6384,9 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
         if(doOrb<minOrbDist)minOrbDist=doOrb;
         const doMark=Math.hypot(mx-pr.pos[0],my-pr.pos[1],mz-pr.pos[2]);
         if(doMark<minMarkDist)minMarkDist=doMark;
-        const nearest=entry.recording?Math.min(dz,doOrb):Math.min(dz,doOrb,doMark);
+        const nearest=recordAllActive
+          ?(entry.recording?Infinity:Math.min(dz,doMark))
+          :(entry.recording?Math.min(dz,doOrb):Math.min(dz,doOrb,doMark));
         recordProbeProximity(pr.probeId,nearest);
       }
     }
@@ -6072,7 +6394,10 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
     const {showRec:showOrb,showMark}=evaluateTagActionPills({
       isResting:rest.isResting,
       recording:entry.recording,
+      recordAllActive,
       hasPose:Boolean(entry.displayMatrix),
+      wasOpen,
+      holding,
       minTagDist,
       minZoneDist,
       minRecDist:minOrbDist,
@@ -6762,7 +7087,7 @@ function resolveUnassignedTagPose(raw,K,{minEdgePx=10,minAreaPx=100,maxRmsPx=1.5
 
 // Seed any visible 353-359 perimeter markers directly in L-frame during L-angle lock
 // so the 20 cm enclosure immediately spans all visible boundary markers upon anchor creation.
-function observePerimeterFromL(observation,lFromCamera,atMs){
+function observePerimeterFromL(observation,lFromCamera,atMs,poseSource='optical-l'){
   if(!perimeterFence||!lFromCamera)return;
   const K=observation.cameraModel,all=observation.unassignedDetections??[];
   if(!K||!all.length)return;
@@ -6773,7 +7098,13 @@ function observePerimeterFromL(observation,lFromCamera,atMs){
     const solved=resolveUnassignedTagPose(raw,K,{minEdgePx:8,minAreaPx:64,maxRmsPx:1.8});
     if(!solved)continue;
     const lFromTag=product(lFromCamera,cvToGL(solved.pose));
-    perimeterFence.observe(raw.id,lFromTag,camPosL,atMs);
+    const res=perimeterFence.observe(raw.id,lFromTag,camPosL,atMs,{
+      corners:raw.corners,lFromCamera,K,minEdgePx:solved.minEdgePx,poseSource,
+    });
+    if(res?.justLocked){
+      showHudToast(`◈ LANDMARK #${raw.id} ${res.role} FIXED (z=0)`,'#4ade80',1800);
+      pushDiagEvent({type:'perimeter-landmark-locked',tagId:raw.id,role:res.role,atPerformanceMs:performance.now(),posL:res.pos});
+    }
   }
 }
 
@@ -6794,10 +7125,30 @@ function observeExtraTags(observation,sample,assoc){
   if(!extraScanActive||!assoc)return;
   const K=observation.cameraModel,all=observation.unassignedDetections??[];
   const atMs=sample.submittedAtPerformanceMs;
-  // Once the L-angle XR anchor is locked, never pull camera-in-L toward the physical L-target
-  // (e.g. when picking up a Tablet/e-Ink target to track 300/301 in 3D without 4 cm bridge-jumping).
-  const camInL=resolveCameraInL(observation,assoc,{allowOpticalBridge:false});
+  const allowBridge=selectedRigKey==='a4';
+  const perimeterLandmarks=allowBridge?(perimeterFence?.lockedLandmarks?.()??[]):[];
+  const camInL=resolveCameraInL(observation,assoc,{
+    allowOpticalBridge:allowBridge,
+    perimeterLandmarks,
+    anchorCorrection:allowBridge?anchorDriftCorrection.state().matrix:null,
+  });
   if(!camInL)return;
+  if(perimeterFence){
+    if(camInL.source==='optical-perimeter'&&Array.isArray(camInL.inlierIds)){
+      for(const id of camInL.inlierIds){
+        if(isPerimeterTag(id))perimeterFence.reportLandmarkInlier(id);
+      }
+    }
+    if(Array.isArray(camInL.outliers)){
+      for(const out of camInL.outliers){
+        const dr=perimeterFence.reportLandmarkOutlier(out.id,{residualPx:out.rmsPx});
+        if(dr?.demoted){
+          showHudToast(`↺ LANDMARK #${out.id} ${dr.role} DEMOTED`,'#f59e0b',1800);
+          pushDiagEvent({type:'perimeter-landmark-demoted',tagId:out.id,role:dr.role,residualPx:out.rmsPx,atPerformanceMs:performance.now()});
+        }
+      }
+    }
+  }
   const velocity=viewerVelocityAt(history,assoc.targetXrTimeMs,sample.context);
   const staticGate=evaluateMotionGate(velocity,{source:camInL.source},{
     xrSteadyAngDegPerSec:15,
@@ -6809,14 +7160,23 @@ function observeExtraTags(observation,sample,assoc){
     opticalSteadyLinMPerSec:0.18,
     opticalMaxLinMPerSec:0.50,
   });
+  if(allowBridge&&!staticGate.frozen&&(camInL.source==='optical-l'||camInL.source==='optical-perimeter')){
+    anchorDriftCorrection.observeOptical({
+      lFromCameraXrRaw:product(inverse(assoc.worldFromAnchor),assoc.worldFromCamera),
+      lFromCameraOpt:camInL.lFromCamera,
+      confidence:staticGate.confidence,
+    });
+  }
   const carriedGate=evaluateMotionGate(velocity,{source:camInL.source},CARRIED_MOTION_GATE_DEFAULTS);
   lastMotionState={
     ...staticGate,atMs,
     opticalTagCount:camInL.opticalTagCount,
+    perimeterTagCount:camInL.perimeterTagCount??0,
     xrDeltaMm:camInL.xrDeltaMm,
   };
   if(lastSampleStats&&lastSampleStats.serial===sample.serial){
     lastSampleStats.poseSource=camInL.source;
+    lastSampleStats.perimeterTagCount=camInL.perimeterTagCount??0;
     lastSampleStats.headAngDegPerSec=staticGate.angDegPerSec;
     lastSampleStats.headLinMPerSec=staticGate.linMPerSec;
     lastSampleStats.motionConfidence=staticGate.confidence;
@@ -6875,7 +7235,7 @@ function observeExtraTags(observation,sample,assoc){
     if(!solved)continue;
     const {edgeMm,pose,minEdgePx,rmsPx,softFallback}=solved;
     const lFromTag=product(lFromCamera,cvToGL(pose));
-    valid.push({tagId:raw.id,edgeMm,lFromTag,apparentEdgePx:minEdgePx,rmsPx,generic,perimeter,softFallback});
+    valid.push({tagId:raw.id,edgeMm,lFromTag,apparentEdgePx:minEdgePx,rmsPx,generic,perimeter,softFallback,corners:raw.corners});
   }
   if(lastSampleStats&&lastSampleStats.serial===sample.serial){
     lastSampleStats.seenGenericIds=valid.filter(v=>v.generic).map(v=>v.tagId);
@@ -6885,7 +7245,14 @@ function observeExtraTags(observation,sample,assoc){
   if(!staticGate.frozen){
     for(const v of valid){
       if(!v.perimeter)continue;
-      const res=perimeterFence?.observe(v.tagId,v.lFromTag,camPosL,atMs,{weight:staticGate.confidence});
+      const res=perimeterFence?.observe(v.tagId,v.lFromTag,camPosL,atMs,{
+        weight:staticGate.confidence,
+        corners:v.corners,
+        lFromCamera,
+        K,
+        minEdgePx:v.apparentEdgePx,
+        poseSource:camInL.source,
+      });
       if(res?.justOffered){
         showHudToast('◈ TL #353 FOUND · PRESS TL FOR PERIMETER','#22d3ee',2800);
         pushDiagEvent({type:'perimeter-offered',tagId:v.tagId,role:res.role,atPerformanceMs:performance.now(),posL:res.pos});
@@ -6902,6 +7269,13 @@ function observeExtraTags(observation,sample,assoc){
           showHudToast(`◈ TAG #${v.tagId} ${res.role} FOUND`,'#22d3ee',1400);
         }
         pushDiagEvent({type:'perimeter-marker-detected',tagId:v.tagId,role:res.role,atPerformanceMs:performance.now(),posL:res.pos});
+      }
+      if(res?.justLocked){
+        showHudToast(`◈ LANDMARK #${v.tagId} ${res.role} FIXED (z=0)`,'#4ade80',1800);
+        pushDiagEvent({type:'perimeter-landmark-locked',tagId:v.tagId,role:res.role,atPerformanceMs:performance.now(),posL:res.pos});
+      }else if(res?.demoted){
+        showHudToast(`↺ LANDMARK #${v.tagId} ${res.role} DEMOTED`,'#f59e0b',1800);
+        pushDiagEvent({type:'perimeter-landmark-demoted',tagId:v.tagId,role:res.role,reason:'moved',atPerformanceMs:performance.now()});
       }
     }
     const isFocusOnly=(sample.focusRoiCount??0)>0&&Boolean(sample.focusHit);
@@ -7453,7 +7827,7 @@ function renderRightHud(now,as,an,cs){
   // Compact technical metrics footer.
   const seed=an.seed;
   const line1=(seed&&profile)
-    ?`Seed ±${seed.positionSpreadMm.toFixed(1)}mm · Cal ±${(profile.validation?.positionP95Mm??0).toFixed(1)}mm · fx ${Math.round(profile.K.fx)}`
+    ?`Seed ±${seed.positionSpreadMm.toFixed(1)}mm · Cal ±${(profile.validation?.positionP95Mm??0).toFixed(1)}mm · fx ${Math.round(profile.K.fx)} k1 ${(profile.distCoeffs?.[0]??0).toFixed(3)}`
     :(seed
       ?`Seed ±${seed.positionSpreadMm.toFixed(2)}mm/${seed.orientationSpreadDeg.toFixed(2)}° · RMS ${seed.maxReprojectionRmsPx.toFixed(2)}px`
       :`Profile: ${profile?profile.id.slice(0,22):'uncalibrated'}`);
@@ -7461,7 +7835,7 @@ function renderRightHud(now,as,an,cs){
     :lastSampleStats?.readbackMode==='worker-videoframe-canvas'?'vf-2d'
     :lastSampleStats?.readbackMode==='worker-bitmap'?'bitmap':'main-rb';
   const syncTag=(lastMotionState&&now-lastMotionState.atMs<1200)
-    ?(lastMotionState.frozen?'HOLD':(lastMotionState.source==='optical-l'?'L-0ms':'XR'))
+    ?(lastMotionState.frozen?'HOLD':(lastMotionState.source==='optical-perimeter'?'P-0ms':(lastMotionState.source==='optical-l'?'L-0ms':'XR')))
     :(profile?`${Math.round(profile.timeOffsetMs)}ms`:'–');
   const line2=`${APP_VERSION_LABEL} · ${cs.sourceSize.join('×')} · ${rvfcHz.toFixed(0)}Hz${cs.rvfcStalled?'!':''} · ${rbMode} · ${syncTag}`;
   const auditState=audit.state();
@@ -7519,8 +7893,7 @@ const _hudTmpV=new THREE.Vector3();
 const _hudTmpG=new THREE.Vector3();
 const _hudGrabPool=Array.from({length:4},()=>({id:'',worldPos:new THREE.Vector3(),rayOrigin:new THREE.Vector3(),rayDir:new THREE.Vector3(),hasRay:false,pinching:false,releasing:false}));
 function updateHudPanelDragging(frameInputs,pose,now){
-  if((!showcaseOpen||!showcaseHoverZone)&&(!leaveConfirmState||!leaveConfirmHover))hudRayDot.visible=false;
-  if(!hudPanelsVisible||!pose||!session||!space){
+  if(!hudPanelsVisible||leaveConfirmState||!pose||!session||!space){
     hudDragState=null;
     if(!hudGrabResetDone){
       hudGrabResetDone=true;
@@ -7707,8 +8080,11 @@ function finalizeDiagnostics(){
   diagnostics.profile=profile;
   diagnostics.anchor=anchor.state();
   diagnostics.audit=audit.state();
+  diagnostics.auditSamples=audit?.recentRows?.(30)??[];
+  diagnostics.calibrationData=assistant?.diagnosticsData?.()??null;
   diagnostics.extraTags=[...placedExtras.values()].map(({tagId,edgeMm,lFromTag,placedAt,wp})=>({tagId,edgeMm,lFromTag,placedAt,wp}));
   diagnostics.perimeterFence=perimeterFence?.snapshot()??null;
+  diagnostics.anchorCorrection=anchorDriftCorrection.state();
   diagnostics.movableTrails=[...movableTools.values()].map(m=>({tagId:m.tagId,edgeMm:m.edgeMm,waypoints:m.waypointCount,lastMatrix:m.lastMatrix}));
   lastDiagnostics=structuredClone(diagnostics);
   $('download').disabled=false;
@@ -7719,7 +8095,7 @@ function clean(s){
   if(session!==s)return;
   finalizeDiagnostics();
   space?.removeEventListener?.('reset',reset);
-  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
+  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();anchorDriftCorrection.reset();lastShownUpgradeReason='';tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
   hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;perimeterOfferSuppressed=false;
   clearFenceBreaches();
   modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeRecAll=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeRecAllPokeSince=null;modeRecAllPokeConsumed=false;modeRecAllCooldownUntil=0;lastModeRecAllKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';modeColorPokeSince=null;modeColorPokeConsumed=false;modeColorCooldownUntil=0;lastModeColorKey='';turboBarSprite.visible=false;lastTurboBarKey='';
@@ -7736,7 +8112,7 @@ function clean(s){
   rightPalmDwellSince=null;rightMenuOpenUntil=0;rightWristPrev=null;rightWristSpeed=0;rightDotTapSince=null;
   wristPillPokeId=null;wristPillPokeSince=0;liveTouchLoaderActive=false;
   pinFlashUntilMs=0;pinFlashPos=null;lastInspectorTimeMs=null;lastViewerBasis=null;
-  handGestureRing.visible=false;handLabelsGroup.visible=false;leftWristDot.visible=false;rightWristDot.visible=false;wristGazeSprite.visible=false;leftScanRecDot.visible=false;handTintMesh.visible=false;fistProgressSprite.visible=false;
+  handGestureRing.visible=false;handLabelsGroup.visible=false;leftWristDot.visible=false;rightWristDot.visible=false;wristGazeSprite.visible=false;leftScanRecDot.visible=false;hideHandOccluders();fistProgressSprite.visible=false;
   pinLoadSprite.visible=false;toastSprite.visible=false;toastUntilMs=0;
   root.visible=hudRig.visible=false;
   if($('enter'))$('enter').disabled=!arSupported;
@@ -7747,7 +8123,7 @@ function clean(s){
 }
 
 function reset(){
-  epoch++;history=[];obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;handHistory.clear();resetAnchorStability();clearTrail();
+  epoch++;history=[];obsBuffer.clear();anchorDriftCorrection.reset();lastShownUpgradeReason='';tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;handHistory.clear();resetAnchorStability();clearTrail();
   anchor.resetReference(space,context(),performance.now());
   if(!anchor.state().created){profile=null;extraScanActive=false;clearExtras();assistant.reset();assistant.begin();}
 }
@@ -7755,7 +8131,7 @@ function reset(){
 async function triggerReanchor(){
   const now=performance.now();
   if(!anchor.reanchor(now,'trigger'))return;
-  extraScanActive=false;reanchorConfirmUntil=0;resetAnchorStability();
+  extraScanActive=false;reanchorConfirmUntil=0;anchorDriftCorrection.reset();resetAnchorStability();
   clearExtras();obsBuffer.clear();audit.reset();lastAuditRow=null;lastMovedTargetAt=0;
   status('Re-anchoring · starting camera…');
   if(!await capture.start())status('Failed to restart camera for re-anchoring.');
@@ -7764,7 +8140,7 @@ async function triggerReanchor(){
 async function triggerRecalibrate(){
   if(!session||!assistant)return;
   const now=performance.now();
-  extraScanActive=false;recordAllActive=false;lastModeRecAllKey='';reanchorConfirmUntil=0;resetAnchorStability();
+  extraScanActive=false;recordAllActive=false;lastModeRecAllKey='';reanchorConfirmUntil=0;anchorDriftCorrection.reset();lastShownUpgradeReason='';resetAnchorStability();
   rightFistToggle.reset();rightFistFlashUntil=0;leftMidPinchSince=null;
   profile=null;clearExtras();clearPins();clearTrail();obsBuffer.clear();audit.reset();lastAuditRow=null;lastMovedTargetAt=0;
   resetOrbitGuide();
@@ -8050,7 +8426,7 @@ try{
   syncRigUi();
   rig=selectedRigKey==='tablet'?rigTablet:rigA4;
   buildReferenceMesh(rig);
-  perimeterFence=PERIMETER_ENABLED?createPerimeterFence(rig,{heightM:FENCE_HEIGHT_M}):null;
+  perimeterFence=PERIMETER_ENABLED?createPerimeterFence(rig,{heightM:FENCE_HEIGHT_M,coordinateMode:selectedRigKey==='tablet'?'free-6dof':'planar-z0'}):null;
   syncFenceVisuals(performance.now(),0,true);
   anchor.setTagIds(rig.tools[0].tags.map(t=>t.id));
   capture=createReferenceCamera({
@@ -8211,8 +8587,9 @@ try{
     try{
       selectedRigKey=nextKey;syncRigUi();
       rig=nextKey==='tablet'?rigTablet:rigA4;
-      profile=null;
+      profile=null;anchorDriftCorrection.reset();lastShownUpgradeReason='';
       buildReferenceMesh(rig);
+      perimeterFence?.setCoordinateMode?.(nextKey==='tablet'?'free-6dof':'planar-z0');
       perimeterFence?.setRig(rig);
       syncFenceVisuals(performance.now(),0,true);
       anchor.setTagIds(rig.tools[0].tags.map(t=>t.id));
@@ -8224,7 +8601,8 @@ try{
       if(!session)return;
       assistant=createCalibrationAssistant({
         rig,device,imageSize:[Math.round(w*scale),Math.round(h*scale)],
-        onChange:s=>status(`${s.phase} · ${s.count}/${s.required} · ${s.message}`),
+        model:'centered-radial',
+        onChange:handleCalibrationStatus,
         onProfile:p=>{profile=p;if(p)clearTrail();},
       });
       resetOrbitGuide();
@@ -8239,9 +8617,10 @@ try{
     syncRigUi();
     if(capture.isRunning?.())capture.stop();
     if(assistant){assistant.dispose();assistant=null;}
-    profile=null;
+    profile=null;anchorDriftCorrection.reset();lastShownUpgradeReason='';
     rig=selectedRigKey==='tablet'?rigTablet:rigA4;
     buildReferenceMesh(rig);
+    perimeterFence?.setCoordinateMode?.(selectedRigKey==='tablet'?'free-6dof':'planar-z0');
     perimeterFence?.setRig(rig);
     syncFenceVisuals(performance.now(),0,true);
     anchor.setTagIds(rig.tools[0].tags.map(t=>t.id));
@@ -8275,7 +8654,8 @@ try{
     assistant?.dispose();
     assistant=createCalibrationAssistant({
       rig,device,imageSize:[Math.round(w*scale),Math.round(h*scale)],
-      onChange:s=>status(`${s.phase} · ${s.count}/${s.required} · ${s.message}`),
+      model:'centered-radial',
+      onChange:handleCalibrationStatus,
       onProfile:p=>{profile=p;if(p)clearTrail();},
     });
     return true;
@@ -8349,7 +8729,7 @@ try{
         }
       }
 
-      session=acquired;sessionId=`quest-${++sessionCount}`;epoch=0;history=[];obsBuffer.clear();clearExtras();clearTrail();resetSpatialPortals();audit.reset();
+      session=acquired;sessionId=`quest-${++sessionCount}`;epoch=0;history=[];obsBuffer.clear();anchorDriftCorrection.reset();lastShownUpgradeReason='';clearExtras();clearTrail();resetSpatialPortals();audit.reset();
       hold={sinceMs:null,progress:0,fire:false};extraScanActive=false;recordAllActive=false;reanchorConfirmUntil=0;scanPulseCounter=0;recentFocusDetectMs=15;tagPredictor.reset();focusScheduler.reset();
       adaptiveQuality.setMode(currentQualityMode());
       adaptiveQuality.setLongRange(currentLongRangeEnabled());
@@ -8382,7 +8762,7 @@ try{
         const asPhase=assistant?.phase?.()??'idle',anPhase=anchor.phase(),now=performance.now();
         // Priority -1: Explicit 2-step "Leave Demo?" confirmation modal (guards eb.mess.icu & showcase URLs).
         if(leaveConfirmState){
-          if(leaveConfirmHover)executeLeaveConfirm(leaveConfirmHover,now);
+          if((now-leaveConfirmState.openedAt)>=LEAVE_SELECT_GRACE_MS&&leaveConfirmHover)executeLeaveConfirm(leaveConfirmHover,now);
           return;
         }
         if(asPhase==='check-failed'){assistant.retryCheck();return;}
@@ -8428,6 +8808,7 @@ try{
         if(anPhase==='lost'||anPhase==='failed'){triggerReanchor();return;}
       });
       acquired.addEventListener('squeezestart',()=>{
+        if(leaveConfirmState)return;
         const asPhase=assistant?.phase?.()??'idle',anPhase=anchor.phase();
         if(asPhase==='check-failed'){assistant.retry();return;}
         if(asPhase==='ready'&&(anPhase==='tracking'||anPhase==='created'))toggleExtraScan();
@@ -8510,8 +8891,10 @@ try{
       }
     }
 
-    const frameInputs=collectFrameInputs(frame,world,pose);
-    if(world)recordHandsInL(frameInputs,world,time);
+    const corr=(world&&selectedRigKey==='a4')?anchorDriftCorrection.step(dtSec):null;
+    const renderWorld=(world&&corr?.active)?product(world,corr.matrix):world;
+    const frameInputs=collectFrameInputs(frame,renderWorld,pose);
+    if(renderWorld)recordHandsInL(frameInputs,renderWorld,time);
 
     if(profile){
       const drained=obsBuffer.drain(history,profile,now);
@@ -8546,20 +8929,24 @@ try{
       }
     }
 
-    root.visible=Boolean(world);
-    if(world){
-      root.matrix.fromArray(world);
+    root.visible=Boolean(renderWorld);
+    if(renderWorld){
+      root.matrix.fromArray(renderWorld);
       root.matrixWorldNeedsUpdate=true;
       syncFenceVisuals(now,dtSec);
     }
     recordAnchorStability(world);
     stepLiveTagSmoothing(now,dtSec,time);
     probeProximity.clear();
-    updateLiveTagTouch(frameInputs,world,pose,now);
-    updateWaypointInspector(frameInputs,world,pose,now);
-    updateTlPerimeterOffer(frameInputs,world,anPhase,asPhase,now);
-    updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now);
-    updateSpatialPortals(frameInputs,world,anPhase,asPhase,now,pose);
+    hudRayDot.visible=false;
+    hudRayDotMat.color.setHex(0xfde047);
+    hudRayDot.scale.setScalar(1);
+    updateLiveTagTouch(frameInputs,renderWorld,pose,now);
+    updateWaypointInspector(frameInputs,renderWorld,pose,now);
+    updateTlPerimeterOffer(frameInputs,renderWorld,anPhase,asPhase,now);
+    updateModeAnchorPill(frameInputs,renderWorld,anPhase,asPhase,now);
+    updateSpatialPortals(frameInputs,renderWorld,anPhase,asPhase,now,pose);
+    updateLeaveConfirm(frameInputs,pose,now,renderWorld);
 
     // Controller A/X (button 4): short press toggles HUD panels; hold 0.8 s clears all user tags, trails & pins.
     const axPressed=frameInputs.axPressed;
@@ -8594,7 +8981,7 @@ try{
     leftWristDot.visible=false;
     rightWristDot.visible=false;
     leftScanRecDot.visible=false;
-    handTintMesh.visible=false;
+    hideHandOccluders();
     fistProgressSprite.visible=false;
     const leftHandInput=frameInputs.hands.left;
     const rightHandInput=frameInputs.hands.right;
@@ -9048,7 +9435,6 @@ try{
       _xrVmMat4.fromArray(pose.transform.matrix);
       hudRig.position.setFromMatrixPosition(_xrVmMat4);
       hudRig.quaternion.setFromRotationMatrix(_xrVmMat4);
-      updateLeaveConfirm(frameInputs,pose,now);
       updateHudPanelDragging(frameInputs,pose,now);
       const calibratingOrLocking=asPhase!=='ready'||anPhase==='collecting';
       latestViewMat=Array.from(pose.transform.matrix);

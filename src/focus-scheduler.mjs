@@ -4,8 +4,8 @@ import { projectPriorRois } from './detector.mjs';
 import { inverse, product } from './runtime.mjs';
 
 export const FOCUS_SCHEDULER_DEFAULTS = Object.freeze({
-  coneEnterDeg: 20,
-  coneExitDeg: 26,
+  coneEnterDeg: 26,
+  coneExitDeg: 32,
   coneMaxDistM: 1.85,
   coneFarMaxDistM: 2.50,
   maxForegroundTags: 3,
@@ -51,8 +51,11 @@ export function projectTagGazeMetrics(posL, camGLFromL, K, width, height) {
   if (!Number.isFinite(zCV) || zCV <= 0.05) {
     return { inFrustum: false, angleDeg: Infinity, distM: Infinity, u: NaN, v: NaN, zCV: Number.isFinite(zCV) ? zCV : NaN };
   }
-  const u = K.fx * (xCV / zCV) + K.cx;
-  const v = K.fy * (yCV / zCV) + K.cy;
+  const k1 = Number.isFinite(K.k1) ? K.k1 : 0;
+  const xn = xCV / zCV, yn = yCV / zCV;
+  const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+  const u = K.fx * xn * sc + K.cx;
+  const v = K.fy * yn * sc + K.cy;
   const distM = Math.hypot(xCV, yCV, zCV);
   const angleDeg = (Math.atan2(Math.hypot(xCV, yCV), zCV) * 180) / Math.PI;
   const inFrustum = Number.isFinite(u) && Number.isFinite(v) &&
@@ -126,9 +129,11 @@ export function createFocusScheduler(options = {}) {
       ? maxForegroundTags
       : cfg.maxForegroundTags;
 
-    const lFromCameraGL = product(inverse(worldFromAnchor), worldFromViewer, viewerFromCameraGL);
+    const lFromViewer = product(inverse(worldFromAnchor), worldFromViewer);
+    const viewerGLFromL = inverse(lFromViewer);
+    const lFromCameraGL = product(lFromViewer, viewerFromCameraGL);
     const camGLFromL = inverse(lFromCameraGL);
-    if (!isFiniteMat4(camGLFromL)) {
+    if (!isFiniteMat4(camGLFromL) || !isFiniteMat4(viewerGLFromL)) {
       return wideResult('no-xr-pose', nowMs);
     }
 
@@ -141,6 +146,19 @@ export function createFocusScheduler(options = {}) {
       if (!c || !Number.isInteger(c.tagId) || !Array.isArray(c.pos) || c.pos.length < 3) continue;
       candidateById.set(c.tagId, c);
       const m = projectTagGazeMetrics(c.pos, camGLFromL, K, width, height);
+      // Measure gaze-cone angle symmetrically around the viewer's head axis (worldFromViewer)
+      // rather than the laterally offset Quest 3 RGB camera (~3.3 cm right), while keeping
+      // frustum/pixel projection strictly in the physical camera frame.
+      if (m.inFrustum) {
+        const px = c.pos[0], py = c.pos[1], pz = c.pos[2];
+        const vx = viewerGLFromL[0] * px + viewerGLFromL[4] * py + viewerGLFromL[8] * pz + viewerGLFromL[12];
+        const vy = viewerGLFromL[1] * px + viewerGLFromL[5] * py + viewerGLFromL[9] * pz + viewerGLFromL[13];
+        const vz = -(viewerGLFromL[2] * px + viewerGLFromL[6] * py + viewerGLFromL[10] * pz + viewerGLFromL[14]);
+        if (Number.isFinite(vz) && vz > 0.05) {
+          m.angleDeg = (Math.atan2(Math.hypot(vx, vy), vz) * 180) / Math.PI;
+          m.distM = Math.hypot(vx, vy, vz);
+        }
+      }
       metricsById.set(c.tagId, m);
       if (c.recording || c.handCoupled || c.moving || c.nearHand) hasActive = true;
     }

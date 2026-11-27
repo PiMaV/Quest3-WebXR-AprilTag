@@ -1,12 +1,35 @@
 // Dynamic clockwise table-perimeter fence driven by the fixed L-angle (350-352)
 // and movable perimeter markers (358 YL, 353 TL, 357 XT, 354 TR, 359 YR, 355 BR, 356 XB).
-// Starts idle until TL (353) is discovered ('offered'), then activates on user confirmation ('active').
+// Supports multi-view z = 0 triangulation to promote stationary markers into optical landmarks.
+import { undistortPoint } from './rig.mjs';
+import { inverse } from './runtime.mjs';
 
 export const FENCE_HEIGHT_M = 0.20;
 export const PERIMETER_TRIGGER_TAG_ID = 353;
 export const PERIMETER_OUTSIDE_HYSTERESIS_M = Object.freeze({
   enterOutsideM: 0.008,
   exitOutsideM: 0.002,
+});
+export const PERIMETER_LANDMARK_DEFAULTS = Object.freeze({
+  minKeyframes: 6,
+  maxKeyframes: 16,
+  minKeyframeDistM: 0.04,
+  minKeyframeAngleDeg: 4.0,
+  minBaselineM: 0.12,
+  minParallaxDeg: 8.0,
+  minSpanMs: 1000,
+  minConfidence: 0.65,
+  minEdgePx: 11,
+  minCosView: 0.35,
+  maxSquareFitRmsMm: 3.5,
+  maxPosSpreadMm: 8.0,
+  maxYawSpreadDeg: 3.0,
+  maxReprojRmsPxXr: 3.0,
+  maxReprojRmsPxOptical: 1.6,
+  outlierDemoteStreak: 3,
+  severeOutlierPx: 6.0,
+  severeOutlierStreak: 2,
+  lockedJumpDemoteM: 0.025,
 });
 
 export const PERIMETER_MARKERS = Object.freeze([
@@ -111,6 +134,259 @@ function composeTableTagMatrix(pos, yaw) {
     0, 0, 1, 0,
     pos[0], pos[1], pos[2], 1,
   ];
+}
+
+/** Return the 4 L-frame `[x, y]` corners of a `z = 0` square tag in WASM LL, LR, UR, UL order. */
+export function tagCornersOnZ0(x, y, yaw, edgeM = 0.020) {
+  const h = edgeM * 0.5;
+  const dx = Math.cos(yaw) * h;
+  const dy = Math.sin(yaw) * h;
+  return [
+    [x - dx + dy, y - dy - dx],
+    [x + dx + dy, y + dy - dx],
+    [x + dx - dy, y + dy + dx],
+    [x - dx - dy, y - dy + dx],
+  ];
+}
+
+/**
+ * Intersect all 4 (undistorted) corner rays with the L-frame table plane (`z = 0`)
+ * and solve a closed-form 2D rigid square `(x, y, yaw)` via Procrustes.
+ */
+export function fitTagSquareOnZ0(cornersPx, lFromCamera, K, {
+  edgeM = 0.020,
+  minCameraHeightM = 0.10,
+  minRayDrop = 0.08,
+  maxDistM = 3.5,
+} = {}) {
+  if (
+    !Array.isArray(cornersPx) || cornersPx.length !== 4 ||
+    !lFromCamera || lFromCamera.length < 16 ||
+    !K || !(K.fx > 0) || !(K.fy > 0) || !Number.isFinite(K.cx) || !Number.isFinite(K.cy) ||
+    !(edgeM > 0)
+  ) {
+    return null;
+  }
+  const ox = lFromCamera[12], oy = lFromCamera[13], oz = lFromCamera[14];
+  if (!Number.isFinite(ox) || !Number.isFinite(oy) || !Number.isFinite(oz) || oz < minCameraHeightM) {
+    return null;
+  }
+  const k1 = Number.isFinite(K.k1) ? K.k1 : 0;
+  const pts = [];
+  for (let i = 0; i < 4; i++) {
+    const p = cornersPx[i];
+    if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) return null;
+    const up = k1 ? undistortPoint(p.x, p.y, K) : p;
+    const xn = (up.x - K.cx) / K.fx;
+    const yn = (up.y - K.cy) / K.fy;
+    const dx = lFromCamera[0] * xn - lFromCamera[4] * yn - lFromCamera[8];
+    const dy = lFromCamera[1] * xn - lFromCamera[5] * yn - lFromCamera[9];
+    const dz = lFromCamera[2] * xn - lFromCamera[6] * yn - lFromCamera[10];
+    if (!Number.isFinite(dz) || dz > -minRayDrop) return null;
+    const t = -oz / dz;
+    const rayDist = t * Math.hypot(dx, dy, dz);
+    if (!Number.isFinite(rayDist) || t <= 0.08 || rayDist > maxDistM) return null;
+    pts.push([ox + t * dx, oy + t * dy]);
+  }
+  const mx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) * 0.25;
+  const my = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) * 0.25;
+  const h = edgeM * 0.5;
+  const local = [[-h, -h], [h, -h], [h, h], [-h, h]];
+  let A = 0, B = 0;
+  for (let i = 0; i < 4; i++) {
+    const dx = pts[i][0] - mx, dy = pts[i][1] - my;
+    A += local[i][0] * dx + local[i][1] * dy;
+    B += local[i][0] * dy - local[i][1] * dx;
+  }
+  if (Math.hypot(A, B) < 1e-12) return null;
+  const yaw = Math.atan2(B, A);
+  const cornersL = tagCornersOnZ0(mx, my, yaw, edgeM);
+  let sqErr = 0;
+  for (let i = 0; i < 4; i++) {
+    const ex = cornersL[i][0] - pts[i][0], ey = cornersL[i][1] - pts[i][1];
+    sqErr += ex * ex + ey * ey;
+  }
+  const squareRmsMm = Math.sqrt(sqErr * 0.25) * 1000;
+  const vx = ox - mx, vy = oy - my, vz = oz;
+  const distM = Math.hypot(vx, vy, vz);
+  if (!(distM > 1e-4)) return null;
+  return {
+    x: mx,
+    y: my,
+    yaw,
+    squareRmsMm,
+    cornersL,
+    rayDir: [vx / distM, vy / distM, vz / distM],
+    distM,
+    cosView: vz / distM,
+  };
+}
+
+function solve3x3(A, b) {
+  const m = [
+    [A[0][0], A[0][1], A[0][2], b[0]],
+    [A[1][0], A[1][1], A[1][2], b[1]],
+    [A[2][0], A[2][1], A[2][2], b[2]],
+  ];
+  for (let c = 0; c < 3; c++) {
+    let piv = c;
+    for (let r = c + 1; r < 3; r++) {
+      if (Math.abs(m[r][c]) > Math.abs(m[piv][c])) piv = r;
+    }
+    if (Math.abs(m[piv][c]) < 1e-12) return null;
+    if (piv !== c) [m[c], m[piv]] = [m[piv], m[c]];
+    const invD = 1 / m[c][c];
+    for (let j = c; j < 4; j++) m[c][j] *= invD;
+    for (let r = 0; r < 3; r++) {
+      if (r === c) continue;
+      const f = m[r][c];
+      for (let j = c; j < 4; j++) m[r][j] -= f * m[c][j];
+    }
+  }
+  const sol = [m[0][3], m[1][3], m[2][3]];
+  return sol.every(Number.isFinite) ? sol : null;
+}
+
+/**
+ * Multi-view 3-DOF `(x, y, yaw)` Pseudo-Huber bundle adjustment constraining a marker
+ * to the `z = 0` L-angle table plane directly in distorted pixel space.
+ */
+export function triangulateTagOnZ0(keyframes, K, {
+  edgeM = 0.020,
+  maxIterations = 20,
+  huberDeltaPx = 2.0,
+} = {}) {
+  if (!Array.isArray(keyframes) || keyframes.length < 3 || !K || !(K.fx > 0) || !(K.fy > 0)) return null;
+  const views = [];
+  for (const kf of keyframes) {
+    if (!kf?.lFromCamera || !Array.isArray(kf.pixels) || kf.pixels.length !== 4) continue;
+    const sq = fitTagSquareOnZ0(kf.pixels, kf.lFromCamera, K, { edgeM });
+    const camFromL = inverse(kf.lFromCamera);
+    if (!sq || !camFromL || camFromL.length < 16) continue;
+    views.push({
+      camFromL,
+      pixels: kf.pixels,
+      sqrtW: Math.sqrt(Math.max(0.1, Number.isFinite(kf.weight) ? kf.weight : 1)),
+      sq,
+    });
+  }
+  if (views.length < 3) return null;
+
+  const xs = views.map((v) => v.sq.x).sort((a, b) => a - b);
+  const ys = views.map((v) => v.sq.y).sort((a, b) => a - b);
+  let x = xs[xs.length >> 1];
+  let y = ys[ys.length >> 1];
+  let cSum = 0, sSum = 0;
+  for (const v of views) {
+    cSum += Math.cos(v.sq.yaw);
+    sSum += Math.sin(v.sq.yaw);
+  }
+  let yaw = Math.atan2(sSum, cSum);
+  const k1 = Number.isFinite(K.k1) ? K.k1 : 0;
+
+  const evalResiduals = (tx, ty, tyaw) => {
+    const corners = tagCornersOnZ0(tx, ty, tyaw, edgeM);
+    const weighted = [];
+    let rawSq = 0;
+    for (let vi = 0; vi < views.length; vi++) {
+      const { camFromL: C, pixels: pix, sqrtW } = views[vi];
+      for (let i = 0; i < 4; i++) {
+        const cx0 = corners[i][0], cy0 = corners[i][1];
+        const gx = C[12] + C[0] * cx0 + C[4] * cy0;
+        const gy = C[13] + C[1] * cx0 + C[5] * cy0;
+        const gz = C[14] + C[2] * cx0 + C[6] * cy0;
+        const zcv = -gz;
+        if (!(zcv > 0.05)) return null;
+        const xn = gx / zcv, yn = -gy / zcv;
+        const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+        const dx = K.fx * xn * sc + K.cx - pix[i].x;
+        const dy = K.fy * yn * sc + K.cy - pix[i].y;
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null;
+        rawSq += dx * dx + dy * dy;
+        weighted.push(sqrtW * dx, sqrtW * dy);
+      }
+    }
+    return { weighted, rawSq };
+  };
+
+  let cur = evalResiduals(x, y, yaw);
+  if (!cur) return null;
+  const huberCost = (arr) => {
+    let s = 0;
+    for (let i = 0; i < arr.length; i++) {
+      const u = arr[i] / huberDeltaPx;
+      s += 2 * huberDeltaPx * huberDeltaPx * (Math.sqrt(1 + u * u) - 1);
+    }
+    return s;
+  };
+  let cost = huberCost(cur.weighted);
+  let lam = 1e-3;
+  const eps = 1e-6;
+  let lastA = null;
+
+  for (let it = 0; it < maxIterations; it++) {
+    const r = cur.weighted;
+    const rx = evalResiduals(x + eps, y, yaw)?.weighted;
+    const ry = evalResiduals(x, y + eps, yaw)?.weighted;
+    const rw = evalResiduals(x, y, yaw + eps)?.weighted;
+    if (!rx || !ry || !rw) break;
+    const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const b = [0, 0, 0];
+    for (let k = 0; k < r.length; k++) {
+      const u = r[k] / huberDeltaPx;
+      const w = 1 / Math.sqrt(1 + u * u);
+      const j0 = (rx[k] - r[k]) / eps;
+      const j1 = (ry[k] - r[k]) / eps;
+      const j2 = (rw[k] - r[k]) / eps;
+      b[0] -= w * j0 * r[k];
+      b[1] -= w * j1 * r[k];
+      b[2] -= w * j2 * r[k];
+      A[0][0] += w * j0 * j0; A[0][1] += w * j0 * j1; A[0][2] += w * j0 * j2;
+      A[1][1] += w * j1 * j1; A[1][2] += w * j1 * j2;
+      A[2][2] += w * j2 * j2;
+    }
+    A[1][0] = A[0][1]; A[2][0] = A[0][2]; A[2][1] = A[1][2];
+    lastA = A.map((row) => row.slice());
+    for (let d = 0; d < 3; d++) A[d][d] += lam * Math.max(1, A[d][d]);
+    const step = solve3x3(A, b);
+    if (!step) break;
+    const next = evalResiduals(x + step[0], y + step[1], yaw + step[2]);
+    const nextCost = next ? huberCost(next.weighted) : Infinity;
+    if (nextCost < cost) {
+      x += step[0];
+      y += step[1];
+      yaw = shortestAngleDelta(0, yaw + step[2]);
+      cur = next;
+      cost = nextCost;
+      lam = Math.max(1e-9, lam / 3);
+      if (Math.hypot(step[0], step[1], step[2]) < 1e-8) break;
+    } else {
+      lam *= 10;
+      if (lam > 1e10) break;
+    }
+  }
+
+  const rmsPx = Math.sqrt(cur.rawSq / (views.length * 4));
+  let stdXYMm = Infinity, stdYawDeg = Infinity;
+  if (lastA) {
+    const dof = Math.max(1, 2 * 4 * views.length - 3);
+    const varW = cur.weighted.reduce((s, v) => s + v * v, 0) / dof;
+    const cx = solve3x3(lastA, [1, 0, 0]);
+    const cy = solve3x3(lastA, [0, 1, 0]);
+    const cw = solve3x3(lastA, [0, 0, 1]);
+    if (cx && cy && cx[0] > 0 && cy[1] > 0) stdXYMm = Math.sqrt((cx[0] + cy[1]) * varW) * 1000;
+    if (cw && cw[2] > 0) stdYawDeg = Math.sqrt(cw[2] * varW) * (180 / Math.PI);
+  }
+  return {
+    x,
+    y,
+    yaw,
+    rmsPx,
+    corners: tagCornersOnZ0(x, y, yaw, edgeM),
+    views: views.length,
+    stdXYMm,
+    stdYawDeg,
+  };
 }
 
 export function polygonMetricsXY(vertices) {
@@ -396,8 +672,11 @@ export function isTablePointObservableInCamera(posL, lFromCamera, K, {
   const zCV = -(lFromCamera[8] * dx + lFromCamera[9] * dy + lFromCamera[10] * dz);
   if (!Number.isFinite(zCV) || zCV < minDistM || zCV > maxDistM) return false;
 
-  const u = K.fx * (xCV / zCV) + K.cx;
-  const v = K.fy * (yCV / zCV) + K.cy;
+  const k1 = Number.isFinite(K.k1) ? K.k1 : 0;
+  const xn = xCV / zCV, yn = yCV / zCV;
+  const sc = k1 ? 1 + k1 * (xn * xn + yn * yn) : 1;
+  const u = K.fx * xn * sc + K.cx;
+  const v = K.fy * yn * sc + K.cy;
   if (!Number.isFinite(u) || !Number.isFinite(v)) return false;
 
   // Include a spatial dead-zone around the expected marker location on the table
@@ -440,7 +719,11 @@ export function createPerimeterFence(rig, {
   inViewDeadZoneM = 0.04,
   inViewMinExpectedMinorPx = 7.0,
   tagEdgeM = 0.020,
+  coordinateMode: initialCoordinateMode = 'planar-z0',
+  landmark = {},
 } = {}) {
+  const lmCfg = { ...PERIMETER_LANDMARK_DEFAULTS, ...landmark };
+  let coordinateMode = initialCoordinateMode === 'free-6dof' ? 'free-6dof' : 'planar-z0';
   let anchors = extractRigAnchors(rig);
   const markers = new Map();
   let active = false;
@@ -448,6 +731,32 @@ export function createPerimeterFence(rig, {
   let stateVersion = 0;
   const cachedPolyXY = [];
   let cachedPolyVer = -1;
+
+  function getCoordinateMode() {
+    return coordinateMode;
+  }
+
+  function setCoordinateMode(nextMode) {
+    const resolved = nextMode === 'free-6dof' ? 'free-6dof' : 'planar-z0';
+    if (resolved === coordinateMode) return coordinateMode;
+    coordinateMode = resolved;
+    for (const m of markers.values()) {
+      if (resolved === 'free-6dof') {
+        m.landmarkState = 'tracking';
+        m.lockedPose = null;
+        m.keyframes.length = 0;
+        m.outlierStreak = 0;
+        m.severeOutlierStreak = 0;
+        m.pendingDemotePos = null;
+      } else {
+        m.targetPos[2] = 0;
+        m.currentPos[2] = 0;
+      }
+    }
+    dirty = true;
+    stateVersion++;
+    return coordinateMode;
+  }
 
   function isActive() {
     return active;
@@ -506,13 +815,135 @@ export function createPerimeterFence(rig, {
     stateVersion++;
   }
 
-  function observe(tagId, lFromTag, cameraPosL, atMs, { weight = 1 } = {}) {
+  function maybePromoteLandmark(m, K, atMs) {
+    if (coordinateMode !== 'planar-z0' || m.keyframes.length < lmCfg.minKeyframes) return false;
+    const kfs = m.keyframes;
+    let minT = Infinity, maxT = -Infinity;
+    let maxBase = 0, minDot = 1, opticalCount = 0;
+    for (let i = 0; i < kfs.length; i++) {
+      const a = kfs[i];
+      if (a.atMs < minT) minT = a.atMs;
+      if (a.atMs > maxT) maxT = a.atMs;
+      if (a.optical) opticalCount++;
+      for (let j = i + 1; j < kfs.length; j++) {
+        const b = kfs[j];
+        const bd = Math.hypot(a.camPosL[0] - b.camPosL[0], a.camPosL[1] - b.camPosL[1], a.camPosL[2] - b.camPosL[2]);
+        if (bd > maxBase) maxBase = bd;
+        const dt = a.rayDir[0] * b.rayDir[0] + a.rayDir[1] * b.rayDir[1] + a.rayDir[2] * b.rayDir[2];
+        if (dt < minDot) minDot = dt;
+      }
+    }
+    const maxParallaxDeg = Math.acos(Math.max(-1, Math.min(1, minDot))) * (180 / Math.PI);
+    if (maxT - minT < lmCfg.minSpanMs || maxBase < lmCfg.minBaselineM || maxParallaxDeg < lmCfg.minParallaxDeg) {
+      return false;
+    }
+    const xs = kfs.map((k) => k.x).sort((a, b) => a - b);
+    const ys = kfs.map((k) => k.y).sort((a, b) => a - b);
+    const mx = xs[xs.length >> 1], my = ys[ys.length >> 1];
+    let cSum = 0, sSum = 0;
+    for (const k of kfs) { cSum += Math.cos(k.yaw); sSum += Math.sin(k.yaw); }
+    const mYaw = Math.atan2(sSum, cSum);
+    let maxPosM = 0, maxYawDeg = 0;
+    for (const k of kfs) {
+      const d = Math.hypot(k.x - mx, k.y - my);
+      if (d > maxPosM) maxPosM = d;
+      const dy = Math.abs(shortestAngleDelta(mYaw, k.yaw)) * (180 / Math.PI);
+      if (dy > maxYawDeg) maxYawDeg = dy;
+    }
+    if (maxPosM * 1000 > lmCfg.maxPosSpreadMm || maxYawDeg > lmCfg.maxYawSpreadDeg) return false;
+
+    const tri = triangulateTagOnZ0(kfs, K, { edgeM: tagEdgeM });
+    if (!tri) return false;
+    const rmsCap = (opticalCount / kfs.length) >= 0.5 ? lmCfg.maxReprojRmsPxOptical : lmCfg.maxReprojRmsPxXr;
+    if (!Number.isFinite(tri.rmsPx) || tri.rmsPx > rmsCap) return false;
+
+    m.landmarkState = 'locked';
+    m.lockedPose = {
+      x: tri.x,
+      y: tri.y,
+      yaw: tri.yaw,
+      corners: tri.corners,
+      rmsPx: tri.rmsPx,
+      baselineM: maxBase,
+      parallaxDeg: maxParallaxDeg,
+      views: tri.views,
+      lockedAt: atMs,
+    };
+    m.targetPos[0] = tri.x;
+    m.targetPos[1] = tri.y;
+    m.targetPos[2] = 0;
+    m.targetYaw = tri.yaw;
+    m.outlierStreak = 0;
+    m.severeOutlierStreak = 0;
+    m.pendingDemotePos = null;
+    dirty = true;
+    stateVersion++;
+    return true;
+  }
+
+  function recordKeyframe(m, sqFit, corners, lFromCamera, K, atMs, { weight = 1, minEdgePx = 12, poseSource = 'xr-history' } = {}) {
+    if (
+      coordinateMode !== 'planar-z0' ||
+      m.landmarkState === 'locked' ||
+      !sqFit || !lFromCamera || !K ||
+      !Array.isArray(corners) || corners.length !== 4 ||
+      weight < lmCfg.minConfidence ||
+      minEdgePx < lmCfg.minEdgePx ||
+      sqFit.cosView < lmCfg.minCosView ||
+      sqFit.squareRmsMm > lmCfg.maxSquareFitRmsMm
+    ) {
+      return false;
+    }
+    const camPosL = [lFromCamera[12], lFromCamera[13], lFromCamera[14]];
+    const minAngleCos = Math.cos((lmCfg.minKeyframeAngleDeg * Math.PI) / 180);
+    for (const kf of m.keyframes) {
+      const dist = Math.hypot(camPosL[0] - kf.camPosL[0], camPosL[1] - kf.camPosL[1], camPosL[2] - kf.camPosL[2]);
+      const dotR = sqFit.rayDir[0] * kf.rayDir[0] + sqFit.rayDir[1] * kf.rayDir[1] + sqFit.rayDir[2] * kf.rayDir[2];
+      if (dist < lmCfg.minKeyframeDistM && dotR > minAngleCos) {
+        return false;
+      }
+    }
+    const optical = poseSource === 'optical-l' || poseSource === 'optical-perimeter';
+    const entry = {
+      lFromCamera: Array.from(lFromCamera),
+      camPosL,
+      rayDir: sqFit.rayDir,
+      pixels: corners.map((p) => ({ x: p.x, y: p.y })),
+      x: sqFit.x,
+      y: sqFit.y,
+      yaw: sqFit.yaw,
+      atMs,
+      weight: optical ? 2 : 1,
+      optical,
+    };
+    if (m.keyframes.length >= lmCfg.maxKeyframes) {
+      const dropIdx = m.keyframes.findIndex((k) => !k.optical);
+      m.keyframes.splice(dropIdx >= 0 ? dropIdx : 0, 1);
+    }
+    m.keyframes.push(entry);
+    return maybePromoteLandmark(m, K, atMs);
+  }
+
+  function observe(tagId, lFromTag, cameraPosL, atMs, {
+    weight = 1,
+    corners = null,
+    lFromCamera = null,
+    K = null,
+    minEdgePx = 12,
+    poseSource = 'xr-history',
+  } = {}) {
     const spec = PERIMETER_BY_ID.get(tagId);
     if (!spec || !lFromTag || lFromTag.length < 15) return null;
     const rawPos = [lFromTag[12], lFromTag[13], lFromTag[14]];
     if (!rawPos.every(Number.isFinite)) return null;
-    const pos = projectPointToTablePlane(rawPos, cameraPosL);
-    const yaw = extractTableYaw(lFromTag);
+    const sqFit = (coordinateMode === 'planar-z0' && Array.isArray(corners) && lFromCamera && K)
+      ? fitTagSquareOnZ0(corners, lFromCamera, K, { edgeM: tagEdgeM })
+      : null;
+    const useSq = Boolean(sqFit && sqFit.squareRmsMm <= lmCfg.maxSquareFitRmsMm);
+    const pos = coordinateMode === 'free-6dof'
+      ? rawPos.slice()
+      : (useSq ? [sqFit.x, sqFit.y, 0] : projectPointToTablePlane(rawPos, cameraPosL));
+    const yaw = useSq ? sqFit.yaw : extractTableYaw(lFromTag);
     const w = Number.isFinite(weight) ? Math.max(0, Math.min(1, weight)) : 1;
     const existing = markers.get(tagId);
     if (existing) {
@@ -528,7 +959,7 @@ export function createPerimeterFence(rig, {
       if (w < 0.45) {
         return { accepted: false, isNew: false, id: tagId, role: spec.role, pos, reason: 'motion-low-confidence' };
       }
-      markers.set(tagId, {
+      const entry = {
         id: tagId,
         role: spec.role,
         fixed: false,
@@ -541,17 +972,87 @@ export function createPerimeterFence(rig, {
         updates: 1,
         missCount: 0,
         missSinceMs: null,
-      });
+        landmarkState: 'tracking',
+        keyframes: [],
+        lockedPose: null,
+        outlierStreak: 0,
+        severeOutlierStreak: 0,
+        pendingDemotePos: null,
+      };
+      markers.set(tagId, entry);
+      if (sqFit) recordKeyframe(entry, sqFit, corners, lFromCamera, K, atMs, { weight: w, minEdgePx, poseSource });
       dirty = true;
       stateVersion++;
       return {
         accepted: true,
         isNew: true,
         justOffered: !wasOffered && isOffered(),
+        justLocked: entry.landmarkState === 'locked',
+        landmarkState: entry.landmarkState,
         status: status(),
         id: tagId,
         role: spec.role,
-        pos,
+        pos: entry.targetPos.slice(),
+      };
+    }
+
+    if (existing.landmarkState === 'locked' && existing.lockedPose) {
+      const distLocked = Math.hypot(pos[0] - existing.lockedPose.x, pos[1] - existing.lockedPose.y);
+      if (w >= lmCfg.minConfidence && distLocked > lmCfg.lockedJumpDemoteM) {
+        if (
+          existing.pendingDemotePos &&
+          Math.hypot(pos[0] - existing.pendingDemotePos[0], pos[1] - existing.pendingDemotePos[1]) <= 0.03
+        ) {
+          existing.landmarkState = 'demoted';
+          existing.lockedPose = null;
+          existing.keyframes.length = 0;
+          existing.outlierStreak = 0;
+          existing.severeOutlierStreak = 0;
+          existing.pendingDemotePos = null;
+          existing.targetPos[0] = pos[0];
+          existing.targetPos[1] = pos[1];
+          existing.targetPos[2] = coordinateMode === 'free-6dof' ? pos[2] : 0;
+          existing.targetYaw = yaw;
+          existing.lastAt = atMs;
+          existing.updates++;
+          dirty = true;
+          stateVersion++;
+          return {
+            accepted: true,
+            isNew: false,
+            demoted: true,
+            landmarkState: 'demoted',
+            status: status(),
+            id: tagId,
+            role: spec.role,
+            pos,
+          };
+        }
+        existing.pendingDemotePos = pos.slice();
+        existing.lastAt = atMs;
+        return {
+          accepted: false,
+          isNew: false,
+          locked: true,
+          landmarkState: 'locked',
+          status: status(),
+          id: tagId,
+          role: spec.role,
+          pos: existing.targetPos.slice(),
+          reason: 'locked-jump-pending',
+        };
+      }
+      existing.pendingDemotePos = null;
+      existing.lastAt = atMs;
+      return {
+        accepted: true,
+        isNew: false,
+        locked: true,
+        landmarkState: 'locked',
+        status: status(),
+        id: tagId,
+        role: spec.role,
+        pos: existing.targetPos.slice(),
       };
     }
 
@@ -572,6 +1073,8 @@ export function createPerimeterFence(rig, {
           pos,
         };
       }
+      existing.keyframes.length = 0;
+      if (existing.landmarkState === 'demoted') existing.landmarkState = 'tracking';
     }
 
     if (w < 0.6 && dist < 0.008) {
@@ -589,20 +1092,85 @@ export function createPerimeterFence(rig, {
       existing.targetPos[1] += (pos[1] - existing.targetPos[1]) * w;
       existing.targetYaw = shortestAngleDelta(0, existing.targetYaw + shortestAngleDelta(existing.targetYaw, yaw) * w);
     }
-    existing.targetPos[2] = 0;
+    existing.targetPos[2] = coordinateMode === 'free-6dof' ? pos[2] : 0;
     existing.lastAt = atMs;
     existing.updates++;
+    const justLocked = sqFit
+      ? recordKeyframe(existing, sqFit, corners, lFromCamera, K, atMs, { weight: w, minEdgePx, poseSource })
+      : false;
     dirty = true;
     stateVersion++;
     return {
       accepted: true,
       isNew: false,
       justOffered: false,
+      justLocked,
+      landmarkState: existing.landmarkState,
       status: status(),
       id: tagId,
       role: spec.role,
-      pos,
+      pos: existing.targetPos.slice(),
     };
+  }
+
+  function lockedLandmarks() {
+    if (coordinateMode !== 'planar-z0') return [];
+    const list = [];
+    for (const spec of PERIMETER_MARKERS) {
+      const m = markers.get(spec.id);
+      if (m?.landmarkState === 'locked' && m.lockedPose) {
+        list.push({
+          id: m.id,
+          role: m.role,
+          x: m.lockedPose.x,
+          y: m.lockedPose.y,
+          yaw: m.lockedPose.yaw,
+          points: m.lockedPose.corners.map((c) => c.slice()),
+          rmsPx: m.lockedPose.rmsPx,
+          baselineM: m.lockedPose.baselineM,
+          parallaxDeg: m.lockedPose.parallaxDeg,
+          views: m.lockedPose.views,
+        });
+      }
+    }
+    return list;
+  }
+
+  function lockedCount() {
+    if (coordinateMode !== 'planar-z0') return 0;
+    let count = 0;
+    for (const m of markers.values()) {
+      if (m.landmarkState === 'locked' && m.lockedPose) count++;
+    }
+    return count;
+  }
+
+  function reportLandmarkInlier(tagId) {
+    const m = markers.get(tagId);
+    if (!m) return false;
+    m.outlierStreak = 0;
+    m.severeOutlierStreak = 0;
+    return true;
+  }
+
+  function reportLandmarkOutlier(tagId, { residualPx = Infinity } = {}) {
+    const m = markers.get(tagId);
+    if (!m || m.landmarkState !== 'locked') return null;
+    m.outlierStreak++;
+    if (residualPx >= lmCfg.severeOutlierPx) m.severeOutlierStreak++;
+    else m.severeOutlierStreak = 0;
+    if (m.outlierStreak >= lmCfg.outlierDemoteStreak || m.severeOutlierStreak >= lmCfg.severeOutlierStreak) {
+      m.landmarkState = 'demoted';
+      m.lockedPose = null;
+      m.keyframes.length = 0;
+      m.outlierStreak = 0;
+      m.severeOutlierStreak = 0;
+      m.pendingDemotePos = null;
+      dirty = true;
+      stateVersion++;
+      return { demoted: true, id: m.id, role: m.role, residualPx };
+    }
+    return { demoted: false, id: m.id, streak: m.outlierStreak };
   }
 
   function remove(tagId) {
@@ -733,16 +1301,19 @@ export function createPerimeterFence(rig, {
     for (const m of markers.values()) {
       const dx = m.targetPos[0] - m.currentPos[0];
       const dy = m.targetPos[1] - m.currentPos[1];
-      const dist = Math.hypot(dx, dy);
+      const dz = m.targetPos[2] - m.currentPos[2];
+      const dist = Math.hypot(dx, dy, dz);
       if (dist <= 0.0004) {
-        if (dx !== 0 || dy !== 0) {
+        if (dx !== 0 || dy !== 0 || dz !== 0) {
           m.currentPos[0] = m.targetPos[0];
           m.currentPos[1] = m.targetPos[1];
+          m.currentPos[2] = m.targetPos[2];
           moved = true;
         }
       } else {
         m.currentPos[0] += dx * alpha;
         m.currentPos[1] += dy * alpha;
+        m.currentPos[2] += dz * alpha;
         moved = true;
       }
 
@@ -771,6 +1342,8 @@ export function createPerimeterFence(rig, {
       matrix: composeTableTagMatrix(m.currentPos, m.currentYaw),
       lastAt: m.lastAt,
       updates: m.updates,
+      landmarkState: m.landmarkState ?? 'tracking',
+      landmarkRmsPx: m.lockedPose?.rmsPx ?? null,
     };
   }
 
@@ -779,8 +1352,8 @@ export function createPerimeterFence(rig, {
   // -> 359 (YR) -> 355 (BR) -> 356 (XB) -> 351 (+X) -> back to 350 (BL).
   function orderedVertices() {
     const verts = [
-      { id: anchors.origin.id, role: anchors.origin.role, fixed: true, pos: anchors.origin.pos, lastAt: 0, updates: 0 },
-      { id: anchors.yArm.id, role: anchors.yArm.role, fixed: true, pos: anchors.yArm.pos, lastAt: 0, updates: 0 },
+      { id: anchors.origin.id, role: anchors.origin.role, fixed: true, pos: anchors.origin.pos, lastAt: 0, updates: 0, landmarkState: 'fixed', landmarkRmsPx: null },
+      { id: anchors.yArm.id, role: anchors.yArm.role, fixed: true, pos: anchors.yArm.pos, lastAt: 0, updates: 0, landmarkState: 'fixed', landmarkRmsPx: null },
     ];
     for (const spec of PERIMETER_MARKERS) {
       const m = markers.get(spec.id);
@@ -793,6 +1366,8 @@ export function createPerimeterFence(rig, {
       pos: anchors.xArm.pos,
       lastAt: 0,
       updates: 0,
+      landmarkState: 'fixed',
+      landmarkRmsPx: null,
     });
     return verts;
   }
@@ -843,9 +1418,11 @@ export function createPerimeterFence(rig, {
       status: status(),
       active,
       offered: isOffered(),
+      coordinateMode,
       triggerTagId,
       heightM,
       dynamicCount: markers.size,
+      lockedCount: lockedCount(),
       totalDynamicMarkers: PERIMETER_MARKERS.length,
       perimeterM,
       areaM2,
@@ -855,6 +1432,8 @@ export function createPerimeterFence(rig, {
         fixed: v.fixed,
         posL: v.pos.slice(),
         updates: v.updates,
+        landmarkState: v.landmarkState ?? (v.fixed ? 'fixed' : 'tracking'),
+        landmarkRmsPx: v.landmarkRmsPx ?? null,
       })),
     };
   }
@@ -865,6 +1444,8 @@ export function createPerimeterFence(rig, {
     isActive,
     isOffered,
     status,
+    getCoordinateMode,
+    setCoordinateMode,
     triggerMarker,
     activate,
     deactivate,
@@ -876,6 +1457,10 @@ export function createPerimeterFence(rig, {
     step,
     orderedVertices,
     discoveredMarkers,
+    lockedLandmarks,
+    lockedCount,
+    reportLandmarkInlier,
+    reportLandmarkOutlier,
     dynamicCount,
     isOutsideXY,
     locateCrossing,

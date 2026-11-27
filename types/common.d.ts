@@ -15,6 +15,7 @@ export interface CameraIntrinsics {
   fy: number;
   cx: number;
   cy: number;
+  k1?: number;
 }
 
 export interface PlanarPoseCV {
@@ -121,6 +122,30 @@ export interface DeviceIdentity {
   cacheable: boolean;
 }
 
+export interface RadialResidualBucket {
+  count: number;
+  rmsPx: number;
+  meanRadialPx: number;
+  meanDxPx: number;
+  meanDyPx: number;
+}
+
+export interface RadialResidualSummary {
+  totalCorners: number;
+  rmsPx: number;
+  rMax: number;
+  rP95: number;
+  inner: RadialResidualBucket;
+  mid: RadialResidualBucket;
+  outer: RadialResidualBucket;
+  quadrants: {
+    tl: RadialResidualBucket;
+    tr: RadialResidualBucket;
+    bl: RadialResidualBucket;
+    br: RadialResidualBucket;
+  };
+}
+
 export interface CalibrationValidation {
   ok: boolean;
   passed: boolean;
@@ -134,7 +159,11 @@ export interface CalibrationValidation {
   jointHeldOutRmsPx: number;
   planarFx: number;
   jointFx: number;
+  planarK1?: number;
+  jointK1?: number;
   intrinsicStd: number[];
+  radialResiduals?: RadialResidualSummary;
+  jointRadialResiduals?: RadialResidualSummary;
   uncertainty: boolean;
   offsetSafe: boolean;
   translationSafe: boolean;
@@ -153,6 +182,8 @@ export interface CalibrationVerification {
   kind: 'new-session-check' | 'new-capture-after-fit';
 }
 
+export type CalibrationModelName = 'centered-square' | 'centered-radial' | 'pinhole' | 'pinhole-radial';
+
 export interface CalibrationProfile {
   schema: 'webxr-apriltag-profile-v1';
   id: string;
@@ -166,12 +197,13 @@ export interface CalibrationProfile {
   delaySpreadMs: number;
   convergedSeeds: number;
   usedViews: number;
-  model: 'centered-square' | 'pinhole';
+  model: CalibrationModelName;
   assumptions: string[];
   validation: CalibrationValidation;
   verification: CalibrationVerification;
   createdAt: string;
   pipeline: string;
+  solverVersion?: number;
   independentlyValidated: false;
 }
 
