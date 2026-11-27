@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.4.0] - 2026-11-27
+
+### Added
+- **Gaze-Cone Focus Scheduler & 30 Hz Speed-First ROI Tracking:** Added `projectTagGazeMetrics` and `createFocusScheduler` with single-focus speed-first ROI (`decimate=3` fallback, expanded Stage-2 blur rescue) and smooth hand-release handover ([`src/detector.mjs`](src/detector.mjs), [`src/camera.mjs`](src/camera.mjs), [`src/hand-coupling.mjs`](src/hand-coupling.mjs), [`src/tag-predictor.mjs`](src/tag-predictor.mjs), [`examples/quest.mjs`](examples/quest.mjs)).
+- **Minimalist Tag Action Pills:** Added `createTagRestState`, `resetTagRestState`, `updateTagRestState`, and `evaluateTagActionPills` (`500 ms` un-coupled stillness + finger proximity gating) in [`src/tag-tap.mjs`](src/tag-tap.mjs), [`src/index.mjs`](src/index.mjs), and [`examples/quest.mjs`](examples/quest.mjs).
+- **Bilingual Quarto Technical Paper & Updated Mermaid Diagrams:** Added EN/DE Quarto technical paper chapters (`paper/02-*` through `paper/08-*` + rendered `paper/_site/`) and updated architecture diagrams ([`docs/diagrams.md`](docs/diagrams.md), `docs/diagrams/*.mmd`, [`scripts/build-diagrams.mjs`](scripts/build-diagrams.mjs)).
+
+### Fixed
+- **Quest 3 Calibrated In-View Perimeter Pruning:** Hardened `isTablePointObservableInCamera` and `reconcileView` with decimated foreshortening (`minExpectedMinorPx = 7.0` calibrated for Quest 3 `fx ≈ 886`), `4 cm` spatial dead-zone + `8%` border margin, `priorRois` (`decimate = 1`) awareness, non-resetting `decimate > 2` sweep skip, `sample.frameEvidence` check, and `2.5 s` / `8`-frame hold ([`src/perimeter-fence.mjs`](src/perimeter-fence.mjs), [`examples/quest.mjs`](examples/quest.mjs), [`tests/perimeter-fence.test.mjs`](tests/perimeter-fence.test.mjs)).
+
+---
+
 ## [1.3.0] - 2026-11-27
 
 ### Added
