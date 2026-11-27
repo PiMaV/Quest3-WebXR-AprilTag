@@ -5708,7 +5708,7 @@ function observeExtraTags(observation,sample,assoc){
       }
     }
     const isFocusOnly=(sample.focusRoiCount??0)>0&&Boolean(sample.focusHit);
-    const isFrozenFrame=observation.frameEvidence?.frozen===true||observation.frameEvidence?.fresh===false;
+    const isFrozenFrame=sample.frameEvidence?.fresh===false||sample.frameEvidence?.pixelsChanged===false;
     if(perimeterFence&&!isFocusOnly&&!isFrozenFrame&&perimeterFence.dynamicCount()>0){
       const rawPerimeterSeen=[];
       for(const raw of all){if(isPerimeterTag(raw.id))rawPerimeterSeen.push(raw.id);}
@@ -5716,6 +5716,7 @@ function observeExtraTags(observation,sample,assoc){
       for(const m of perimeterFence.discoveredMarkers()){
         if(isTagNearAnyHand(m.matrix,assoc.targetXrTimeMs,0.22))occludedIds.push(m.id);
       }
+      const effDec=(sample.focusRoiCount??0)>0?(sample.settings?.focusFallbackDecimate??3):(sample.decimate??2);
       const pruned=perimeterFence.reconcileView({
         seenIds:rawPerimeterSeen,
         lFromCamera,
@@ -5723,6 +5724,7 @@ function observeExtraTags(observation,sample,assoc){
         atMs,
         confidence:staticGate.confidence,
         occludedIds,
+        decimate:effDec,
       });
       if(pruned?.removed?.length){
         if(perimeterFence.dynamicCount()<7)perimeterCompleteAnnounced=false;

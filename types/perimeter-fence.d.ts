@@ -65,6 +65,7 @@ export interface PerimeterFence {
     atMs?: number;
     confidence?: number;
     occludedIds?: Iterable<number> | null;
+    decimate?: number;
   }): {
     removed: Array<{ id: number; role: string; pos: Vec3 }>;
     deactivated: boolean;
@@ -131,7 +132,9 @@ export function isTablePointObservableInCamera(
     minCosView?: number;
     borderMarginFrac?: number;
     minBorderMarginPx?: number;
-    minExpectedEdgePx?: number;
+    deadZoneM?: number;
+    minExpectedMinorPx?: number;
+    decimate?: number;
     tagEdgeM?: number;
   },
 ): boolean;
@@ -153,7 +156,8 @@ export function createPerimeterFence(
     inViewMinCosView?: number;
     inViewBorderMarginFrac?: number;
     inViewMinBorderMarginPx?: number;
-    inViewMinExpectedEdgePx?: number;
+    inViewDeadZoneM?: number;
+    inViewMinExpectedMinorPx?: number;
     tagEdgeM?: number;
   },
 ): PerimeterFence;

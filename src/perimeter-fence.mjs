@@ -206,11 +206,13 @@ export function evaluatePerimeterOutside(posL, vertices, {
 
 export function isTablePointObservableInCamera(posL, lFromCamera, K, {
   minDistM = 0.22,
-  maxDistM = 1.55,
-  minCosView = 0.38,
-  borderMarginFrac = 0.07,
-  minBorderMarginPx = 48,
-  minExpectedEdgePx = 12,
+  maxDistM = 1.30,
+  minCosView = 0.50,
+  borderMarginFrac = 0.10,
+  minBorderMarginPx = 72,
+  deadZoneM = 0.04,
+  minExpectedMinorPx = 11,
+  decimate = 1,
   tagEdgeM = 0.020,
 } = {}) {
   if (
@@ -245,15 +247,24 @@ export function isTablePointObservableInCamera(posL, lFromCamera, K, {
   const zCV = -(lFromCamera[8] * dx + lFromCamera[9] * dy + lFromCamera[10] * dz);
   if (!Number.isFinite(zCV) || zCV < minDistM || zCV > maxDistM) return false;
 
+  // Check foreshortened minor axis AFTER detector decimation so far or oblique tags
+  // that AprilTag cannot reliably decode on this frame are never falsely pruned.
+  const effDecimate = Number.isFinite(decimate) && decimate >= 1 ? decimate : 1;
   const expectedEdgePx = (tagEdgeM * Math.min(K.fx, K.fy)) / zCV;
-  if (!Number.isFinite(expectedEdgePx) || expectedEdgePx < minExpectedEdgePx) return false;
+  const expectedMinorPx = (expectedEdgePx * cosView) / effDecimate;
+  if (!Number.isFinite(expectedMinorPx) || expectedMinorPx < minExpectedMinorPx) return false;
 
   const u = K.fx * (xCV / zCV) + K.cx;
   const v = K.fy * (yCV / zCV) + K.cy;
   if (!Number.isFinite(u) || !Number.isFinite(v)) return false;
 
-  const marginX = Math.max(minBorderMarginPx, K.width * borderMarginFrac);
-  const marginY = Math.max(minBorderMarginPx, K.height * borderMarginFrac);
+  // Include a spatial dead-zone around the expected marker location on the table
+  // so small XR drift or edge clipping cannot trigger false removal.
+  const deadZonePx = Number.isFinite(deadZoneM) && deadZoneM > 0
+    ? (deadZoneM * Math.max(K.fx, K.fy)) / zCV
+    : 0;
+  const marginX = Math.max(minBorderMarginPx, K.width * borderMarginFrac) + deadZonePx;
+  const marginY = Math.max(minBorderMarginPx, K.height * borderMarginFrac) + deadZonePx;
   return u >= marginX && u <= K.width - marginX && v >= marginY && v <= K.height - marginY;
 }
 
@@ -264,16 +275,17 @@ export function createPerimeterFence(rig, {
   jumpDistanceM = 0.15,
   jumpWindowMs = 500,
   jumpConfirmM = 0.06,
-  missingFramesToRemove = 5,
-  missingMsToRemove = 1000,
-  minGraceAfterSeenMs = 250,
-  minRemoveConfidence = 0.55,
+  missingFramesToRemove = 10,
+  missingMsToRemove = 3500,
+  minGraceAfterSeenMs = 500,
+  minRemoveConfidence = 0.65,
   inViewMinDistM = 0.22,
-  inViewMaxDistM = 1.55,
-  inViewMinCosView = 0.38,
-  inViewBorderMarginFrac = 0.07,
-  inViewMinBorderMarginPx = 48,
-  inViewMinExpectedEdgePx = 12,
+  inViewMaxDistM = 1.30,
+  inViewMinCosView = 0.50,
+  inViewBorderMarginFrac = 0.10,
+  inViewMinBorderMarginPx = 72,
+  inViewDeadZoneM = 0.04,
+  inViewMinExpectedMinorPx = 11,
   tagEdgeM = 0.020,
 } = {}) {
   let anchors = extractRigAnchors(rig);
@@ -467,7 +479,9 @@ export function createPerimeterFence(rig, {
     minCosView: inViewMinCosView,
     borderMarginFrac: inViewBorderMarginFrac,
     minBorderMarginPx: inViewMinBorderMarginPx,
-    minExpectedEdgePx: inViewMinExpectedEdgePx,
+    deadZoneM: inViewDeadZoneM,
+    minExpectedMinorPx: inViewMinExpectedMinorPx,
+    decimate: 1,
     tagEdgeM,
   };
 
@@ -478,6 +492,7 @@ export function createPerimeterFence(rig, {
     atMs = NaN,
     confidence = 1,
     occludedIds = null,
+    decimate = 1,
   } = {}) {
     if (markers.size === 0) {
       return { removed: [], deactivated: false, status: status() };
@@ -503,6 +518,7 @@ export function createPerimeterFence(rig, {
       return { removed: [], deactivated: false, status: status() };
     }
 
+    inViewOpts.decimate = Number.isFinite(decimate) && decimate >= 1 ? decimate : 1;
     const toRemove = [];
     for (const [id, m] of markers) {
       if (seenSet.has(id) || occludedSet?.has(id)) {
