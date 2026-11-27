@@ -10,6 +10,7 @@ import {
   projectPointToTablePlane,
   signedDistanceToPolygonXY,
   evaluatePerimeterOutside,
+  locatePerimeterCrossing,
   isTablePointObservableInCamera,
   createPerimeterFence,
 } from '../src/perimeter-fence.mjs';
@@ -546,4 +547,96 @@ test('explicit remove(tagId) deletes a single marker and deactivates only when l
   assert.equal(r2?.deactivated, true);
   assert.equal(fence.isActive(), false);
   assert.equal(fence.status(), 'idle');
+});
+
+test('locatePerimeterCrossing resolves exact edge intersection, winding-agnostic normals, height clamping, and closest fallback', () => {
+  const cwSquare = [
+    [0, 0],
+    [0, 1],
+    [1, 1],
+    [1, 0],
+  ];
+  const ccwSquare = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ];
+
+  // Crossing right edge (x = 1, y = 0.4): outward normal must be [+1, 0] for both CW and CCW.
+  const cwRight = locatePerimeterCrossing([0.8, 0.4, 0.10], [1.2, 0.4, 0.10], cwSquare);
+  assert.equal(cwRight.hit, 'intersection');
+  assert.equal(cwRight.distanceM, 0);
+  assert.equal(cwRight.edgeIndex, 2);
+  assert.ok(Math.abs(cwRight.pos[0] - 1.0) < 1e-9);
+  assert.ok(Math.abs(cwRight.pos[1] - 0.4) < 1e-9);
+  assert.ok(Math.abs(cwRight.pos[2] - 0.10) < 1e-9);
+  assert.equal(cwRight.overTop, false);
+  assert.ok(Math.abs(cwRight.normal[0] - 1) < 1e-9 && Math.abs(cwRight.normal[1]) < 1e-9);
+  assert.ok(Math.abs(cwRight.arcS - 2.6) < 1e-9);
+  assert.ok(Math.abs(cwRight.perimeterM - 4.0) < 1e-9);
+
+  const ccwRight = locatePerimeterCrossing([0.8, 0.4, 0.10], [1.2, 0.4, 0.10], ccwSquare);
+  assert.equal(ccwRight.hit, 'intersection');
+  assert.equal(ccwRight.edgeIndex, 1);
+  assert.ok(Math.abs(ccwRight.normal[0] - 1) < 1e-9 && Math.abs(ccwRight.normal[1]) < 1e-9);
+  assert.ok(Math.abs(ccwRight.arcS - 1.4) < 1e-9);
+
+  // Crossing all four edges confirms outward normals in both CW and CCW.
+  const dirs = [
+    { prev: [0.5, 0.5, 0.08], curr: [-0.2, 0.5, 0.08], expN: [-1, 0] },
+    { prev: [0.5, 0.5, 0.08], curr: [0.5, 1.2, 0.08], expN: [0, 1] },
+    { prev: [0.5, 0.5, 0.08], curr: [1.2, 0.5, 0.08], expN: [1, 0] },
+    { prev: [0.5, 0.5, 0.08], curr: [0.5, -0.2, 0.08], expN: [0, -1] },
+  ];
+  for (const d of dirs) {
+    const cCw = locatePerimeterCrossing(d.prev, d.curr, cwSquare);
+    const cCcw = locatePerimeterCrossing(d.prev, d.curr, ccwSquare);
+    assert.ok(Math.abs(cCw.normal[0] - d.expN[0]) < 1e-9 && Math.abs(cCw.normal[1] - d.expN[1]) < 1e-9);
+    assert.ok(Math.abs(cCcw.normal[0] - d.expN[0]) < 1e-9 && Math.abs(cCcw.normal[1] - d.expN[1]) < 1e-9);
+  }
+
+  // Over-top crossing (z = 0.35 > 0.20) flags overTop=true and clamps pos[2] to 0.20 while preserving rawZ.
+  const highExit = locatePerimeterCrossing([0.6, 0.8, 0.25], [0.6, 1.2, 0.45], cwSquare);
+  assert.equal(highExit.hit, 'intersection');
+  assert.equal(highExit.overTop, true);
+  assert.ok(Math.abs(highExit.rawZ - 0.35) < 1e-9);
+  assert.ok(Math.abs(highExit.pos[2] - FENCE_HEIGHT_M) < 1e-9);
+
+  // Low table-level slide clamps pos[2] to minZ (0.015).
+  const lowSlide = locatePerimeterCrossing([0.5, 0.8, 0.002], [0.5, 1.2, 0.002], cwSquare);
+  assert.equal(lowSlide.overTop, false);
+  assert.ok(Math.abs(lowSlide.pos[2] - 0.015) < 1e-9);
+
+  // Closest-point fallback when prevPosL is null or both endpoints lie outside (hysteresis band).
+  const noPrev = locatePerimeterCrossing(null, [0.5, 1.06, 0.12], cwSquare);
+  assert.equal(noPrev.hit, 'closest');
+  assert.ok(Math.abs(noPrev.pos[0] - 0.5) < 1e-9 && Math.abs(noPrev.pos[1] - 1.0) < 1e-9);
+  assert.ok(Math.abs(noPrev.distanceM - 0.06) < 1e-9);
+  assert.ok(Math.abs(noPrev.normal[0]) < 1e-9 && Math.abs(noPrev.normal[1] - 1) < 1e-9);
+
+  const bothOut = locatePerimeterCrossing([1.002, 0.3, 0.10], [1.015, 0.3, 0.10], cwSquare);
+  assert.equal(bothOut.hit, 'closest');
+  assert.ok(Math.abs(bothOut.pos[0] - 1.0) < 1e-9 && Math.abs(bothOut.pos[1] - 0.3) < 1e-9);
+  assert.ok(Math.abs(bothOut.distanceM - 0.015) < 1e-9);
+
+  // Integration with createPerimeterFence: null when idle/offered/deactivated, accurate CW rig crossing when active.
+  const fence = createPerimeterFence(mainRig);
+  const cam = [0.4, 0.3, 0.8];
+  fence.observe(353, translationMatrix(0.0175, 0.615, 0), cam, 100); // TL
+  fence.observe(354, translationMatrix(0.6175, 0.615, 0), cam, 110); // TR
+  fence.observe(355, translationMatrix(0.6175, 0.015, 0), cam, 120); // BR
+  assert.equal(fence.locateCrossing([0.3, 0.3, 0.1], [0.8, 0.3, 0.1]), null);
+
+  assert.equal(fence.activate(), true);
+  const liveCross = fence.locateCrossing([0.5175, 0.315, 0.11], [0.7175, 0.315, 0.11]);
+  assert.ok(liveCross);
+  assert.equal(liveCross.hit, 'intersection');
+  assert.ok(Math.abs(liveCross.pos[0] - 0.6175) < 1e-6);
+  assert.ok(Math.abs(liveCross.pos[1] - 0.315) < 1e-6);
+  assert.ok(Math.abs(liveCross.normal[0] - 1) < 1e-6 && Math.abs(liveCross.normal[1]) < 1e-6);
+  assert.ok(liveCross.arcS > 0 && liveCross.arcS < liveCross.perimeterM);
+
+  assert.equal(fence.deactivate(), true);
+  assert.equal(fence.locateCrossing([0.5175, 0.315, 0.11], [0.7175, 0.315, 0.11]), null);
 });

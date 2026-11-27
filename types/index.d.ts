@@ -169,9 +169,11 @@ export {
   polygonMetricsXY,
   signedDistanceToPolygonXY,
   evaluatePerimeterOutside,
+  locatePerimeterCrossing,
   isTablePointObservableInCamera,
   createPerimeterFence,
   type PerimeterFence,
+  type PerimeterCrossingResult,
   type PerimeterOutsideResult,
   type PerimeterVertex,
 } from './perimeter-fence.js';

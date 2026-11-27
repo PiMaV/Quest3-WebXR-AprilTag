@@ -18,7 +18,7 @@ export {FOCUS_SCHEDULER_DEFAULTS,projectTagGazeMetrics,createFocusScheduler} fro
 export {fuseCommittedTrailSegment,smoothLineTail,smoothAxisTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius,RIBBON_SPEED_DEFAULTS,speedToRibbonHalfWidth,speedToHeatColor,TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor} from './path-smoother.mjs';
 export {TAG_PREDICTOR_DEFAULTS,createTagMotionPredictor} from './tag-predictor.mjs';
 export {associateAnchorCapture,auditAnchorObservation,createAnchorAudit} from './anchor-audit.mjs';
-export {FENCE_HEIGHT_M,PERIMETER_TRIGGER_TAG_ID,PERIMETER_MARKERS,PERIMETER_OUTSIDE_HYSTERESIS_M,isPerimeterTag,perimeterRole,extractRigAnchors,projectPointToTablePlane,polygonMetricsXY,signedDistanceToPolygonXY,evaluatePerimeterOutside,isTablePointObservableInCamera,createPerimeterFence} from './perimeter-fence.mjs';
+export {FENCE_HEIGHT_M,PERIMETER_TRIGGER_TAG_ID,PERIMETER_MARKERS,PERIMETER_OUTSIDE_HYSTERESIS_M,isPerimeterTag,perimeterRole,extractRigAnchors,projectPointToTablePlane,polygonMetricsXY,signedDistanceToPolygonXY,evaluatePerimeterOutside,locatePerimeterCrossing,isTablePointObservableInCamera,createPerimeterFence} from './perimeter-fence.mjs';
 export {solveCalibration,fitIntrinsics,fitHandEye,diversity,consistency,projectResidual,worldPoses} from './solver.mjs';
 export {TOOL_SCAN_LIMITS,VISUAL_TOOL_SCAN_LIMITS,validateToolSpecs,observeIndependentTool,createToolScan,validateToolLayout,createToolLayoutStore} from './tool-scan.mjs';
 export {APP_VERSION,APP_BUILD,APP_VERSION_LABEL} from './version.mjs';

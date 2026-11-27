@@ -12,6 +12,19 @@ export interface PerimeterOutsideResult {
   edgeDistanceM: number;
 }
 
+export interface PerimeterCrossingResult {
+  pos: Vec3;
+  rawZ: number;
+  overTop: boolean;
+  normal: [number, number];
+  edgeIndex: number;
+  edgeT: number;
+  arcS: number;
+  perimeterM: number;
+  distanceM: number;
+  hit: 'intersection' | 'closest';
+}
+
 export interface PerimeterVertex {
   id: number;
   role: string;
@@ -80,6 +93,11 @@ export interface PerimeterFence {
     posL: ArrayLike<number> | null | undefined,
     opts?: { wasOutside?: boolean; enterOutsideM?: number; exitOutsideM?: number },
   ): PerimeterOutsideResult & { active: boolean };
+  locateCrossing(
+    prevPosL: ArrayLike<number> | null | undefined,
+    currPosL: ArrayLike<number> | null | undefined,
+    opts?: { heightM?: number; minZ?: number },
+  ): PerimeterCrossingResult | null;
   version(): number;
   snapshot(): {
     status: 'idle' | 'offered' | 'active';
@@ -123,6 +141,12 @@ export function evaluatePerimeterOutside(
   vertices: ReadonlyArray<{ pos?: ArrayLike<number> } | ArrayLike<number>>,
   opts?: { wasOutside?: boolean; enterOutsideM?: number; exitOutsideM?: number },
 ): PerimeterOutsideResult;
+export function locatePerimeterCrossing(
+  prevPosL: ArrayLike<number> | null | undefined,
+  currPosL: ArrayLike<number> | null | undefined,
+  vertices: ReadonlyArray<{ pos?: ArrayLike<number> } | ArrayLike<number>>,
+  opts?: { heightM?: number; minZ?: number },
+): PerimeterCrossingResult | null;
 export function isTablePointObservableInCamera(
   posL: Vec3,
   lFromCamera: Matrix4Array | null | undefined,

@@ -424,6 +424,37 @@ function playModeTick(kind='scan'){
     const t=_audioCtx.currentTime;
     const osc=_audioCtx.createOscillator(),gain=_audioCtx.createGain();
     osc.type='sine';
+    if(kind==='breach-out'){
+      osc.type='triangle';
+      osc.frequency.setValueAtTime(210,t);
+      osc.frequency.exponentialRampToValueAtTime(460,t+0.045);
+      osc.frequency.exponentialRampToValueAtTime(240,t+0.18);
+      gain.gain.setValueAtTime(0.0001,t);
+      gain.gain.exponentialRampToValueAtTime(0.085,t+0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001,t+0.19);
+      osc.connect(gain);gain.connect(_audioCtx.destination);
+      osc.start(t);osc.stop(t+0.20);
+      const osc2=_audioCtx.createOscillator(),gain2=_audioCtx.createGain();
+      osc2.type='sine';
+      osc2.frequency.setValueAtTime(880,t);
+      osc2.frequency.exponentialRampToValueAtTime(620,t+0.13);
+      gain2.gain.setValueAtTime(0.0001,t);
+      gain2.gain.exponentialRampToValueAtTime(0.025,t+0.010);
+      gain2.gain.exponentialRampToValueAtTime(0.0001,t+0.13);
+      osc2.connect(gain2);gain2.connect(_audioCtx.destination);
+      osc2.start(t);osc2.stop(t+0.14);
+      return;
+    }
+    if(kind==='breach-in'){
+      osc.frequency.setValueAtTime(420,t);
+      osc.frequency.exponentialRampToValueAtTime(660,t+0.11);
+      gain.gain.setValueAtTime(0.0001,t);
+      gain.gain.exponentialRampToValueAtTime(0.05,t+0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001,t+0.11);
+      osc.connect(gain);gain.connect(_audioCtx.destination);
+      osc.start(t);osc.stop(t+0.12);
+      return;
+    }
     if(kind==='scan'){osc.frequency.setValueAtTime(620,t);osc.frequency.exponentialRampToValueAtTime(880,t+0.075);}
     else if(kind==='measure'){osc.frequency.setValueAtTime(560,t);osc.frequency.exponentialRampToValueAtTime(390,t+0.085);}
     else if(kind==='timecopy'){osc.frequency.setValueAtTime(740,t);osc.frequency.exponentialRampToValueAtTime(1040,t+0.07);}
@@ -1453,40 +1484,549 @@ function makeFenceBandTexture(){
   return tex;
 }
 
-const fenceWallPos=new Float32Array(MAX_FENCE_SEGS*6*3);
-const fenceWallUv=new Float32Array(MAX_FENCE_SEGS*6*2);
+const MAX_FENCE_COLS=224;
+const FENCE_WALL_ROWS=8;
+const FENCE_WALL_VROWS=FENCE_WALL_ROWS+1;
+const MAX_FENCE_WALL_VERTS=(MAX_FENCE_COLS+1)*FENCE_WALL_VROWS;
+const MAX_FENCE_WALL_IDX=MAX_FENCE_COLS*FENCE_WALL_ROWS*6;
+const MAX_FENCE_BREACHES=6;
+const MAX_FENCE_PROX=2;
+const FENCE_BREACH_OUT_LIFE_S=3.4;
+const FENCE_BREACH_IN_LIFE_S=1.1;
+
+const fenceFxUniforms={
+  uTime:frameShimmerUniforms.uTime,
+  uPerimeterM:{value:1.0},
+  uFenceHeight:{value:FENCE_HEIGHT_M},
+  uFxActive:{value:0.0},
+  uBreachA:{value:Array.from({length:MAX_FENCE_BREACHES},()=>new THREE.Vector4(0,0,-999,0))},
+  uBreachB:{value:Array.from({length:MAX_FENCE_BREACHES},()=>new THREE.Vector4(1,1,0,0))},
+  uProx:{value:Array.from({length:MAX_FENCE_PROX},()=>new THREE.Vector4(0,0,0,0))},
+};
+
+function attachFenceFxUniforms(shader){
+  shader.uniforms.uTime=fenceFxUniforms.uTime;
+  shader.uniforms.uPerimeterM=fenceFxUniforms.uPerimeterM;
+  shader.uniforms.uFenceHeight=fenceFxUniforms.uFenceHeight;
+  shader.uniforms.uFxActive=fenceFxUniforms.uFxActive;
+  shader.uniforms.uBreachA=fenceFxUniforms.uBreachA;
+  shader.uniforms.uBreachB=fenceFxUniforms.uBreachB;
+  shader.uniforms.uProx=fenceFxUniforms.uProx;
+}
+
+const FENCE_VERT_PARS=`#include <common>
+uniform float uTime;
+uniform float uPerimeterM;
+uniform float uFenceHeight;
+uniform float uFxActive;
+uniform vec4 uBreachA[6];
+uniform vec4 uBreachB[6];
+uniform vec4 uProx[2];
+attribute vec2 aWallNormal;
+attribute float aArcS;
+varying float vArcS;
+varying float vLocalZ;
+varying float vDisp;`;
+
+const FENCE_VERT_BODY=`#include <begin_vertex>
+vArcS = aArcS;
+vLocalZ = position.z;
+vDisp = 0.0;
+if (uFxActive > 0.5) {
+  float hFrac = clamp(position.z / max(uFenceHeight, 0.01), 0.0, 1.0);
+  float pinMask = smoothstep(0.015, 0.16, hFrac);
+  float whip = 1.0 + 0.30 * hFrac;
+  float disp = 0.0;
+  for (int j = 0; j < 2; j++) {
+    vec4 pr = uProx[j];
+    if (pr.z > 0.005) {
+      float absDsP = abs(aArcS - pr.x);
+      float dsP = min(absDsP, max(0.0, uPerimeterM - absDsP));
+      float dzP = position.z - pr.y;
+      float d2P = dsP * dsP + dzP * dzP;
+      disp += 0.015 * pr.z * exp(-d2P / (2.0 * 0.065 * 0.065));
+    }
+  }
+  for (int i = 0; i < 6; i++) {
+    vec4 bA = uBreachA[i];
+    vec4 bB = uBreachB[i];
+    float life = bA.w;
+    float age = uTime - bA.z;
+    if (life > 0.0 && age >= 0.0 && age < life) {
+      float dir = bB.x;
+      float ampScale = bB.y;
+      float absDs = abs(aArcS - bA.x);
+      float ds = min(absDs, max(0.0, uPerimeterM - absDs));
+      float dz = position.z - bA.y;
+      float d2 = ds * ds + dz * dz;
+      float dist = sqrt(d2);
+      float envOn = smoothstep(0.0, 0.035, age);
+      float wobble = exp(-age * 3.1) * sin(age * 27.0) + exp(-age * 9.5) * envOn * 0.45;
+      disp += 0.040 * dir * ampScale * exp(-d2 / (2.0 * 0.095 * 0.095)) * wobble;
+      float waveDelta = dist - age * 0.62;
+      float waveEnv = exp(-(waveDelta * waveDelta) / (2.0 * 0.042 * 0.042)) * exp(-age * 2.9) * smoothstep(0.0, 0.04, age);
+      disp += 0.014 * dir * ampScale * waveEnv * sin(waveDelta * 52.0);
+      if (dir > 0.0 && age > life - 0.35) {
+        float sealAge = age - (life - 0.35);
+        float sealEnv = smoothstep(0.0, 0.04, sealAge) * (1.0 - smoothstep(0.22, 0.35, sealAge));
+        disp += -0.008 * sealEnv * exp(-d2 / (2.0 * 0.075 * 0.075)) * exp(-sealAge * 10.0) * sin(sealAge * 36.0);
+      }
+    }
+  }
+  float finalDisp = clamp(disp * pinMask * whip, -0.065, 0.065);
+  transformed.xy += aWallNormal * finalDisp;
+  vDisp = finalDisp;
+}`;
+
+const fenceBreachSlots=Array.from({length:MAX_FENCE_BREACHES},()=>({
+  active:false,tagId:-1,startSec:-999,lifeSec:0,arcS:0,z:0,dir:1,intensity:1,overTop:0,
+}));
+const fenceProxTargets=Array.from({length:MAX_FENCE_PROX},()=>({arcS:0,z:0,strength:0,overTop:0}));
+const fenceProxSmooth=Array.from({length:MAX_FENCE_PROX},()=>({arcS:0,z:0,strength:0,overTop:0}));
+let fenceProxTargetCount=0;
+let lastBreachSoundMs=0;
+
+function clearFenceBreaches(){
+  for(let i=0;i<MAX_FENCE_BREACHES;i++){
+    const s=fenceBreachSlots[i];
+    s.active=false;s.tagId=-1;s.startSec=-999;s.lifeSec=0;
+    fenceFxUniforms.uBreachA.value[i].set(0,0,-999,0);
+    fenceFxUniforms.uBreachB.value[i].set(1,1,0,0);
+  }
+  fenceProxTargetCount=0;
+  for(let j=0;j<MAX_FENCE_PROX;j++){
+    fenceProxTargets[j].strength=0;
+    fenceProxSmooth[j].strength=0;
+    fenceFxUniforms.uProx.value[j].set(0,0,0,0);
+  }
+  fenceFxUniforms.uFxActive.value=0.0;
+}
+
+function triggerFenceBreach({tagId=-1,arcS=0,z=0.10,dir=1,intensity=1,overTop=false},nowMs=performance.now()){
+  const perim=Math.max(0.05,fenceFxUniforms.uPerimeterM.value);
+  const startSec=nowMs*0.001;
+  const lifeSec=dir>0?FENCE_BREACH_OUT_LIFE_S:FENCE_BREACH_IN_LIFE_S;
+  const clampedInt=Math.max(0.8,Math.min(1.35,Number.isFinite(intensity)?intensity:1));
+  const overTopF=overTop?1:0;
+
+  let slotIdx=-1;
+  for(let i=0;i<MAX_FENCE_BREACHES;i++){
+    const s=fenceBreachSlots[i];
+    if(!s.active)continue;
+    const age=startSec-s.startSec;
+    if(age>=s.lifeSec){s.active=false;continue;}
+    if(s.tagId===tagId&&age<0.80){
+      let dArc=Math.abs(s.arcS-arcS);
+      if(dArc>perim*0.5)dArc=Math.max(0,perim-dArc);
+      if(dArc<0.10){slotIdx=i;break;}
+    }
+  }
+  if(slotIdx<0){
+    for(let i=0;i<MAX_FENCE_BREACHES;i++){
+      if(!fenceBreachSlots[i].active){slotIdx=i;break;}
+    }
+  }
+  if(slotIdx<0){
+    let oldestStart=Infinity;
+    for(let i=0;i<MAX_FENCE_BREACHES;i++){
+      if(fenceBreachSlots[i].startSec<oldestStart){
+        oldestStart=fenceBreachSlots[i].startSec;
+        slotIdx=i;
+      }
+    }
+  }
+  if(slotIdx<0)slotIdx=0;
+
+  const s=fenceBreachSlots[slotIdx];
+  s.active=true;s.tagId=tagId;s.startSec=startSec;s.lifeSec=lifeSec;
+  s.arcS=arcS;s.z=z;s.dir=dir>0?1:-1;s.intensity=clampedInt;s.overTop=overTopF;
+  fenceFxUniforms.uBreachA.value[slotIdx].set(arcS,z,startSec,lifeSec);
+  fenceFxUniforms.uBreachB.value[slotIdx].set(s.dir,clampedInt,overTopF,0);
+  fenceFxUniforms.uFxActive.value=1.0;
+
+  if(nowMs-lastBreachSoundMs>=220){
+    lastBreachSoundMs=nowMs;
+    playModeTick(s.dir>0?'breach-out':'breach-in');
+  }
+}
+
+function beginFenceProximityFrame(){
+  fenceProxTargetCount=0;
+}
+
+function recordFenceProximity(arcS,z,strength,overTop=false){
+  if(!(strength>0.01))return;
+  const ot=overTop?1:0;
+  if(fenceProxTargetCount<MAX_FENCE_PROX){
+    const t=fenceProxTargets[fenceProxTargetCount++];
+    t.arcS=arcS;t.z=z;t.strength=strength;t.overTop=ot;
+    return;
+  }
+  let weakIdx=0;
+  for(let j=1;j<MAX_FENCE_PROX;j++){
+    if(fenceProxTargets[j].strength<fenceProxTargets[weakIdx].strength)weakIdx=j;
+  }
+  if(strength>fenceProxTargets[weakIdx].strength){
+    const t=fenceProxTargets[weakIdx];
+    t.arcS=arcS;t.z=z;t.strength=strength;t.overTop=ot;
+  }
+}
+
+function flushFenceFxUniforms(nowMs,dtSec){
+  const nowSec=nowMs*0.001;
+  const dt=Math.min(0.05,Math.max(0.004,dtSec||1/90));
+  const alphaIn=1-Math.exp(-dt*18);
+  const alphaOut=1-Math.exp(-dt*10);
+  const perim=Math.max(0.05,fenceFxUniforms.uPerimeterM.value);
+
+  let anyActive=false;
+  for(let i=0;i<MAX_FENCE_BREACHES;i++){
+    const s=fenceBreachSlots[i];
+    if(!s.active)continue;
+    if(nowSec-s.startSec>=s.lifeSec){
+      s.active=false;
+      fenceFxUniforms.uBreachA.value[i].w=0;
+    }else{
+      anyActive=true;
+    }
+  }
+  for(let j=0;j<MAX_FENCE_PROX;j++){
+    const cur=fenceProxSmooth[j];
+    if(j<fenceProxTargetCount){
+      const tgt=fenceProxTargets[j];
+      if(cur.strength<=0.005){
+        cur.arcS=tgt.arcS;cur.z=tgt.z;
+      }else{
+        let dArc=tgt.arcS-cur.arcS;
+        if(dArc>perim*0.5)dArc-=perim;
+        if(dArc<-perim*0.5)dArc+=perim;
+        if(Math.abs(dArc)>0.25){
+          cur.arcS=tgt.arcS;cur.z=tgt.z;
+        }else{
+          cur.arcS=((cur.arcS+dArc*alphaIn)%perim+perim)%perim;
+          cur.z+=(tgt.z-cur.z)*alphaIn;
+        }
+      }
+      cur.strength+=(tgt.strength-cur.strength)*alphaIn;
+      cur.overTop=tgt.overTop;
+    }else{
+      cur.strength+=(0-cur.strength)*alphaOut;
+      if(cur.strength<0.005)cur.strength=0;
+    }
+    fenceFxUniforms.uProx.value[j].set(cur.arcS,cur.z,cur.strength,cur.overTop);
+    if(cur.strength>0.005)anyActive=true;
+  }
+  fenceFxUniforms.uFxActive.value=anyActive?1.0:0.0;
+}
+
+const fenceWallPos=new Float32Array(MAX_FENCE_WALL_VERTS*3);
+const fenceWallUv=new Float32Array(MAX_FENCE_WALL_VERTS*2);
+const fenceWallNorm=new Float32Array(MAX_FENCE_WALL_VERTS*2);
+const fenceWallArcS=new Float32Array(MAX_FENCE_WALL_VERTS);
+const fenceWallIdx=new Uint16Array(MAX_FENCE_WALL_IDX);
 const fenceWallGeo=new THREE.BufferGeometry();
 const fenceWallPosAttr=new THREE.BufferAttribute(fenceWallPos,3);
 const fenceWallUvAttr=new THREE.BufferAttribute(fenceWallUv,2);
+const fenceWallNormAttr=new THREE.BufferAttribute(fenceWallNorm,2);
+const fenceWallArcAttr=new THREE.BufferAttribute(fenceWallArcS,1);
+const fenceWallIdxAttr=new THREE.BufferAttribute(fenceWallIdx,1);
 fenceWallGeo.setAttribute('position',fenceWallPosAttr);
 fenceWallGeo.setAttribute('uv',fenceWallUvAttr);
+fenceWallGeo.setAttribute('aWallNormal',fenceWallNormAttr);
+fenceWallGeo.setAttribute('aArcS',fenceWallArcAttr);
+fenceWallGeo.setIndex(fenceWallIdxAttr);
 fenceWallGeo.setDrawRange(0,0);
-const fenceWallMesh=new THREE.Mesh(
-  fenceWallGeo,
-  new THREE.MeshBasicMaterial({
-    map:makeFenceBandTexture(),
-    transparent:true,
-    opacity:0.94,
-    side:THREE.DoubleSide,
-    depthWrite:false,
-  }),
-);
+
+const fenceWallMat=new THREE.MeshBasicMaterial({
+  map:makeFenceBandTexture(),
+  transparent:true,
+  opacity:0.94,
+  side:THREE.DoubleSide,
+  depthWrite:false,
+});
+fenceWallMat.customProgramCacheKey=()=>'fence-wall-membrane-v1';
+fenceWallMat.onBeforeCompile=shader=>{
+  attachFenceFxUniforms(shader);
+  shader.vertexShader=shader.vertexShader
+    .replace('#include <common>',FENCE_VERT_PARS)
+    .replace('#include <begin_vertex>',FENCE_VERT_BODY);
+  shader.fragmentShader=shader.fragmentShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+uniform float uTime;
+uniform float uPerimeterM;
+uniform float uFenceHeight;
+uniform float uFxActive;
+uniform vec4 uBreachA[6];
+uniform vec4 uBreachB[6];
+uniform vec4 uProx[2];
+varying float vArcS;
+varying float vLocalZ;
+varying float vDisp;
+float fenceHexEdge(vec2 uv) {
+  vec2 r = vec2(1.0, 1.7320508);
+  vec2 h = r * 0.5;
+  vec2 a = mod(uv, r) - h;
+  vec2 b = mod(uv - h, r) - h;
+  vec2 gv = dot(a, a) < dot(b, b) ? a : b;
+  vec2 p = abs(gv);
+  return 0.5 - max(dot(p, vec2(0.5, 0.8660254)), p.x);
+}`,
+    )
+    .replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+if (uFxActive > 0.5) {
+  float darkMask = 0.0;
+  vec3 darkRgb = vec3(0.07, 0.01, 0.02);
+  vec3 addRgb = vec3(0.0);
+  float addAlpha = 0.0;
+  float hexReveal = 0.0;
+  vec3 hexTint = vec3(0.20, 0.90, 1.0);
+  float hexWeight = 0.0;
+
+  for (int j = 0; j < 2; j++) {
+    vec4 pr = uProx[j];
+    if (pr.z > 0.01) {
+      float rawDsP = vArcS - pr.x;
+      if (rawDsP > 0.5 * uPerimeterM) rawDsP -= uPerimeterM;
+      if (rawDsP < -0.5 * uPerimeterM) rawDsP += uPerimeterM;
+      float dzP = vLocalZ - pr.y;
+      float radP = sqrt(rawDsP * rawDsP + dzP * dzP);
+      float haloP = exp(-(radP * radP) / (2.0 * 0.055 * 0.055)) * pr.z;
+      float coreP = exp(-(radP * radP) / (2.0 * 0.018 * 0.018)) * pr.z;
+      vec3 proxCol = mix(vec3(0.15, 0.92, 1.0), vec3(1.0, 0.65, 0.15), smoothstep(0.25, 0.95, pr.z));
+      addRgb += proxCol * (haloP * 0.42 + coreP * 0.55);
+      addAlpha += haloP * 0.34 + coreP * 0.36;
+      float hP = haloP * 0.90;
+      hexReveal += hP;
+      if (hP > hexWeight) { hexWeight = hP; hexTint = proxCol; }
+    }
+  }
+
+  for (int i = 0; i < 6; i++) {
+    vec4 bA = uBreachA[i];
+    vec4 bB = uBreachB[i];
+    float life = bA.w;
+    float age = uTime - bA.z;
+    if (life > 0.0 && age >= 0.0 && age < life) {
+      float dir = bB.x;
+      float ampScale = bB.y;
+      float rawDs = vArcS - bA.x;
+      if (rawDs > 0.5 * uPerimeterM) rawDs -= uPerimeterM;
+      if (rawDs < -0.5 * uPerimeterM) rawDs += uPerimeterM;
+      float dz = vLocalZ - bA.y;
+      float rad = sqrt(rawDs * rawDs + dz * dz);
+      float ang = (rad > 1e-4) ? atan(dz, rawDs) : 0.0;
+
+      if (dir > 0.0) {
+        float shockR = 0.014 + age * 0.60;
+        float shockBand = smoothstep(0.026, 0.0, abs(rad - shockR)) * exp(-age * 4.5);
+        float shockHex = smoothstep(0.055, 0.0, abs(rad - shockR)) * exp(-age * 3.8);
+        addRgb += vec3(1.0, 0.72, 0.32) * shockBand * 1.05;
+        addAlpha += shockBand * 0.70;
+        float hShock = shockHex * 1.20 * ampScale;
+        hexReveal += hShock;
+
+        float flash = exp(-(rad * rad) / (2.0 * 0.030 * 0.030)) * exp(-age * 11.5);
+        addRgb += vec3(1.0, 0.95, 0.82) * flash * 1.15;
+        addAlpha += flash * 0.80;
+
+        float openT = smoothstep(0.0, 0.14, age);
+        float elasticPop = 1.0 + 0.24 * exp(-age * 7.5) * sin(age * 18.0);
+        float healT = smoothstep(life - 0.95, life - 0.10, age);
+        float closeCurve = 1.0 - healT;
+        float radiusScale = openT * elasticPop * closeCurve;
+        float portalVis = 1.0 - smoothstep(life - 0.14, life - 0.02, age);
+        float rimNoise = 1.0 + 0.11 * sin(ang * 5.0 - uTime * 7.0) + 0.06 * cos(ang * 9.0 + uTime * 11.0);
+        float baseR = 0.027 * clamp(ampScale, 0.85, 1.25);
+        float portalR = max(0.002, baseR * radiusScale * rimNoise);
+
+        float voidMask = (1.0 - smoothstep(portalR * 0.65, portalR * 1.02, rad)) * portalVis;
+        float swirl = 0.5 + 0.5 * sin(ang * 3.0 + rad * 120.0 - uTime * 9.0);
+        vec3 voidCol = mix(vec3(0.07, 0.01, 0.02), vec3(0.02, 0.11, 0.13), healT);
+        voidCol += mix(vec3(0.16, 0.02, 0.01), vec3(0.02, 0.20, 0.22), healT) * swirl * 0.55;
+        if (voidMask > 0.005) {
+          float wMask = voidMask * 0.90;
+          if (wMask > darkMask) { darkMask = wMask; darkRgb = voidCol; }
+        }
+
+        float contrastOutline = smoothstep(0.022, 0.008, abs(rad - portalR)) * portalVis * 0.42;
+        if (contrastOutline > darkMask) {
+          darkMask = contrastOutline;
+          darkRgb = mix(vec3(0.10, 0.01, 0.01), vec3(0.01, 0.08, 0.10), healT);
+        }
+
+        float rimPulse = 0.82 + 0.18 * sin(uTime * 10.5 - rad * 40.0);
+        float rimOuter = smoothstep(0.018, 0.002, abs(rad - portalR)) * portalVis;
+        float rimCore = smoothstep(0.006, 0.0, abs(rad - portalR)) * portalVis;
+        vec3 warnRim = vec3(1.0, 0.24, 0.08);
+        vec3 healRim = vec3(0.10, 0.96, 0.72);
+        vec3 rimCol = mix(warnRim, healRim, healT);
+        vec3 rimHot = mix(vec3(1.0, 0.84, 0.40), vec3(0.84, 1.0, 0.96), healT);
+        addRgb += (rimCol * rimOuter * 0.95 + rimHot * rimCore * 0.95) * rimPulse;
+        addAlpha += (rimOuter * 0.82 + rimCore * 0.55) * rimPulse;
+
+        float aura = exp(-(rad * rad) / (2.0 * 0.065 * 0.065)) * (1.0 - smoothstep(life - 0.35, life, age));
+        float hAura = aura * (0.95 + 0.45 * healT) + hShock;
+        hexReveal += aura * (0.95 + 0.45 * healT);
+        if (hAura > hexWeight) { hexWeight = hAura; hexTint = mix(vec3(1.0, 0.34, 0.12), healRim, healT); }
+
+        if (age > life - 0.34) {
+          float sealWindow = smoothstep(life - 0.34, life - 0.20, age) * (1.0 - smoothstep(life - 0.14, life, age));
+          float sealRingR = 0.004 + max(0.0, age - (life - 0.30)) * 0.22;
+          float sealRing = smoothstep(0.012, 0.0, abs(rad - sealRingR)) * sealWindow;
+          float sealDot = exp(-(rad * rad) / (2.0 * 0.015 * 0.015)) * sealWindow;
+          addRgb += vec3(0.45, 1.0, 0.92) * (sealRing * 0.95 + sealDot * 1.05);
+          addAlpha += sealRing * 0.65 + sealDot * 0.75;
+        }
+      } else {
+        float rippleR = 0.010 + age * 0.48;
+        float ripple = smoothstep(0.022, 0.0, abs(rad - rippleR)) * exp(-age * 4.2);
+        float glowIn = exp(-(rad * rad) / (2.0 * 0.036 * 0.036)) * exp(-age * 4.8);
+        vec3 inCol = vec3(0.15, 0.96, 0.72);
+        addRgb += inCol * (ripple * 0.85 + glowIn * 0.65) + vec3(0.75, 1.0, 0.95) * glowIn * 0.35;
+        addAlpha += ripple * 0.60 + glowIn * 0.48;
+        float hIn = ripple * 0.95 + glowIn * 0.70;
+        hexReveal += hIn;
+        if (hIn > hexWeight) { hexWeight = hIn; hexTint = inCol; }
+      }
+    }
+  }
+
+  if (hexReveal > 0.01) {
+    float hexDist = fenceHexEdge(vec2(vArcS, vLocalZ) / 0.022);
+    float hexLine = 1.0 - smoothstep(0.02, 0.11, hexDist);
+    float hexFill = (1.0 - hexLine) * 0.14;
+    float hexEnergy = clamp(hexReveal, 0.0, 1.35) * (hexLine * 0.95 + hexFill);
+    addRgb += hexTint * hexEnergy * 0.78;
+    addAlpha += hexEnergy * 0.42;
+  }
+
+  float stretch = clamp(abs(vDisp) / 0.040, 0.0, 1.0);
+  if (stretch > 0.02) {
+    addRgb += vec3(0.45, 0.92, 1.0) * stretch * 0.24;
+    addAlpha += stretch * 0.18;
+  }
+
+  if (darkMask > 0.001) {
+    diffuseColor.rgb = mix(diffuseColor.rgb, darkRgb, clamp(darkMask, 0.0, 0.92));
+    diffuseColor.a = max(diffuseColor.a, clamp(darkMask * 0.80, 0.0, 0.88));
+  }
+  diffuseColor.rgb = clamp(diffuseColor.rgb + addRgb, 0.0, 1.0);
+  diffuseColor.a = clamp(diffuseColor.a + addAlpha, 0.0, 0.98);
+}`,
+    );
+};
+
+const fenceWallMesh=new THREE.Mesh(fenceWallGeo,fenceWallMat);
 fenceWallMesh.frustumCulled=false;
 fenceWallMesh.renderOrder=4;
 fenceGroup.add(fenceWallMesh);
 
-const fenceTopPos=new Float32Array(MAX_FENCE_SEGS*3);
+const fenceTopPos=new Float32Array(MAX_FENCE_COLS*3);
+const fenceTopNorm=new Float32Array(MAX_FENCE_COLS*2);
+const fenceTopArcS=new Float32Array(MAX_FENCE_COLS);
 const fenceTopGeo=new THREE.BufferGeometry();
 const fenceTopAttr=new THREE.BufferAttribute(fenceTopPos,3);
+const fenceTopNormAttr=new THREE.BufferAttribute(fenceTopNorm,2);
+const fenceTopArcAttr=new THREE.BufferAttribute(fenceTopArcS,1);
 fenceTopGeo.setAttribute('position',fenceTopAttr);
+fenceTopGeo.setAttribute('aWallNormal',fenceTopNormAttr);
+fenceTopGeo.setAttribute('aArcS',fenceTopArcAttr);
 fenceTopGeo.setDrawRange(0,0);
-const fenceTopLoop=new THREE.LineLoop(
-  fenceTopGeo,
-  new THREE.LineBasicMaterial({color:0x7dd3fc,transparent:true,opacity:0.90}),
-);
+
+const fenceTopMat=new THREE.LineBasicMaterial({color:0x7dd3fc,transparent:true,opacity:0.92});
+fenceTopMat.customProgramCacheKey=()=>'fence-top-membrane-v1';
+fenceTopMat.onBeforeCompile=shader=>{
+  attachFenceFxUniforms(shader);
+  shader.vertexShader=shader.vertexShader
+    .replace('#include <common>',FENCE_VERT_PARS)
+    .replace('#include <begin_vertex>',FENCE_VERT_BODY);
+  shader.fragmentShader=shader.fragmentShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+uniform float uTime;
+uniform float uPerimeterM;
+uniform float uFenceHeight;
+uniform float uFxActive;
+uniform vec4 uBreachA[6];
+uniform vec4 uBreachB[6];
+uniform vec4 uProx[2];
+varying float vArcS;
+varying float vLocalZ;
+varying float vDisp;`,
+    )
+    .replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+if (uFxActive > 0.5) {
+  vec3 topAdd = vec3(0.0);
+  float topAlpha = 0.0;
+  for (int j = 0; j < 2; j++) {
+    vec4 pr = uProx[j];
+    if (pr.z > 0.01) {
+      float absDsP = abs(vArcS - pr.x);
+      float dsP = min(absDsP, max(0.0, uPerimeterM - absDsP));
+      float proxGlow = exp(-(dsP * dsP) / (2.0 * 0.065 * 0.065)) * pr.z * (0.45 + 0.55 * pr.w);
+      vec3 pCol = mix(vec3(0.40, 0.95, 1.0), vec3(1.0, 0.72, 0.25), pr.z);
+      topAdd += pCol * proxGlow * 0.85;
+      topAlpha += proxGlow * 0.15;
+    }
+  }
+  for (int i = 0; i < 6; i++) {
+    vec4 bA = uBreachA[i];
+    vec4 bB = uBreachB[i];
+    float life = bA.w;
+    float age = uTime - bA.z;
+    if (life > 0.0 && age >= 0.0 && age < life) {
+      float dir = bB.x;
+      float overTop = bB.z;
+      float absDs = abs(vArcS - bA.x);
+      float ds = min(absDs, max(0.0, uPerimeterM - absDs));
+      float dz = uFenceHeight - bA.y;
+      float radTop = sqrt(ds * ds + dz * dz);
+      if (dir > 0.0) {
+        float healT = smoothstep(life - 0.95, life - 0.10, age);
+        float vis = 1.0 - smoothstep(life - 0.28, life, age);
+        float topReach = mix(exp(-(dz * dz) / (2.0 * 0.085 * 0.085)), 1.0, overTop);
+        float topSig = 0.075 + 0.035 * overTop;
+        float arcGlow = exp(-(ds * ds) / (2.0 * topSig * topSig)) * topReach * vis;
+        float shockR = 0.014 + age * 0.60;
+        float shockHit = smoothstep(0.032, 0.0, abs(radTop - shockR)) * exp(-age * 4.2);
+        vec3 baseHot = mix(vec3(1.0, 0.35, 0.10), vec3(1.0, 0.92, 0.72), overTop * 0.45);
+        vec3 col = mix(baseHot, vec3(0.18, 1.0, 0.80), healT);
+        topAdd += col * arcGlow * 1.15 + vec3(1.0, 0.85, 0.48) * shockHit * 0.95;
+        topAlpha += arcGlow * 0.10 + shockHit * 0.08;
+      } else {
+        float rippleR = 0.010 + age * 0.48;
+        float rip = smoothstep(0.028, 0.0, abs(radTop - rippleR)) * exp(-age * 4.2);
+        topAdd += vec3(0.20, 1.0, 0.76) * rip * 0.85;
+        topAlpha += rip * 0.08;
+      }
+    }
+  }
+  float stretch = clamp(abs(vDisp) / 0.035, 0.0, 1.0);
+  topAdd += vec3(0.45, 0.95, 1.0) * stretch * 0.35;
+  diffuseColor.rgb = clamp(diffuseColor.rgb + topAdd, 0.0, 1.0);
+  diffuseColor.a = clamp(diffuseColor.a + topAlpha, 0.0, 1.0);
+}`,
+    );
+};
+
+const fenceTopLoop=new THREE.LineLoop(fenceTopGeo,fenceTopMat);
 fenceTopLoop.frustumCulled=false;
 fenceTopLoop.renderOrder=5;
 fenceGroup.add(fenceTopLoop);
+
+const _segLens=new Float32Array(MAX_FENCE_SEGS);
+const _edgeNx=new Float32Array(MAX_FENCE_SEGS);
+const _edgeNy=new Float32Array(MAX_FENCE_SEGS);
+const _cornerNx=new Float32Array(MAX_FENCE_SEGS);
+const _cornerNy=new Float32Array(MAX_FENCE_SEGS);
+const _segCols=new Int16Array(MAX_FENCE_SEGS);
 
 const fenceBotPos=new Float32Array(MAX_FENCE_SEGS*3);
 const fenceBotGeo=new THREE.BufferGeometry();
@@ -1627,6 +2167,7 @@ function syncFenceVisuals(now,dtSec=0,force=false){
   syncStaticExtrasPerimeterAlerts(force);
   if(!perimeterFence.isActive()){
     fenceGroup.visible=false;
+    clearFenceBreaches();
     for(const post of fencePostCache.values()){
       rodBatch.setVisible(post.rodSlot,false);
       nodeBatch.setVisible(post.capSlot,false);
@@ -1654,38 +2195,19 @@ function syncFenceVisuals(now,dtSec=0,force=false){
   const n=Math.min(verts.length,MAX_FENCE_SEGS);
   const h=Math.max(0.004,perimeterFence.heightM*easedRise);
   const activeIds=new Set();
-  let cumDist=0;
-  let wi=0,ui=0;
 
+  let totalPerim=0;
+  let signedArea2=0;
   for(let i=0;i<n;i++){
     const a=verts[i],b=verts[(i+1)%n];
     const [ax,ay]=a.pos,[bx,by]=b.pos;
     activeIds.add(a.id);
 
-    fenceTopPos[i*3]=ax;fenceTopPos[i*3+1]=ay;fenceTopPos[i*3+2]=h;
     fenceBotPos[i*3]=ax;fenceBotPos[i*3+1]=ay;fenceBotPos[i*3+2]=0.002;
-
+    signedArea2+=ax*by-bx*ay;
     const segLen=Math.hypot(bx-ax,by-ay);
-    const u0=cumDist*4.0;
-    cumDist+=segLen;
-    const u1=cumDist*4.0;
-
-    // Two triangles per vertical ribbon panel (a_bot -> b_bot -> b_top, a_bot -> b_top -> a_top).
-    fenceWallPos[wi++]=ax;fenceWallPos[wi++]=ay;fenceWallPos[wi++]=0.001;
-    fenceWallPos[wi++]=bx;fenceWallPos[wi++]=by;fenceWallPos[wi++]=0.001;
-    fenceWallPos[wi++]=bx;fenceWallPos[wi++]=by;fenceWallPos[wi++]=h;
-
-    fenceWallPos[wi++]=ax;fenceWallPos[wi++]=ay;fenceWallPos[wi++]=0.001;
-    fenceWallPos[wi++]=bx;fenceWallPos[wi++]=by;fenceWallPos[wi++]=h;
-    fenceWallPos[wi++]=ax;fenceWallPos[wi++]=ay;fenceWallPos[wi++]=h;
-
-    fenceWallUv[ui++]=u0;fenceWallUv[ui++]=0;
-    fenceWallUv[ui++]=u1;fenceWallUv[ui++]=0;
-    fenceWallUv[ui++]=u1;fenceWallUv[ui++]=1;
-
-    fenceWallUv[ui++]=u0;fenceWallUv[ui++]=0;
-    fenceWallUv[ui++]=u1;fenceWallUv[ui++]=1;
-    fenceWallUv[ui++]=u0;fenceWallUv[ui++]=1;
+    _segLens[i]=segLen;
+    totalPerim+=segLen;
 
     const post=getOrCreateFencePost(a);
     rodBatch.setRod(post.rodSlot,ax,ay,0.001,ax,ay,h,a.fixed?0.0018:0.0022);
@@ -1712,11 +2234,119 @@ function syncFenceVisuals(now,dtSec=0,force=false){
     }
   }
 
-  fenceWallGeo.setDrawRange(0,n*6);
+  if(n<2||totalPerim<=1e-6){
+    fenceWallGeo.setDrawRange(0,0);
+    fenceTopGeo.setDrawRange(0,0);
+    fenceBotGeo.setDrawRange(0,0);
+    return;
+  }
+
+  const windingSign=signedArea2<=0?1:-1;
+  for(let i=0;i<n;i++){
+    const len=_segLens[i];
+    if(len>1e-6){
+      const a=verts[i].pos,b=verts[(i+1)%n].pos;
+      const tx=(b[0]-a[0])/len,ty=(b[1]-a[1])/len;
+      _edgeNx[i]=-ty*windingSign;
+      _edgeNy[i]=tx*windingSign;
+    }else{
+      _edgeNx[i]=1;
+      _edgeNy[i]=0;
+    }
+  }
+  for(let i=0;i<n;i++){
+    const prev=(i-1+n)%n;
+    const nx=_edgeNx[prev]+_edgeNx[i];
+    const ny=_edgeNy[prev]+_edgeNy[i];
+    const nLen=Math.hypot(nx,ny);
+    if(nLen>1e-5){
+      _cornerNx[i]=nx/nLen;
+      _cornerNy[i]=ny/nLen;
+    }else{
+      _cornerNx[i]=_edgeNx[i];
+      _cornerNy[i]=_edgeNy[i];
+    }
+  }
+
+  const stepM=Math.max(0.024,totalPerim/Math.max(1,MAX_FENCE_COLS-n));
+  let totalCols=0;
+  for(let i=0;i<n;i++){
+    const remSegs=n-1-i;
+    const maxHere=Math.max(1,MAX_FENCE_COLS-totalCols-remSegs);
+    const want=Math.max(1,Math.round(_segLens[i]/stepM));
+    const cols=Math.min(maxHere,want);
+    _segCols[i]=cols;
+    totalCols+=cols;
+  }
+
+  let col=0;
+  let cumDist=0;
+  for(let i=0;i<n;i++){
+    const a=verts[i].pos,b=verts[(i+1)%n].pos;
+    const ax=a[0],ay=a[1],dx=b[0]-ax,dy=b[1]-ay;
+    const cols=_segCols[i],segLen=_segLens[i];
+    for(let k=0;k<cols;k++){
+      const t=k/cols;
+      const x=ax+dx*t;
+      const y=ay+dy*t;
+      const arcS=cumDist+segLen*t;
+      const u=arcS*4.0;
+      const nx=k===0?_cornerNx[i]:_edgeNx[i];
+      const ny=k===0?_cornerNy[i]:_edgeNy[i];
+      for(let r=0;r<FENCE_WALL_VROWS;r++){
+        const vIdx=col*FENCE_WALL_VROWS+r;
+        const vFrac=r/FENCE_WALL_ROWS;
+        const z=0.001+(h-0.001)*vFrac;
+        fenceWallPos[vIdx*3]=x;fenceWallPos[vIdx*3+1]=y;fenceWallPos[vIdx*3+2]=z;
+        fenceWallUv[vIdx*2]=u;fenceWallUv[vIdx*2+1]=vFrac;
+        fenceWallNorm[vIdx*2]=nx;fenceWallNorm[vIdx*2+1]=ny;
+        fenceWallArcS[vIdx]=arcS;
+      }
+      fenceTopPos[col*3]=x;fenceTopPos[col*3+1]=y;fenceTopPos[col*3+2]=h;
+      fenceTopNorm[col*2]=nx;fenceTopNorm[col*2+1]=ny;
+      fenceTopArcS[col]=arcS;
+      col++;
+    }
+    cumDist+=segLen;
+  }
+
+  // Closing seam column duplicates vertex 0 with arcS = totalPerim for seamless UV & shader wrapping.
+  const closeX=verts[0].pos[0],closeY=verts[0].pos[1];
+  const closeNx=_cornerNx[0],closeNy=_cornerNy[0];
+  const closeU=totalPerim*4.0;
+  for(let r=0;r<FENCE_WALL_VROWS;r++){
+    const vIdx=totalCols*FENCE_WALL_VROWS+r;
+    const vFrac=r/FENCE_WALL_ROWS;
+    const z=0.001+(h-0.001)*vFrac;
+    fenceWallPos[vIdx*3]=closeX;fenceWallPos[vIdx*3+1]=closeY;fenceWallPos[vIdx*3+2]=z;
+    fenceWallUv[vIdx*2]=closeU;fenceWallUv[vIdx*2+1]=vFrac;
+    fenceWallNorm[vIdx*2]=closeNx;fenceWallNorm[vIdx*2+1]=closeNy;
+    fenceWallArcS[vIdx]=totalPerim;
+  }
+
+  let ii=0;
+  for(let c=0;c<totalCols;c++){
+    for(let r=0;r<FENCE_WALL_ROWS;r++){
+      const b0=c*FENCE_WALL_VROWS+r;
+      const b1=(c+1)*FENCE_WALL_VROWS+r;
+      fenceWallIdx[ii++]=b0;fenceWallIdx[ii++]=b1;fenceWallIdx[ii++]=b1+1;
+      fenceWallIdx[ii++]=b0;fenceWallIdx[ii++]=b1+1;fenceWallIdx[ii++]=b0+1;
+    }
+  }
+
+  fenceFxUniforms.uPerimeterM.value=Math.max(0.05,totalPerim);
+  fenceFxUniforms.uFenceHeight.value=h;
+
+  fenceWallGeo.setDrawRange(0,ii);
   fenceWallPosAttr.needsUpdate=true;
   fenceWallUvAttr.needsUpdate=true;
-  fenceTopGeo.setDrawRange(0,n);
+  fenceWallNormAttr.needsUpdate=true;
+  fenceWallArcAttr.needsUpdate=true;
+  fenceWallIdxAttr.needsUpdate=true;
+  fenceTopGeo.setDrawRange(0,totalCols);
   fenceTopAttr.needsUpdate=true;
+  fenceTopNormAttr.needsUpdate=true;
+  fenceTopArcAttr.needsUpdate=true;
   fenceBotGeo.setDrawRange(0,n);
   fenceBotAttr.needsUpdate=true;
 }
@@ -1824,6 +2454,7 @@ function togglePerimeterFence(now=performance.now()){
   if(!perimeterFence)return;
   if(perimeterFence.isActive()){
     perimeterFence.deactivate();
+    clearFenceBreaches();
     perimeterOfferSuppressed=true;
     hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;
     lastModeFenceKey='';
@@ -4115,6 +4746,7 @@ function createMovableTool(tagId,edgeMm){
     handCoupled:false,coupledHand:null,coupledStepCount:0,measureModeApplied:false,measureSyncedPose:null,lastCoupledStepAtMs:0,postReleaseBoostUntilMs:0,releaseSpeedMps:0,pendingTrail:createCoupledTrailBuffer(),
     recentPoses:[],recording:false,lastRecLineMatrix:null,lastRecFrameMatrix:null,lastRecAtMs:0,
     markHoldSince:null,markHoldConsumed:false,recHoldSince:null,recHoldConsumed:false,recOrbPosL:[0,0,0],markOrbPosL:[0,0,0],
+    hasFenceSample:false,lastFencePosL:[0,0,0],lastInsidePosL:null,lastBreachAtMs:0,
     pillRestState:createTagRestState(),
   };
   drawLiveBadge(entry,'settling',false);
@@ -4709,6 +5341,8 @@ function setTagRecording(entry,active,now){
 function syncMovablePerimeterAlert(entry,poseMat,visible,now){
   const fenceActive=Boolean(perimeterFence?.isActive?.());
   if(!visible||!poseMat||!fenceActive){
+    entry.hasFenceSample=false;
+    entry.lastInsidePosL=null;
     if(entry.outsidePerimeter){
       entry.outsidePerimeter=false;
       frameBatch.setAlert(entry.frameSlot,false);
@@ -4726,6 +5360,24 @@ function syncMovablePerimeterAlert(entry,poseMat,visible,now){
   _alertPosBuf[2]=poseMat[14];
   const res=perimeterFence.isOutsideXY(_alertPosBuf,{wasOutside:Boolean(entry.outsidePerimeter)});
   if(res.outside!==Boolean(entry.outsidePerimeter)){
+    let cross=null;
+    if(entry.hasFenceSample&&extraScanActive&&now-entry.lastBreachAtMs>=280){
+      const prevRef=res.outside?(entry.lastInsidePosL??entry.lastFencePosL):entry.lastFencePosL;
+      cross=perimeterFence.locateCrossing(prevRef,_alertPosBuf);
+      if(cross){
+        const spd=Number.isFinite(entry.lastSpeedMps)?entry.lastSpeedMps:0.25;
+        const intensity=Math.max(0.85,Math.min(1.35,0.85+spd*0.65));
+        triggerFenceBreach({
+          tagId:entry.tagId,
+          arcS:cross.arcS,
+          z:cross.pos[2],
+          dir:res.outside?1:-1,
+          intensity,
+          overTop:cross.overTop,
+        },now);
+        entry.lastBreachAtMs=now;
+      }
+    }
     entry.outsidePerimeter=res.outside;
     frameBatch.setAlert(entry.frameSlot,res.outside);
     drawLiveBadge(entry,!extraScanActive?'measure':(entry.recording?'rec':entry.lockState),entry.handCoupled);
@@ -4734,10 +5386,30 @@ function syncMovablePerimeterAlert(entry,poseMat,visible,now){
         type:'perimeter-tag-outside',
         tagId:entry.tagId,
         edgeDistanceMm:Math.round(res.edgeDistanceM*1000),
+        breachPosMm:cross?cross.pos.map(v=>Math.round(v*1000)):null,
+        overTop:cross?cross.overTop:false,
         atPerformanceMs:now,
       });
     }
   }
+  if(extraScanActive&&!res.outside&&res.signedDistanceM<=0&&res.edgeDistanceM<0.070){
+    const near=perimeterFence.locateCrossing(null,_alertPosBuf);
+    if(near){
+      const t=Math.max(0,Math.min(1,(0.070-res.edgeDistanceM)/(0.070-0.004)));
+      const strength=t*t*(3-2*t);
+      recordFenceProximity(near.arcS,near.pos[2],strength,near.overTop);
+    }
+  }
+  entry.lastFencePosL[0]=_alertPosBuf[0];
+  entry.lastFencePosL[1]=_alertPosBuf[1];
+  entry.lastFencePosL[2]=_alertPosBuf[2];
+  if(res.signedDistanceM<=0){
+    if(!entry.lastInsidePosL)entry.lastInsidePosL=[0,0,0];
+    entry.lastInsidePosL[0]=_alertPosBuf[0];
+    entry.lastInsidePosL[1]=_alertPosBuf[1];
+    entry.lastInsidePosL[2]=_alertPosBuf[2];
+  }
+  entry.hasFenceSample=true;
   if(entry.outsidePerimeter){
     setTagFramePose(alertGlowBatch,entry.alertSlot,poseMat,0.0016,entry.edgeMm/20);
     alertGlowBatch.setVisible(entry.alertSlot,true);
@@ -4749,6 +5421,7 @@ function syncMovablePerimeterAlert(entry,poseMat,visible,now){
 function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
   const dt=Math.min(0.05,Math.max(0.004,dtSec||1/90));
   const curFenceVer=perimeterFence?.version?.()??-1;
+  beginFenceProximityFrame();
   for(const entry of movableTools.values()){
     if(entry.trailTube&&entry.lineCount>0&&entry.lastTrailFenceVer!==curFenceVer){
       entry.lastTrailFenceVer=curFenceVer;
@@ -4962,6 +5635,7 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       entry.recOrbScale=1+0.10*Math.sin(now*0.012);
     }
   }
+  flushFenceFxUniforms(now,dt);
 }
 
 function updateLiveTagTouch(frameInputs,world,pose,now){
@@ -5217,6 +5891,7 @@ function clearAllUserItems(){
   placedExtras=new Map();
   extraPending=new Map();
   lastExtraAlertFenceVer=-1;
+  clearFenceBreaches();
   if(hadItems)playModeTick('unpin');
   showHudToast(hadItems?'↺ CLEARED ALL TAGS & TRAILS':'NOTHING TO CLEAR','#f59e0b');
 }
@@ -5256,6 +5931,7 @@ function clearExtras(){
   lastExtraAlertFenceVer=-1;
   perimeterTagVisuals.clear();
   perimeterFence?.reset();
+  clearFenceBreaches();
   perimeterOfferSuppressed=false;lastModeFenceKey='';
   lastSyncedFenceVer=-1;lastSyncedFenceScan=false;
   fenceRiseStartMs=0;perimeterCompleteAnnounced=false;
@@ -6649,6 +7325,7 @@ function clean(s){
   space?.removeEventListener?.('reset',reset);
   assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
   hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;perimeterOfferSuppressed=false;
+  clearFenceBreaches();
   modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';modeColorPokeSince=null;modeColorPokeConsumed=false;modeColorCooldownUntil=0;lastModeColorKey='';turboBarSprite.visible=false;lastTurboBarKey='';
   modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
   session=null;space=null;floorSpace=null;profile=null;extraScanActive=false;lastMotionState=null;lastObs=null;lastObsAtMs=0;reanchorConfirmUntil=0;resetAnchorStability();
@@ -7964,7 +8641,7 @@ try{
     hold=nextExitHold(hold,xrExitPressed(session.inputSources).held,now);
     if(hold.fire)end();
     if(root.visible){
-      if(frameBatch.activeCount()>0||alertGlowBatch.activeCount()>0)frameShimmerUniforms.uTime.value=now*0.001;
+      if(frameBatch.activeCount()>0||alertGlowBatch.activeCount()>0||fenceGroup.visible)frameShimmerUniforms.uTime.value=now*0.001;
       frameBatch.commit();
       alertGlowBatch.commit();
       overlayFrameBatch.commit();

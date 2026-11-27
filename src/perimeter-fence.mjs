@@ -204,6 +204,154 @@ export function evaluatePerimeterOutside(posL, vertices, {
   };
 }
 
+/**
+ * Locate where a 3D L-frame path (prevPosL -> currPosL) intersects the 2D XY
+ * perimeter boundary, falling back to the closest perimeter point when no
+ * segment intersection exists. Returns winding-agnostic outward normal, arc
+ * length along the perimeter, and clamped height along the fence wall.
+ */
+export function locatePerimeterCrossing(prevPosL, currPosL, vertices, {
+  heightM = FENCE_HEIGHT_M,
+  minZ = 0.015,
+} = {}) {
+  const x1 = currPosL?.[0];
+  const y1 = currPosL?.[1];
+  const z1 = currPosL?.[2];
+  if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Array.isArray(vertices) || vertices.length < 3) {
+    return null;
+  }
+
+  const pts = [];
+  for (let i = 0; i < vertices.length; i++) {
+    const v = vertices[i]?.pos ?? vertices[i];
+    if (v && Number.isFinite(v[0]) && Number.isFinite(v[1])) {
+      pts.push(v);
+    }
+  }
+  const n = pts.length;
+  if (n < 3) return null;
+
+  const edgeLen = new Array(n);
+  const cumS = new Array(n);
+  let signedArea2 = 0;
+  let perimeterM = 0;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    const ax = a[0], ay = a[1];
+    const bx = b[0], by = b[1];
+    signedArea2 += ax * by - bx * ay;
+    const len = Math.hypot(bx - ax, by - ay);
+    edgeLen[i] = len;
+    cumS[i] = perimeterM;
+    perimeterM += len;
+  }
+  if (perimeterM <= 1e-9) return null;
+
+  const windingSign = signedArea2 <= 0 ? 1 : -1;
+
+  let hit = null;
+  let bestU = -1;
+  let hitX = x1;
+  let hitY = y1;
+  let rawZ = z1;
+  let bestEdge = 0;
+  let bestT = 0;
+  let bestArcS = 0;
+  let bestNx = 1;
+  let bestNy = 0;
+  let bestDist = 0;
+
+  const x0 = prevPosL?.[0];
+  const y0 = prevPosL?.[1];
+  const z0 = prevPosL?.[2];
+  if (Number.isFinite(x0) && Number.isFinite(y0)) {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    if (Math.hypot(dx, dy) > 1e-6) {
+      const z0Finite = Number.isFinite(z0);
+      const z1Finite = Number.isFinite(z1);
+      for (let i = 0; i < n; i++) {
+        const L = edgeLen[i];
+        if (L <= 1e-9) continue;
+        const a = pts[i];
+        const b = pts[(i + 1) % n];
+        const ax = a[0], ay = a[1];
+        const ex = b[0] - ax;
+        const ey = b[1] - ay;
+        const denom = dx * ey - dy * ex;
+        if (Math.abs(denom) <= 1e-12) continue;
+        const u = ((ax - x0) * ey - (ay - y0) * ex) / denom;
+        const t = ((ax - x0) * dy - (ay - y0) * dx) / denom;
+        if (u >= -1e-6 && u <= 1 + 1e-6 && t >= -1e-6 && t <= 1 + 1e-6) {
+          const uc = Math.max(0, Math.min(1, u));
+          if (uc > bestU) {
+            const tc = Math.max(0, Math.min(1, t));
+            bestU = uc;
+            hitX = ax + tc * ex;
+            hitY = ay + tc * ey;
+            rawZ = z0Finite && z1Finite ? z0 + uc * (z1 - z0) : z1;
+            bestEdge = i;
+            bestT = tc;
+            bestArcS = cumS[i] + tc * L;
+            bestNx = (-ey / L) * windingSign;
+            bestNy = (ex / L) * windingSign;
+            bestDist = 0;
+            hit = 'intersection';
+          }
+        }
+      }
+    }
+  }
+
+  if (!hit) {
+    let minDistSq = Infinity;
+    for (let i = 0; i < n; i++) {
+      const L = edgeLen[i];
+      if (L <= 1e-9) continue;
+      const a = pts[i];
+      const b = pts[(i + 1) % n];
+      const ax = a[0], ay = a[1];
+      const ex = b[0] - ax;
+      const ey = b[1] - ay;
+      const t = Math.max(0, Math.min(1, ((x1 - ax) * ex + (y1 - ay) * ey) / (L * L)));
+      const px = ax + t * ex;
+      const py = ay + t * ey;
+      const dSq = (x1 - px) * (x1 - px) + (y1 - py) * (y1 - py);
+      if (dSq < minDistSq) {
+        minDistSq = dSq;
+        hitX = px;
+        hitY = py;
+        rawZ = z1;
+        bestEdge = i;
+        bestT = t;
+        bestArcS = cumS[i] + t * L;
+        bestNx = (-ey / L) * windingSign;
+        bestNy = (ex / L) * windingSign;
+      }
+    }
+    bestDist = Number.isFinite(minDistSq) ? Math.sqrt(minDistSq) : 0;
+    hit = 'closest';
+  }
+
+  const zRaw = Number.isFinite(rawZ) ? rawZ : heightM * 0.5;
+  const overTop = zRaw > heightM;
+  const zClamped = Math.max(Math.min(minZ, heightM), Math.min(heightM, zRaw));
+
+  return {
+    pos: [hitX, hitY, zClamped],
+    rawZ: zRaw,
+    overTop,
+    normal: [bestNx, bestNy],
+    edgeIndex: bestEdge,
+    edgeT: bestT,
+    arcS: bestArcS,
+    perimeterM,
+    distanceM: bestDist,
+    hit,
+  };
+}
+
 export function isTablePointObservableInCamera(posL, lFromCamera, K, {
   minDistM = 0.22,
   maxDistM = 1.30,
@@ -683,6 +831,11 @@ export function createPerimeterFence(rig, {
     return { active: true, ...res };
   }
 
+  function locateCrossing(prevPosL, currPosL, opts = {}) {
+    if (!active) return null;
+    return locatePerimeterCrossing(prevPosL, currPosL, syncCachedPolyXY(), { heightM, ...opts });
+  }
+
   function snapshot() {
     const verts = orderedVertices();
     const { perimeterM, areaM2 } = polygonMetricsXY(verts);
@@ -725,6 +878,7 @@ export function createPerimeterFence(rig, {
     discoveredMarkers,
     dynamicCount,
     isOutsideXY,
+    locateCrossing,
     version: () => stateVersion,
     snapshot,
   };
