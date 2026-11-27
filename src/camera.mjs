@@ -95,12 +95,15 @@ export function createReferenceCamera({video,geometry,getSettings,getContext,onO
   function submitFrame(now,fromRvfc) {
     if(!running||busy||video.readyState<2||!video.videoWidth) return;
     const settings=getSettings();
-    const maxHz=Number.isFinite(settings.maxHz)?Math.max(1,Math.min(30,settings.maxHz)):3;
-    if(now-lastSubmitted<1000/maxHz) return;
+    const uncapped=settings.maxHz===0||settings.maxHz===Infinity;
+    const maxHz=uncapped?Infinity:(Number.isFinite(settings.maxHz)?Math.max(1,Math.min(60,settings.maxHz)):3);
+    let minIntervalMs=uncapped?0:1000/maxHz;
+    if(fromRvfc&&Number.isFinite(maxHz)&&maxHz>=25) minIntervalMs=Math.max(0,minIntervalMs-3);
+    if(minIntervalMs>0&&now-lastSubmitted<minIntervalMs) return;
     if(fromRvfc) {
       if(metadata&&metadata.mediaTime===lastMediaTime&&metadata.presentedFrames===lastPresentedFrames) return;
     } else if(video.currentTime===lastMediaTime) return;
-    const desiredDecimate=settings.decimate===2?2:(settings.decimate===1.5?1.5:1);
+    const desiredDecimate=(settings.decimate===4||settings.decimate===3||settings.decimate===2||settings.decimate===1.5)?settings.decimate:1;
     const desiredDetectMode=(settings.detectMode==='full'||settings.detectMode==='two-stage'||settings.detectMode==='fast')?settings.detectMode:undefined;
     const desiredTrackRefIds=Array.isArray(settings.trackRefIds)?settings.trackRefIds:(settings.trackRefIds===null?null:undefined);
     const desiredTrackRefKey=desiredTrackRefIds===undefined?undefined:(desiredTrackRefIds?desiredTrackRefIds.join(','):'null');
@@ -159,10 +162,12 @@ export function createReferenceCamera({video,geometry,getSettings,getContext,onO
     const priorRois=Array.isArray(settings.priorRois)&&settings.priorRois.length?settings.priorRois:undefined;
     const focusRois=Array.isArray(settings.focusRois)&&settings.focusRois.length?settings.focusRois:undefined;
     const unassignedTagEdgeMm=(typeof settings.unassignedTagEdgeMm==='number'||(settings.unassignedTagEdgeMm&&typeof settings.unassignedTagEdgeMm==='object'))?settings.unassignedTagEdgeMm:undefined;
+    const focusSpeedFirst=typeof settings.focusSpeedFirst==='boolean'?settings.focusSpeedFirst:undefined;
+    const focusFallbackDecimate=(settings.focusFallbackDecimate===4||settings.focusFallbackDecimate===3||settings.focusFallbackDecimate===2||settings.focusFallbackDecimate===1.5||settings.focusFallbackDecimate===1)?settings.focusFallbackDecimate:undefined;
     sample.priorRoiCount=priorRois?priorRois.length:0;
     sample.focusRoiCount=focusRois?focusRois.length:0;
-    const extraMsg=(priorRois||focusRois||unassignedTagEdgeMm!==undefined)
-      ?{...(priorRois?{priorRois}:null),...(focusRois?{focusRois}:null),...(unassignedTagEdgeMm!==undefined?{unassignedTagEdgeMm}:null)}
+    const extraMsg=(priorRois||focusRois||unassignedTagEdgeMm!==undefined||focusSpeedFirst!==undefined||focusFallbackDecimate!==undefined)
+      ?{...(priorRois?{priorRois}:null),...(focusRois?{focusRois}:null),...(unassignedTagEdgeMm!==undefined?{unassignedTagEdgeMm}:null),...(focusSpeedFirst!==undefined?{focusSpeedFirst}:null),...(focusFallbackDecimate!==undefined?{focusFallbackDecimate}:null)}
       :null;
     const sendMainCanvas=(mode='main-canvas')=>{
       if(canvas.width!==width||canvas.height!==height) {canvas.width=width;canvas.height=height;}

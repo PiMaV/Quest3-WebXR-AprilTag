@@ -14,6 +14,7 @@ export {FIST_GESTURE_DEFAULTS,classifyFistPose,createFistToggleController} from 
 export {createPerfTracker} from './perf-stats.mjs';
 export {ADAPTIVE_QUALITY_MODES,ADAPTIVE_QUALITY_DEFAULTS,createAdaptiveQualityController} from './adaptive-quality.mjs';
 export {projectPriorRois,prioritizeFocusCandidates,createAprilTagDetector} from './detector.mjs';
+export {FOCUS_SCHEDULER_DEFAULTS,projectTagGazeMetrics,createFocusScheduler} from './focus-scheduler.mjs';
 export {fuseCommittedTrailSegment,smoothLineTail,smoothAxisTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius,RIBBON_SPEED_DEFAULTS,speedToRibbonHalfWidth,speedToHeatColor,TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor} from './path-smoother.mjs';
 export {TAG_PREDICTOR_DEFAULTS,createTagMotionPredictor} from './tag-predictor.mjs';
 export {associateAnchorCapture,auditAnchorObservation,createAnchorAudit} from './anchor-audit.mjs';

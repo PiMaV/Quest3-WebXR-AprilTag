@@ -1,6 +1,6 @@
 // ARENA/AprilRobotics WASM ABI adapter; physical tag sizes come explicitly from rig definitions.
 import { inverse, product } from './runtime.mjs';
-const VALID_DECIMATES = [1, 1.5, 2];
+const VALID_DECIMATES = [1, 1.5, 2, 3, 4];
 
 function validateGrayFrame(gray, width, height) {
   if (!(gray instanceof Uint8Array) || !Number.isInteger(width) || !Number.isInteger(height) ||
@@ -462,10 +462,36 @@ export function createAprilTagDetector(wasm, decimate = 1) {
     return { ...fb, trackedHit: false };
   }
 
+  function runBoxDetect(gray, width, height, [x0, y0, x1, y1], { softFallback = false } = {}) {
+    const rw = x1 - x0;
+    const rh = y1 - y0;
+    const buf = copyRoi(gray, width, x0, y0, rw, rh);
+    const roiMarkers = offsetMarkers(rawDetect(buf, rw, rh), x0, y0);
+    if (softFallback) {
+      for (const m of roiMarkers) m.softFallback = true;
+    }
+    return roiMarkers;
+  }
+
+  function expandRoiBox([x0, y0, x1, y1], width, height, scale = 1.5, maxSide = 560) {
+    const cx = (x0 + x1) * 0.5;
+    const cy = (y0 + y1) * 0.5;
+    const hw = Math.min(maxSide * 0.5, Math.max(16, (x1 - x0) * 0.5 * scale));
+    const hh = Math.min(maxSide * 0.5, Math.max(16, (y1 - y0) * 0.5 * scale));
+    const nx0 = Math.max(0, Math.floor(cx - hw));
+    const ny0 = Math.max(0, Math.floor(cy - hh));
+    const nx1 = Math.min(width, Math.ceil(cx + hw));
+    const ny1 = Math.min(height, Math.ceil(cy + hh));
+    return (nx1 - nx0 >= 16 && ny1 - ny0 >= 16) ? [nx0, ny0, nx1, ny1] : [x0, y0, x1, y1];
+  }
+
   function detectFocusRois(gray, width, height, focusRois, {
     maxRois = 4,
     maxTotalAreaFrac = 0.52,
     coarseAreaThreshold = 52000,
+    speedFirst = false,
+    speedSmallAreaThreshold = 24000,
+    allowFullFallback = true,
     fallbackOpts = {},
   } = {}) {
     validateGrayFrame(gray, width, height);
@@ -480,128 +506,170 @@ export function createAprilTagDetector(wasm, decimate = 1) {
         const prevRef = currentRefineEdges;
         const markers = [];
         const boxHit = new Uint8Array(boxes.length);
-        const smallBoxes = [];
-        const largeBoxes = [];
-        for (let bIdx = 0; bIdx < boxes.length; bIdx++) {
-          const box = boxes[bIdx];
-          const area = (box[2] - box[0]) * (box[3] - box[1]);
-          if (area < coarseAreaThreshold) smallBoxes.push([bIdx, box]);
-          else largeBoxes.push([bIdx, box]);
-        }
 
         let roiMs = 0;
         try {
           const t0 = performance.now();
-          const blurRetrySmall = [];
-          const blurRetryLarge = [];
-          const refineCrops = [];
-          const coarseFallbackMarkers = [];
-
-          // Direct dec=1+ref=1 only for compact ROIs (< 52k px²); distant small tags stay crisp at ~5-11 ms.
-          if (smallBoxes.length > 0) {
-            setOptions({ decimate: 1, refineEdges: 1 });
-            for (const [bIdx, box] of smallBoxes) {
-              const [x0, y0, x1, y1] = box;
-              const rw = x1 - x0;
-              const rh = y1 - y0;
-              const buf = copyRoi(gray, width, x0, y0, rw, rh);
-              const roiMarkers = offsetMarkers(rawDetect(buf, rw, rh), x0, y0);
-              if (roiMarkers.length > 0) {
-                boxHit[bIdx] = 1;
-                for (const m of roiMarkers) markers.push(m);
-              } else {
-                blurRetrySmall.push([bIdx, box]);
-              }
+          if (speedFirst) {
+            const tinyBoxes = [];
+            const fastBoxes = [];
+            for (let bIdx = 0; bIdx < boxes.length; bIdx++) {
+              const box = boxes[bIdx];
+              const area = (box[2] - box[0]) * (box[3] - box[1]);
+              if (area < speedSmallAreaThreshold) tinyBoxes.push([bIdx, box]);
+              else fastBoxes.push([bIdx, box]);
             }
-          }
+            const missedFast = [];
+            const missedTiny = [];
 
-          // Stage 1 for large near-field search ROIs: fast dec=2 ref=0 search (3-4x faster than dec=1).
-          if (largeBoxes.length > 0) {
-            setOptions({ decimate: 2, refineEdges: 0 });
-            for (const [bIdx, box] of largeBoxes) {
-              const [x0, y0, x1, y1] = box;
-              const rw = x1 - x0;
-              const rh = y1 - y0;
-              const buf = copyRoi(gray, width, x0, y0, rw, rh);
-              const coarseMarkers = offsetMarkers(rawDetect(buf, rw, rh), x0, y0);
-              if (coarseMarkers.length > 0) {
-                boxHit[bIdx] = 1;
-                for (const m of coarseMarkers) {
-                  coarseFallbackMarkers.push(m);
-                  const cBox = markerToRoiBox(m, width, height, { padFrac: 0.50, minPadPx: 18 });
-                  if (cBox) refineCrops.push(cBox);
+            if (fastBoxes.length > 0) {
+              setOptions({ decimate: 2, refineEdges: 1 });
+              for (const [bIdx, box] of fastBoxes) {
+                const roiMarkers = runBoxDetect(gray, width, height, box);
+                if (roiMarkers.length > 0) {
+                  boxHit[bIdx] = 1;
+                  for (const m of roiMarkers) markers.push(m);
+                } else {
+                  missedFast.push([bIdx, box]);
                 }
-              } else {
-                blurRetryLarge.push([bIdx, box]);
               }
             }
-          }
 
-          // Stage 2 (Blur / Mid-Size Rescue): dec=1.5 ref=0 rescues motion-blurred tags in missed boxes.
-          if (blurRetrySmall.length > 0 || blurRetryLarge.length > 0) {
-            setOptions({ decimate: 1.5, refineEdges: 0 });
-            for (const [bIdx, [x0, y0, x1, y1]] of blurRetrySmall) {
-              const rw = x1 - x0;
-              const rh = y1 - y0;
-              const buf = copyRoi(gray, width, x0, y0, rw, rh);
-              const roiMarkers = offsetMarkers(rawDetect(buf, rw, rh), x0, y0);
-              if (roiMarkers.length > 0) {
-                boxHit[bIdx] = 1;
+            if (tinyBoxes.length > 0) {
+              setOptions({ decimate: 1.5, refineEdges: 0 });
+              for (const [bIdx, box] of tinyBoxes) {
+                const roiMarkers = runBoxDetect(gray, width, height, box);
+                if (roiMarkers.length > 0) {
+                  boxHit[bIdx] = 1;
+                  for (const m of roiMarkers) markers.push(m);
+                } else {
+                  missedTiny.push([bIdx, box]);
+                }
+              }
+            }
+
+            if (missedFast.length > 0) {
+              setOptions({ decimate: 2, refineEdges: 0 });
+              for (const [bIdx, box] of missedFast) {
+                const expBox = expandRoiBox(box, width, height, 1.5, 560);
+                const roiMarkers = runBoxDetect(gray, width, height, expBox, { softFallback: true });
+                if (roiMarkers.length > 0) {
+                  boxHit[bIdx] = 1;
+                  for (const m of roiMarkers) markers.push(m);
+                }
+              }
+            }
+
+            if (missedTiny.length > 0) {
+              setOptions({ decimate: 1, refineEdges: 0 });
+              for (const [bIdx, box] of missedTiny) {
+                const roiMarkers = runBoxDetect(gray, width, height, box, { softFallback: true });
+                if (roiMarkers.length > 0) {
+                  boxHit[bIdx] = 1;
+                  for (const m of roiMarkers) markers.push(m);
+                }
+              }
+            }
+          } else {
+            const smallBoxes = [];
+            const largeBoxes = [];
+            for (let bIdx = 0; bIdx < boxes.length; bIdx++) {
+              const box = boxes[bIdx];
+              const area = (box[2] - box[0]) * (box[3] - box[1]);
+              if (area < coarseAreaThreshold) smallBoxes.push([bIdx, box]);
+              else largeBoxes.push([bIdx, box]);
+            }
+
+            const blurRetrySmall = [];
+            const blurRetryLarge = [];
+            const refineCrops = [];
+            const coarseFallbackMarkers = [];
+
+            // Direct dec=1+ref=1 only for compact ROIs (< 52k px²); distant small tags stay crisp at ~5-11 ms.
+            if (smallBoxes.length > 0) {
+              setOptions({ decimate: 1, refineEdges: 1 });
+              for (const [bIdx, box] of smallBoxes) {
+                const roiMarkers = runBoxDetect(gray, width, height, box);
+                if (roiMarkers.length > 0) {
+                  boxHit[bIdx] = 1;
+                  for (const m of roiMarkers) markers.push(m);
+                } else {
+                  blurRetrySmall.push([bIdx, box]);
+                }
+              }
+            }
+
+            // Stage 1 for large near-field search ROIs: fast dec=2 ref=0 search (3-4x faster than dec=1).
+            if (largeBoxes.length > 0) {
+              setOptions({ decimate: 2, refineEdges: 0 });
+              for (const [bIdx, box] of largeBoxes) {
+                const coarseMarkers = runBoxDetect(gray, width, height, box);
+                if (coarseMarkers.length > 0) {
+                  boxHit[bIdx] = 1;
+                  for (const m of coarseMarkers) {
+                    coarseFallbackMarkers.push(m);
+                    const cBox = markerToRoiBox(m, width, height, { padFrac: 0.50, minPadPx: 18 });
+                    if (cBox) refineCrops.push(cBox);
+                  }
+                } else {
+                  blurRetryLarge.push([bIdx, box]);
+                }
+              }
+            }
+
+            // Stage 2 (Blur / Mid-Size Rescue): dec=1.5 ref=0 rescues motion-blurred tags in missed boxes.
+            if (blurRetrySmall.length > 0 || blurRetryLarge.length > 0) {
+              setOptions({ decimate: 1.5, refineEdges: 0 });
+              for (const [bIdx, box] of blurRetrySmall) {
+                const roiMarkers = runBoxDetect(gray, width, height, box, { softFallback: true });
+                if (roiMarkers.length > 0) {
+                  boxHit[bIdx] = 1;
+                  for (const m of roiMarkers) markers.push(m);
+                }
+              }
+              for (const [bIdx, box] of blurRetryLarge) {
+                const roiMarkers = runBoxDetect(gray, width, height, box, { softFallback: true });
+                if (roiMarkers.length > 0) {
+                  boxHit[bIdx] = 1;
+                  for (const m of roiMarkers) {
+                    coarseFallbackMarkers.push(m);
+                    const cBox = markerToRoiBox(m, width, height, { padFrac: 0.50, minPadPx: 18 });
+                    if (cBox) refineCrops.push(cBox);
+                  }
+                }
+              }
+            }
+
+            // Stage 3: tight subpixel corner refinement at dec=1 ref=1 only around detected tags.
+            if (refineCrops.length > 0) {
+              const mergedRefine = mergeRoiBoxes(refineCrops, 12, { maxMergedArea: 56000 });
+              const refinedMarkers = [];
+              setOptions({ decimate: 1, refineEdges: 1 });
+              for (const box of mergedRefine) {
+                const roiMarkers = runBoxDetect(gray, width, height, box);
                 for (const m of roiMarkers) {
-                  m.softFallback = true;
+                  refinedMarkers.push(m);
                   markers.push(m);
                 }
               }
-            }
-            for (const [bIdx, [x0, y0, x1, y1]] of blurRetryLarge) {
-              const rw = x1 - x0;
-              const rh = y1 - y0;
-              const buf = copyRoi(gray, width, x0, y0, rw, rh);
-              const roiMarkers = offsetMarkers(rawDetect(buf, rw, rh), x0, y0);
-              if (roiMarkers.length > 0) {
-                boxHit[bIdx] = 1;
-                for (const m of roiMarkers) {
-                  m.softFallback = true;
-                  coarseFallbackMarkers.push(m);
-                  const cBox = markerToRoiBox(m, width, height, { padFrac: 0.50, minPadPx: 18 });
-                  if (cBox) refineCrops.push(cBox);
+              for (const cm of coarseFallbackMarkers) {
+                const ctr = markerCenterXY(cm);
+                if (!ctr) continue;
+                const matched = refinedMarkers.some((rm) => {
+                  if (rm.id !== cm.id) return false;
+                  const rCtr = markerCenterXY(rm);
+                  return rCtr && Math.hypot(rCtr[0] - ctr[0], rCtr[1] - ctr[1]) <= 18;
+                });
+                if (!matched) {
+                  cm.softFallback = true;
+                  markers.push(cm);
                 }
               }
-            }
-          }
-
-          // Stage 3: tight subpixel corner refinement at dec=1 ref=1 only around detected tags.
-          if (refineCrops.length > 0) {
-            const mergedRefine = mergeRoiBoxes(refineCrops, 12, { maxMergedArea: 56000 });
-            const refinedMarkers = [];
-            setOptions({ decimate: 1, refineEdges: 1 });
-            for (const [x0, y0, x1, y1] of mergedRefine) {
-              const rw = x1 - x0;
-              const rh = y1 - y0;
-              const buf = copyRoi(gray, width, x0, y0, rw, rh);
-              const roiMarkers = offsetMarkers(rawDetect(buf, rw, rh), x0, y0);
-              for (const m of roiMarkers) {
-                refinedMarkers.push(m);
-                markers.push(m);
-              }
-            }
-            for (const cm of coarseFallbackMarkers) {
-              const ctr = markerCenterXY(cm);
-              if (!ctr) continue;
-              const matched = refinedMarkers.some((rm) => {
-                if (rm.id !== cm.id) return false;
-                const rCtr = markerCenterXY(rm);
-                return rCtr && Math.hypot(rCtr[0] - ctr[0], rCtr[1] - ctr[1]) <= 18;
-              });
-              if (!matched) {
+            } else if (coarseFallbackMarkers.length > 0) {
+              for (const cm of coarseFallbackMarkers) {
                 cm.softFallback = true;
                 markers.push(cm);
               }
-            }
-          } else if (coarseFallbackMarkers.length > 0) {
-            for (const cm of coarseFallbackMarkers) {
-              cm.softFallback = true;
-              markers.push(cm);
             }
           }
 
@@ -625,6 +693,17 @@ export function createAprilTagDetector(wasm, decimate = 1) {
             focusMissedBoxes,
           };
         }
+        if (!allowFullFallback) {
+          return {
+            markers: [],
+            coarseMs: 0,
+            roiMs,
+            roiCount: boxes.length,
+            focusHit: false,
+            focusHitBoxes: 0,
+            focusMissedBoxes: boxes.length,
+          };
+        }
         const fb = detectTwoStage(gray, width, height, fallbackOpts);
         return {
           ...fb,
@@ -634,6 +713,17 @@ export function createAprilTagDetector(wasm, decimate = 1) {
           focusMissedBoxes: boxes.length,
         };
       }
+    }
+    if (!allowFullFallback) {
+      return {
+        markers: [],
+        coarseMs: 0,
+        roiMs: 0,
+        roiCount: 0,
+        focusHit: false,
+        focusHitBoxes: 0,
+        focusMissedBoxes: Array.isArray(focusRois) ? focusRois.length : 0,
+      };
     }
     const fb = detectTwoStage(gray, width, height, fallbackOpts);
     return {

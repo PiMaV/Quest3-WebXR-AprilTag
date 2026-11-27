@@ -42,4 +42,22 @@ test('createTagMotionPredictor extrapolates rigid 6DOF constant velocity + rotat
   pred.reset(301);
   assert.equal(pred.predict(301, 1400), null);
   assert.equal(pred.speedOf(301), null);
+
+  // seed() pre-warms velocity immediately without cold-start frame delay
+  const seeded = pred.seed(302, vectorRigid([0, 0, 0, 0.20, 0.10, 0.05]), 2000, {
+    velL: [0.80, 0, 0],
+    angLocal: [0, 0, 2.0],
+  });
+  assert.ok(seeded && Math.abs(seeded.speedMps - 0.80) < 1e-6);
+  const seededLead = pred.predict(302, 2060);
+  assert.ok(seededLead && isRigidPose(seededLead));
+  assert.ok(seededLead[12] > 0.20 + 0.035, `expected immediate seeded lead > 35 mm, got ${((seededLead[12] - 0.20) * 1000).toFixed(1)} mm`);
+
+  // seed() clamps extreme velocity cleanly
+  const clampedSeed = pred.seed(303, vectorRigid([0, 0, 0, 0, 0, 0]), 2100, {
+    velL: [10.0, 0, 0],
+    angLocal: [0, 0, 50.0],
+  });
+  assert.ok(clampedSeed.speedMps <= TAG_PREDICTOR_DEFAULTS.maxLinearMps + 1e-6);
+  assert.ok(clampedSeed.angDegPerSec <= (TAG_PREDICTOR_DEFAULTS.maxAngularRadPerSec * 180 / Math.PI) + 1e-4);
 });

@@ -79,7 +79,7 @@ self.onmessage=async({data})=>{
   if(!detector) {data.videoFrame?.close?.();data.bitmap?.close?.();return;}
   try {
     if(data.type==='config') {
-      if(data.decimate===1||data.decimate===1.5||data.decimate===2) {activeDecimate=data.decimate;detector.setDecimate(data.decimate);}
+      if(data.decimate===1||data.decimate===1.5||data.decimate===2||data.decimate===3||data.decimate===4) {activeDecimate=data.decimate;detector.setDecimate(data.decimate);}
       if(data.detectMode==='full'||data.detectMode==='two-stage'||data.detectMode==='fast') detectMode=data.detectMode;
       if('trackRefIds' in data) {
         const nextIds=Array.isArray(data.trackRefIds)&&data.trackRefIds.length?data.trackRefIds.slice():null;
@@ -112,13 +112,15 @@ self.onmessage=async({data})=>{
     const preprocessMs=performance.now()-started,start=performance.now();
     let markers,coarseMs=0,roiMs=0,roiCount=0,focusHit=false,focusMissedBoxes=0;
     if(detectMode==='two-stage') {
-      const coarseDecimate=activeDecimate===1?1:(activeDecimate===1.5?1.5:2);
+      const coarseDecimate=activeDecimate;
       const priorRois=Array.isArray(data.priorRois)&&data.priorRois.length?data.priorRois:undefined;
       const focusRois=Array.isArray(data.focusRois)&&data.focusRois.length?data.focusRois:null;
+      const focusSpeedFirst=Boolean(data.focusSpeedFirst);
+      const focusFallbackDecimate=(data.focusFallbackDecimate===4||data.focusFallbackDecimate===3||data.focusFallbackDecimate===2||data.focusFallbackDecimate===1.5||data.focusFallbackDecimate===1)?data.focusFallbackDecimate:coarseDecimate;
       const res=(trackRefIds?.length&&lastRefHintBox)
         ?detector.detectTrackedRoi(gray,data.width,data.height,lastRefHintBox,{requiredIds:trackRefIds,fallbackOpts:{coarseDecimate,priorRois}})
         :(focusRois
-          ?detector.detectFocusRois(gray,data.width,data.height,focusRois,{fallbackOpts:{coarseDecimate,priorRois}})
+          ?detector.detectFocusRois(gray,data.width,data.height,focusRois,{speedFirst:focusSpeedFirst,fallbackOpts:{coarseDecimate:focusFallbackDecimate,priorRois}})
           :detector.detectTwoStage(gray,data.width,data.height,{coarseDecimate,priorRois}));
       markers=res.markers;coarseMs=res.coarseMs;roiMs=res.roiMs;roiCount=res.roiCount;focusHit=Boolean(res.focusHit);
       focusMissedBoxes=Number.isFinite(res.focusMissedBoxes)?res.focusMissedBoxes:0;

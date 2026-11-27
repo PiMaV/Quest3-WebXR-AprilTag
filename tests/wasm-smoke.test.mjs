@@ -68,7 +68,16 @@ test('vendored AprilTag WASM loads in Node and detects tag36h11 with LL,LR,UR,UL
   const fastMarkers=detector.detect(prepareRgbaFrame(renderTag36h11(0x89ded4ea1n,{width:200,height:200,cell:14,ox:44,oy:44}),200,200,null,3).gray,200,200);
   assert.equal(fastMarkers.length,1);
   assert.equal(fastMarkers[0].id,350);
-  assert.throws(()=>detector.setDecimate(3),/Invalid decimate/);
+  detector.setDecimate(3);
+  const dec3Markers=detector.detect(prepareRgbaFrame(renderTag36h11(0x89ded4ea1n,{width:200,height:200,cell:14,ox:44,oy:44}),200,200,null,4).gray,200,200);
+  assert.equal(dec3Markers.length,1);
+  assert.equal(dec3Markers[0].id,350);
+  detector.setDecimate(4);
+  const dec4Markers=detector.detect(prepareRgbaFrame(renderTag36h11(0x89ded4ea1n,{width:200,height:200,cell:14,ox:44,oy:44}),200,200,null,5).gray,200,200);
+  assert.equal(dec4Markers.length,1);
+  assert.equal(dec4Markers[0].id,350);
+  assert.throws(()=>detector.setDecimate(2.5),/Invalid decimate/);
+  assert.throws(()=>detector.setDecimate(5),/Invalid decimate/);
   assert.throws(()=>detector.detect(new Uint8Array(10),200,200),/Invalid grayscale frame/);
 });
 
@@ -494,4 +503,84 @@ test('two-stage large Focus-ROI matches dec=1 corner accuracy, reports partial-m
   assert.equal(resBlur.focusMissedBoxes,0);
   assert.equal(resBlur.markers.length,1);
   assert.equal(resBlur.markers[0].id,350);
+});
+
+test('detectFocusRois speedFirst hits single tag accurately, rescues blur via expanded Stage-2, and falls back with decimate=3',async()=>{
+  const vendorDir=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../vendor/apriltag');
+  const src=fs.readFileSync(path.join(vendorDir,'apriltag_wasm.js'),'utf8');
+  const AprilTagWasm=new Function('require','__dirname','__filename',`${src}; return AprilTagWasm;`)(
+    createRequire(import.meta.url),vendorDir,path.join(vendorDir,'apriltag_wasm.js'),
+  );
+  const wasmBinary=fs.readFileSync(path.join(vendorDir,'apriltag_wasm.wasm'));
+  const wasm=await AprilTagWasm({wasmBinary});
+  const detector=createAprilTagDetector(wasm,1);
+
+  const W=1280,H=1080;
+  const gray=new Uint8Array(W*H);
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++)gray[y*W+x]=140+((x*7+y*13)%90);
+  }
+  const sp={id:350,code:0x89ded4ea1n,cell:8,ox:560,oy:460}; // 64 px tag
+  paintTagGray(gray,W,H,sp.code,sp);
+  const baseline=detector.detect(gray,W,H);
+  assert.equal(baseline.length,1);
+  const ref=baseline[0];
+
+  // 1) Fast single-pass dec=2 ref=1 inside 280x280 ROI (>= 24k px²) matches subpixel corner accuracy.
+  const fastHit=detector.detectFocusRois(gray,W,H,[[450,350,730,630]],{
+    speedFirst:true,
+    fallbackOpts:{coarseDecimate:3},
+  });
+  assert.equal(fastHit.focusHit,true);
+  assert.equal(fastHit.coarseMs,0);
+  assert.equal(fastHit.markers.length,1);
+  assert.equal(fastHit.markers[0].id,350);
+  assert.ok(!fastHit.markers[0].softFallback);
+  let maxErrPx=0;
+  for(let i=0;i<4;i++){
+    const err=Math.hypot(fastHit.markers[0].corners[i].x-ref.corners[i].x,fastHit.markers[0].corners[i].y-ref.corners[i].y);
+    if(err>maxErrPx)maxErrPx=err;
+  }
+  assert.ok(maxErrPx<=0.35,`expected <=0.35px corner delta in speedFirst, got ${maxErrPx.toFixed(4)}px`);
+
+  // 2) Motion-blurred 40 px tag (blurPx=9) missed by dec=2 ref=1 is rescued by expanded Stage-2 dec=2 ref=0.
+  const cell=5,ox=500,oy=400,blurPx=9,size=cell*8,qPad=cell*2;
+  const sharp=new Float32Array(W*H).fill(180);
+  for(let y=oy-qPad;y<oy+size+qPad;y++)for(let x=ox-qPad;x<ox+size+qPad;x++)sharp[y*W+x]=240;
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      let val=20;
+      if(r>0&&r<7&&c>0&&c<7){
+        const bit=(r-1)*6+(c-1);
+        val=Number((0x89ded4ea1n>>BigInt(35-bit))&1n)?240:20;
+      }
+      for(let dy=0;dy<cell;dy++)for(let dx=0;dx<cell;dx++)sharp[(oy+r*cell+dy)*W+(ox+c*cell+dx)]=val;
+    }
+  }
+  const blurred=new Uint8Array(W*H).fill(180);
+  const half=Math.floor(blurPx/2);
+  for(let y=oy-qPad;y<oy+size+qPad;y++){
+    for(let x=ox-qPad-blurPx;x<ox+size+qPad+blurPx;x++){
+      let sum=0;
+      for(let dx=0;dx<blurPx;dx++)sum+=sharp[y*W+Math.min(W-1,Math.max(0,x-half+dx))];
+      blurred[y*W+x]=Math.round(sum/blurPx);
+    }
+  }
+  const blurHit=detector.detectFocusRois(blurred,W,H,[[ox-80,oy-80,ox+size+80,oy+size+80]],{
+    speedFirst:true,
+    fallbackOpts:{coarseDecimate:3},
+  });
+  assert.equal(blurHit.focusHit,true);
+  assert.equal(blurHit.markers.length,1);
+  assert.equal(blurHit.markers[0].id,350);
+  assert.equal(blurHit.markers[0].softFallback,true);
+
+  // 3) Out-of-ROI tag falls back cleanly via coarseDecimate=3 full-frame recovery.
+  const fb=detector.detectFocusRois(gray,W,H,[[40,40,240,240]],{
+    speedFirst:true,
+    fallbackOpts:{coarseDecimate:3},
+  });
+  assert.equal(fb.focusHit,false);
+  assert.equal(fb.markers.length,1);
+  assert.equal(fb.markers[0].id,350);
 });

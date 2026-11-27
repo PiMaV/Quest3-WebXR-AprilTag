@@ -3,11 +3,11 @@ import { isRigidPose } from './anchor.mjs';
 import { inverse, product, rigidVector, vectorRigid } from './runtime.mjs';
 
 export const TAG_PREDICTOR_DEFAULTS = Object.freeze({
-  maxLeadSec: 0.105,
-  leadGain: 0.72,
+  maxLeadSec: 0.120,
+  leadGain: 0.90,
   maxLinearMps: 1.8,
   maxAngularRadPerSec: 8.0,
-  velocityAlpha: 0.58,
+  velocityAlpha: 0.72,
   decayTauSec: 0.085,
   minDtSec: 0.012,
   maxDtSec: 0.35,
@@ -123,6 +123,29 @@ export function createTagMotionPredictor(options = {}) {
     return out;
   }
 
+  function seed(tagId, lFromTag, obsTimeMs, { velL = null, angLocal = null } = {}) {
+    if (!isRigidPose(lFromTag) || !Number.isFinite(obsTimeMs)) return null;
+    const vRaw = Array.isArray(velL) && velL.length >= 3 && velL.every(Number.isFinite)
+      ? [velL[0], velL[1], velL[2]]
+      : [0, 0, 0];
+    const wRaw = Array.isArray(angLocal) && angLocal.length >= 3 && angLocal.every(Number.isFinite)
+      ? [angLocal[0], angLocal[1], angLocal[2]]
+      : [0, 0, 0];
+    const clampedVel = clampVec3Norm(vRaw, cfg.maxLinearMps);
+    const clampedAng = clampVec3Norm(wRaw, cfg.maxAngularRadPerSec);
+    const speedMps = Math.hypot(clampedVel[0], clampedVel[1], clampedVel[2]);
+    const angDegPerSec = (Math.hypot(clampedAng[0], clampedAng[1], clampedAng[2]) * 180) / Math.PI;
+    states.set(tagId, {
+      pose: lFromTag.slice(),
+      obsTimeMs,
+      velL: clampedVel,
+      angLocal: clampedAng,
+      speedMps,
+      angDegPerSec,
+    });
+    return { speedMps, angDegPerSec };
+  }
+
   function speedOf(tagId) {
     const st = states.get(tagId);
     if (!st) return null;
@@ -134,5 +157,5 @@ export function createTagMotionPredictor(options = {}) {
     else states.clear();
   }
 
-  return { observe, predict, speedOf, reset };
+  return { observe, seed, predict, speedOf, reset };
 }

@@ -517,3 +517,45 @@ test('createReferenceCamera supports custom workerFactory, wasmBaseUrl, and unas
     cam.dispose();
   });
 });
+
+test('createReferenceCamera accepts consecutive 30 Hz rVFC frames with maxHz=60 and forwards decimate=3 & focus flags',async()=>{
+  await withBrowserMocks(async({getWorker})=>{
+    const track={readyState:'live',muted:false,label:'Quest RGB',stop(){},getSettings:()=>({deviceId:'cam1',resizeMode:'none'}),addEventListener(){}};
+    Object.defineProperty(globalThis,'navigator',{value:{
+      userAgent:'QuestMock/1.0',
+      mediaDevices:{
+        getSupportedConstraints:()=>({resizeMode:true}),
+        enumerateDevices:async()=>[],
+        getUserMedia:async()=>({getVideoTracks:()=>[track],getTracks:()=>[track]}),
+      },
+    },configurable:true,writable:true});
+    const video=makeMockVideo({withRvfc:true});
+    const focusRois=[[400,320,700,620]];
+    const cam=createReferenceCamera({
+      video,geometry:rig,
+      getSettings:()=>({
+        horizontalFovDeg:65,printScale:1,maxLongEdge:1280,experimentalCalibration:null,
+        maxHz:60,decimate:3,detectMode:'two-stage',focusRois,focusSpeedFirst:true,focusFallbackDecimate:3,
+      }),
+      getContext:()=>({sessionId:'s1',spaceEpoch:0}),
+    });
+    await cam.start();
+    const worker=getWorker();
+
+    // Frame 1 at t=1000
+    video.currentTime=1.0;
+    video.fireRvfc(1000,{mediaTime:1.0,presentedFrames:1,captureTime:992});
+    assert.equal(worker.messages.length,2);
+    assert.deepEqual(worker.messages[0],{type:'config',decimate:3,detectMode:'two-stage'});
+    assert.equal(worker.messages[1].focusSpeedFirst,true);
+    assert.equal(worker.messages[1].focusFallbackDecimate,3);
+    assert.equal(cam.state().decimate,3);
+    worker.onmessage({data:{type:'detections',serial:worker.messages[1].serial,markers:[],frameEvidence:{fresh:true,pixelsChanged:true},preprocessMs:1,detectMs:8,focusHit:true}});
+
+    // Frame 2 arrives 31.5 ms later (slight rVFC jitter on 30 Hz stream) -> MUST NOT be dropped!
+    video.currentTime=1.033;
+    video.fireRvfc(1031.5,{mediaTime:1.033,presentedFrames:2,captureTime:1025});
+    assert.equal(worker.messages.length,3,'consecutive 30 Hz rVFC frame must be submitted immediately');
+    cam.dispose();
+  });
+});

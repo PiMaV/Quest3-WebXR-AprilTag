@@ -23,12 +23,12 @@ export const OPTICAL_BRIDGE_DEFAULTS=Object.freeze({
 });
 
 export const CARRIED_MOTION_GATE_DEFAULTS=Object.freeze({
-  xrSteadyAngDegPerSec:28,
-  xrMaxAngDegPerSec:95,
+  xrSteadyAngDegPerSec:40,
+  xrMaxAngDegPerSec:108,
   xrSteadyLinMPerSec:0.55,
   xrMaxLinMPerSec:1.50,
-  opticalSteadyAngDegPerSec:36,
-  opticalMaxAngDegPerSec:110,
+  opticalSteadyAngDegPerSec:46,
+  opticalMaxAngDegPerSec:125,
   opticalSteadyLinMPerSec:0.70,
   opticalMaxLinMPerSec:1.80,
 });

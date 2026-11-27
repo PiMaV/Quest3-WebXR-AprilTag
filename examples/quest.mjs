@@ -7,16 +7,16 @@ import {
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
   createPerfTracker,ADAPTIVE_QUALITY_MODES,createAdaptiveQualityController,
-  projectPriorRois,prioritizeFocusCandidates,fuseCommittedTrailSegment,smoothLineTail,
+  projectPriorRois,fuseCommittedTrailSegment,smoothLineTail,
   TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor,
-  createTagMotionPredictor,APP_VERSION_LABEL,
+  createTagMotionPredictor,createFocusScheduler,APP_VERSION_LABEL,
 } from '../src/index.mjs';
 import {
   createInstancedPool,createAxesBatch,createPathTubeMesh,createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh,
 } from '../src/three.mjs';
 import {associateAnchorCapture,auditAnchorObservation,createAnchorAudit} from '../src/anchor-audit.mjs';
 import {createPerimeterFence,isPerimeterTag,perimeterRole,FENCE_HEIGHT_M} from '../src/perimeter-fence.mjs';
-import {matToQuat,quatSlerp,composeRigid} from '../src/runtime.mjs';
+import {matToQuat,quatNormalize,quatSlerp,composeRigid,poseAt} from '../src/runtime.mjs';
 
 const $=id=>document.getElementById(id),status=text=>{const el=$('status');if(el)el.textContent=`${APP_VERSION_LABEL} · ${text}`;};
 if($('appVersion'))$('appVersion').textContent=APP_VERSION_LABEL;
@@ -569,7 +569,8 @@ function resetAnchorStability(){
   anchorBaseline=null;hasPrevAnchorWorld=false;anchorWinHead=0;anchorWinCount=0;
   liveJitterMm=null;liveDriftMm=null;liveDriftDeg=null;
 }
-let lastSampleStats=null,lastObs=null,lastObsAtMs=0,lastAuditRow=null,lastAuditAt=0,lastMovedTargetAt=0,lastMotionState=null,rvfcWindowStart=null,rvfcWindowCount=0,rvfcHz=0,scanPulseCounter=0,focusSweepCounter=0,focusPartialMissStreak=0;
+let lastSampleStats=null,lastObs=null,lastObsAtMs=0,lastAuditRow=null,lastAuditAt=0,lastMovedTargetAt=0,lastMotionState=null,rvfcWindowStart=null,rvfcWindowCount=0,rvfcHz=0,scanPulseCounter=0,recentFocusDetectMs=15;
+let activeFocusTagIds=new Set();
 let calViewerPoses=[],lastCalCount=0,lastCalPhase='idle';
 let placedExtras=new Map(),extraPending=new Map(),movableTools=new Map(),lastDiagnostics=null,diagnostics=null;
 function pushDiagEvent(ev){
@@ -582,6 +583,7 @@ const audit=createAnchorAudit({maxSamples:120});
 const handHistory=createHandHistory({maxMs:1800});
 const tagHandCoupler=createTagHandCoupler({opticalStaleTimeoutMs:380,maxUnconfirmedDriftM:0.26});
 const tagPredictor=createTagMotionPredictor();
+const focusScheduler=createFocusScheduler();
 const context=()=>({sessionId,spaceEpoch:epoch});
 // M.E.S.S. convention: x00-x49 = generic (no assigned role, user decides how to use it); x50-x99 = dedicated (role from a geometry profile).
 // Hundreds digit only selects the size class. 500+ (special) and 0-99 (debug) are neither.
@@ -3829,20 +3831,63 @@ function blendRigid(a,b,alpha){
   return composeRigid(p,q);
 }
 
+const QUAT_ID=[0,0,0,1];
+function quatMul(a,b){
+  return [
+    a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
+    a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
+    a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
+    a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2],
+  ];
+}
+const quatConj=q=>[-q[0],-q[1],-q[2],q[3]];
+function resetDisplayErrorOffset(entry){
+  entry.errOffsetPos[0]=0;entry.errOffsetPos[1]=0;entry.errOffsetPos[2]=0;
+  entry.errOffsetRot[0]=0;entry.errOffsetRot[1]=0;entry.errOffsetRot[2]=0;entry.errOffsetRot[3]=1;
+}
+function captureDisplayErrorOffset(entry,nextPredictedMatrix,tauSec=0.055){
+  if(!entry.displayMatrix||!nextPredictedMatrix){resetDisplayErrorOffset(entry);return;}
+  let dx=entry.displayMatrix[12]-nextPredictedMatrix[12];
+  let dy=entry.displayMatrix[13]-nextPredictedMatrix[13];
+  let dz=entry.displayMatrix[14]-nextPredictedMatrix[14];
+  const errM=Math.hypot(dx,dy,dz);
+  if(!Number.isFinite(errM)){resetDisplayErrorOffset(entry);return;}
+  if(errM>0.18){const s=0.18/errM;dx*=s;dy*=s;dz*=s;}
+  entry.errOffsetPos[0]=dx;entry.errOffsetPos[1]=dy;entry.errOffsetPos[2]=dz;
+  let qErr=quatNormalize(quatMul(matToQuat(entry.displayMatrix),quatConj(matToQuat(nextPredictedMatrix))));
+  if(qErr[3]<0)qErr=[-qErr[0],-qErr[1],-qErr[2],-qErr[3]];
+  entry.errOffsetRot[0]=qErr[0];entry.errOffsetRot[1]=qErr[1];entry.errOffsetRot[2]=qErr[2];entry.errOffsetRot[3]=qErr[3];
+  entry.errDecayTauSec=tauSec;
+}
+function applyAndDecayErrorOffset(entry,basePose,dt){
+  const tau=Math.max(0.02,entry.errDecayTauSec||0.055);
+  const decay=Math.exp(-dt/tau);
+  const ep=entry.errOffsetPos;
+  ep[0]*=decay;ep[1]*=decay;ep[2]*=decay;
+  if(Math.hypot(ep[0],ep[1],ep[2])<0.0002){ep[0]=0;ep[1]=0;ep[2]=0;}
+  const er=entry.errOffsetRot;
+  if(er[3]<0){er[0]=-er[0];er[1]=-er[1];er[2]=-er[2];er[3]=-er[3];}
+  const decayedRot=er[3]>0.999999?QUAT_ID:quatSlerp(er,QUAT_ID,1-decay);
+  er[0]=decayedRot[0];er[1]=decayedRot[1];er[2]=decayedRot[2];er[3]=decayedRot[3];
+  return composeRigid([basePose[12]+ep[0],basePose[13]+ep[1],basePose[14]+ep[2]],quatMul(decayedRot,matToQuat(basePose)));
+}
+
 function drawLiveBadge(entry,mode,coupled=false){
   const out=Boolean(entry.outsidePerimeter);
-  const key=`${entry.tagId}:${mode}:${coupled?1:0}:${out?1:0}`;
+  const measure=mode==='measure';
+  const fastTracked=!measure&&!coupled&&activeFocusTagIds.has(entry.tagId);
+  const key=`${entry.tagId}:${mode}:${coupled?1:0}:${fastTracked?1:0}:${out?1:0}`;
   if(key===entry.faceKey||entry.faceSlot<0)return;
   entry.faceKey=key;
   if(out){
     drawTagMatrixFace(entry.faceSlot,`live:${key}`,`${entry.tagId}`,'#ff3b30',{fill:'rgba(138,12,16,0.95)',alarmBell:true});
     return;
   }
-  const rec=mode==='rec',near=mode==='near',locked=mode==='locked',moving=mode==='moving',measure=mode==='measure';
-  const stroke=rec?'#ef4444':(coupled?'#4ade80':(near?'#22d3ee':(locked?'#4ade80':entry.theme.css)));
-  const fill=rec?'rgba(45,8,14,0.92)':(coupled?'rgba(8,30,22,0.92)':(near?'rgba(8,28,36,0.92)':'rgba(6,11,20,0.86)'));
-  const statusSymbol=rec?(coupled?'● ✋':'●'):(coupled?'✋':(near?'⏱':(moving?'↻':(measure||locked?'':'…'))));
-  const statusColor=rec?'#fca5a5':(coupled?'#86efac':(near?'#67e8f9':entry.theme.css));
+  const rec=mode==='rec',near=mode==='near',locked=mode==='locked';
+  const stroke=rec?'#ef4444':(coupled?'#4ade80':(fastTracked?'#fbbf24':(near?'#22d3ee':(locked?'#4ade80':entry.theme.css))));
+  const fill=rec?'rgba(45,8,14,0.92)':(coupled?'rgba(8,30,22,0.92)':(fastTracked?'rgba(34,24,6,0.92)':(near?'rgba(8,28,36,0.92)':'rgba(6,11,20,0.86)')));
+  const statusSymbol=rec?(coupled?'● ✋':(fastTracked?'● ⚡':'●')):(coupled?'✋':(near?'⏱':(fastTracked?'⚡':'')));
+  const statusColor=rec?'#fca5a5':(coupled?'#86efac':(fastTracked?'#fde047':(near?'#67e8f9':entry.theme.css)));
   drawTagMatrixFace(entry.faceSlot,`live:${key}`,`${entry.tagId}`,stroke,{fill,statusSymbol,statusColor});
 }
 
@@ -4063,10 +4108,11 @@ function createMovableTool(tagId,edgeMm){
     trailTube:null,uniqueLinearRgb:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineColors:null,lineOutside:null,lastTrailFenceVer:-1,lineCount:0,
     dotsMesh:null,dotMat:null,dotColor:null,timeCopyDotColor:null,
     waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,smoothedSpeedMps:0,hasEverAnnouncedLock:false,
-    lockState:'settling',settleSamples:[],lockedMatrix:null,lockQuality:null,refineSamples:[],relocPending:null,
+    lockState:'settling',settleSamples:[],lockedMatrix:null,lockedSinceMs:0,lockQuality:null,refineSamples:[],relocPending:null,
     stillAnchor:null,stillSinceMs:null,stillSamples:[],lockFlashUntilMs:0,currentPose:null,
-    lastMatrix:null,lastOpticalMatrix:null,targetMatrix:null,displayMatrix:null,targetConfidence:1,lastAt:0,lastOpticalAtMs:0,lastSpeedMps:0,lastApparentEdgePx:0,lastOpticalRmsPx:null,pendingJump:null,skipNextJumpGuardUntilMs:0,
-    handCoupled:false,coupledHand:null,coupledStepCount:0,measureModeApplied:false,measureSyncedPose:null,lastCoupledStepAtMs:0,pendingTrail:createCoupledTrailBuffer(),
+    lastMatrix:null,lastOpticalMatrix:null,targetMatrix:null,displayMatrix:null,targetConfidence:1,lastAt:0,lastOpticalAtMs:0,lastOpticalXrTimeMs:0,lastSpeedMps:0,lastApparentEdgePx:0,lastOpticalRmsPx:null,pendingJump:null,skipNextJumpGuardUntilMs:0,
+    errOffsetPos:[0,0,0],errOffsetRot:[0,0,0,1],errDecayTauSec:0.055,
+    handCoupled:false,coupledHand:null,coupledStepCount:0,measureModeApplied:false,measureSyncedPose:null,lastCoupledStepAtMs:0,postReleaseBoostUntilMs:0,releaseSpeedMps:0,pendingTrail:createCoupledTrailBuffer(),
     recentPoses:[],recording:false,lastRecLineMatrix:null,lastRecFrameMatrix:null,lastRecAtMs:0,
     markHoldSince:null,markHoldConsumed:false,recHoldSince:null,recHoldConsumed:false,recOrbPosL:[0,0,0],markOrbPosL:[0,0,0],
   };
@@ -4217,7 +4263,7 @@ function recordHandsInL(frameInputs,world,xrTimeMs){
   }
 }
 
-function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targetXrTimeMs=null,decimate=1,apparentEdgePx=0,rmsPx=null,nearHand=false,allowRefine=false,softFallback=false}={}){
+function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targetXrTimeMs=null,decimate=1,apparentEdgePx=0,rmsPx=null,nearHand=false,allowRefine=false,softFallback=false,inFocus=false}={}){
   const conf=Number.isFinite(confidence)?Math.max(0,Math.min(1,confidence)):1;
   let entry=movableTools.get(tagId);
   if(conf<=0){
@@ -4236,6 +4282,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
   const dtSinceLastMs=prevOpticalAt>0?Math.max(0,atMs-prevOpticalAt):Infinity;
   entry.lastAt=atMs;
   entry.lastOpticalAtMs=atMs;
+  if(Number.isFinite(targetXrTimeMs))entry.lastOpticalXrTimeMs=targetXrTimeMs;
   entry.lastApparentEdgePx=apparentEdgePx;
   entry.lastOpticalRmsPx=rmsPx;
   entry.targetConfidence=conf;
@@ -4265,10 +4312,17 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
       });
       entry.handCoupled=false;
       entry.coupledHand=null;
+      entry.lockState='moving';
+      entry.lockedSinceMs=0;
+      entry.releaseSpeedMps=Math.max(entry.lastSpeedMps||0,0.35);
+      entry.postReleaseBoostUntilMs=atMs+500;
       entry.pendingTrail.discard();
       entry.pendingJump=null;
       entry.skipNextJumpGuardUntilMs=atMs+900;
-      entry.displayMatrix=lFromTag.slice();
+      if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
+      const handoverBase=(coupRes.reason!=='tag-stationary'&&Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||lFromTag;
+      if(entry.displayMatrix)captureDisplayErrorOffset(entry,handoverBase,coupRes.reason==='tag-stationary'?0.045:0.090);
+      else{entry.displayMatrix=handoverBase.slice();resetDisplayErrorOffset(entry);}
       entry.targetMatrix=lFromTag.slice();
       entry.lastMatrix=lFromTag.slice();
       entry.lastOpticalMatrix=lFromTag.slice();
@@ -4279,12 +4333,17 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     }
   }
 
-  // While hand-coupled, 90 Hz hand prediction drives displayMatrix directly so we never pull the tag backward to the ~140 ms lagged optical frame.
+  // While hand-coupled, 90 Hz hand prediction drives displayMatrix directly; keep tagPredictor warm in the shadow for seamless release.
   if(coupRes.mode==='coupled'){
-    tagPredictor.reset(tagId);
+    if(Number.isFinite(targetXrTimeMs)){
+      const vel=tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
+      if(vel&&vel.speedMps>0.01)entry.lastSpeedMps=vel.speedMps;
+    }
+    resetDisplayErrorOffset(entry);
     entry.handCoupled=true;
     entry.coupledHand=coupRes.handedness;
     entry.lockState='moving';
+    entry.lockedSinceMs=0;
     entry.relocPending=null;
     entry.refineSamples=[];
     entry.stillAnchor=null;entry.stillSinceMs=null;entry.stillSamples=[];
@@ -4330,12 +4389,14 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
   if(entry.lockState==='settling'){
     if(entry.recording&&conf>=0.35){
       entry.lockState='moving';
+      entry.lockedSinceMs=0;
       entry.settleSamples=[];
       entry.relocPending=null;
       entry.pendingJump=null;
       entry.stillAnchor=lFromTag.slice();
       entry.stillSinceMs=atMs;
       entry.stillSamples=[lFromTag.slice()];
+      resetDisplayErrorOffset(entry);
       drawLiveBadge(entry,'rec',entry.handCoupled);
     }else{
       entry.settleSamples.push({atMs,matrix:lFromTag.slice()});
@@ -4353,12 +4414,14 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
           const wasNeverLocked=!entry.hasEverAnnouncedLock;
           entry.hasEverAnnouncedLock=true;
           entry.lockState='locked';
+          entry.lockedSinceMs=atMs;
           entry.lockedMatrix=mean.slice();
           entry.lockQuality={decimate,apparentEdgePx,confidence:conf,refineCount:0};
           entry.refineSamples=[];
           entry.displayMatrix=mean.slice();
           entry.targetMatrix=mean.slice();
           entry.lastMatrix=mean.slice();
+          resetDisplayErrorOffset(entry);
           entry.settleSamples=[];
           entry.relocPending=null;
           entry.lockFlashUntilMs=atMs+450;
@@ -4373,12 +4436,14 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         }
         if(!softFallback&&conf>=0.55&&maxPos>18){
           entry.lockState='moving';
+          entry.lockedSinceMs=0;
           entry.settleSamples=[];
           entry.relocPending=null;
           entry.pendingJump=null;
           entry.stillAnchor=lFromTag.slice();
           entry.stillSinceMs=atMs;
           entry.stillSamples=[lFromTag.slice()];
+          resetDisplayErrorOffset(entry);
           drawLiveBadge(entry,'moving',entry.handCoupled);
         }else{
           return;
@@ -4395,19 +4460,22 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     const d=rigidVector(product(inverse(ref),lFromTag));
     const posMm=Math.hypot(...d.slice(3))*1000;
     const angDeg=Math.hypot(...d.slice(0,3))*180/Math.PI;
+    const stillPosMm=(inFocus&&conf>=0.45)?12:18;
+    const stillAngDeg=(inFocus&&conf>=0.45)?8:12;
 
     // While actively recording, prioritize responsiveness immediately on motion.
     if(entry.recording&&(posMm>=8||angDeg>=6)&&conf>=0.40){
       entry.lockState='moving';
+      entry.lockedSinceMs=0;
       entry.relocPending=null;
       entry.refineSamples=[];
       entry.pendingJump=null;
       entry.lastMatrix=lFromTag.slice();
       entry.targetMatrix=lFromTag.slice();
       entry.stillAnchor=null;entry.stillSinceMs=null;entry.stillSamples=[];
-    }else if(posMm<18&&angDeg<12){
+    }else if(posMm<stillPosMm&&angDeg<stillAngDeg){
       entry.relocPending=null;
-      // Iterative stillness precision refinement when cleaner/closer view confirms a 2..18 mm offset.
+      // Iterative stillness precision refinement when cleaner/closer view confirms a 2..stillPosMm offset.
       const prevQual=entry.lockQuality;
       const qualityMatch=!prevQual||decimate<=prevQual.decimate||apparentEdgePx>=prevQual.apparentEdgePx*0.92;
       if(allowRefine&&!softFallback&&!entry.recording&&conf>=0.72&&qualityMatch&&posMm>=2.0){
@@ -4424,6 +4492,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
             entry.displayMatrix=refined.slice();
             entry.targetMatrix=refined.slice();
             entry.lastMatrix=refined.slice();
+            resetDisplayErrorOffset(entry);
             entry.lockQuality={decimate,apparentEdgePx,confidence:conf,refineCount:(prevQual?.refineCount??0)+1};
             entry.refineSamples=[];
             syncCurrentPose(entry,refined,atMs);
@@ -4439,23 +4508,31 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         return;
       }
       const staleLocked=dtSinceLastMs>=700;
+      const unlockMaxPos=inFocus?320:180;
       const cleanFastUnlock=
-        (nearHand&&posMm>=16&&posMm<=180&&conf>=0.50)||
+        (nearHand&&posMm>=stillPosMm&&posMm<=unlockMaxPos&&conf>=0.45&&(!softFallback||(Number.isFinite(rmsPx)&&rmsPx<=1.6)))||
+        (inFocus&&posMm>=stillPosMm&&posMm<=unlockMaxPos&&conf>=0.45&&(!softFallback||(Number.isFinite(rmsPx)&&rmsPx<=2.2)))||
         (!softFallback&&Number.isFinite(rmsPx)&&rmsPx<=1.25&&posMm>=18&&posMm<=180&&conf>=0.65)||
         (staleLocked&&!softFallback&&Number.isFinite(rmsPx)&&rmsPx<=1.10&&apparentEdgePx>=14&&conf>=0.65);
       const mirrorFlipLikely=posMm<24&&angDeg>20;
       if(cleanFastUnlock&&!mirrorFlipLikely){
         entry.lockState='moving';
+        entry.lockedSinceMs=0;
         entry.relocPending=null;
         entry.refineSamples=[];
         entry.pendingJump=null;
         entry.lastMatrix=lFromTag.slice();
         entry.targetMatrix=lFromTag.slice();
-        if(staleLocked&&posMm>180)entry.displayMatrix=lFromTag.slice();
+        if(staleLocked&&posMm>180){
+          entry.displayMatrix=lFromTag.slice();
+          resetDisplayErrorOffset(entry);
+        }
         entry.stillAnchor=lFromTag.slice();
         entry.stillSinceMs=atMs;
         entry.stillSamples=[lFromTag.slice()];
         if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
+        const predTarget=(Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||lFromTag;
+        if(entry.displayMatrix)captureDisplayErrorOffset(entry,predTarget,0.055);
         if(!entry.recording)drawLiveBadge(entry,'moving',entry.handCoupled);
         return;
       }
@@ -4467,6 +4544,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         const relocDtSec=Math.min(0.65,Math.max(0.05,(atMs-entry.relocPending.atMs)/1000));
         if(pPosMm<=Math.max(28,relocDtSec*1400)&&pAngDeg<=Math.max(15,relocDtSec*160)){
           entry.lockState='moving';
+          entry.lockedSinceMs=0;
           entry.relocPending=null;
           entry.refineSamples=[];
           entry.pendingJump=null;
@@ -4475,6 +4553,9 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
           entry.stillAnchor=lFromTag.slice();
           entry.stillSinceMs=atMs;
           entry.stillSamples=[lFromTag.slice()];
+          if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
+          const predTarget=(Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||lFromTag;
+          if(entry.displayMatrix)captureDisplayErrorOffset(entry,predTarget,0.055);
           if(!entry.recording)drawLiveBadge(entry,'moving',entry.handCoupled);
         }else{
           entry.relocPending={atMs,matrix:lFromTag.slice()};
@@ -4487,7 +4568,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     }
   }
 
-  // --- STATE 3: MOVING -> 90 Hz SLERP/LERP follow + velocity-scaled spike/flip guard + ~450 ms stillness re-lock ---
+  // --- STATE 3: MOVING -> 90 Hz error-decayed predictive follow + velocity-scaled spike/flip guard + ~450 ms stillness re-lock ---
   if(!entry.handCoupled&&conf<0.30)return;
   const skipJumpGuard=entry.skipNextJumpGuardUntilMs>0&&atMs<=entry.skipNextJumpGuardUntilMs;
   if(entry.lastMatrix&&!entry.handCoupled&&!skipJumpGuard){
@@ -4506,11 +4587,9 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
   }
   entry.skipNextJumpGuardUntilMs=0;
 
-  const effBlend=conf>=0.55?Math.max(0.82,conf):conf;
-  const nextPose=(entry.targetMatrix&&effBlend<0.999)?blendRigid(entry.targetMatrix,lFromTag,effBlend):lFromTag.slice();
+  const nextPose=(conf>=0.35||!entry.targetMatrix)?lFromTag.slice():blendRigid(entry.targetMatrix,lFromTag,conf);
   entry.lastMatrix=nextPose.slice();
   entry.targetMatrix=nextPose.slice();
-  if(!entry.displayMatrix)entry.displayMatrix=nextPose.slice();
   if(!entry.handCoupled&&Number.isFinite(targetXrTimeMs)){
     const vel=tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
     if(vel){
@@ -4518,6 +4597,9 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
       if(vel.speedMps>0.01)perfTracker.recordTagSpeed(vel.speedMps,false);
     }
   }
+  const newPred=(Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||nextPose;
+  if(entry.displayMatrix)captureDisplayErrorOffset(entry,newPred,0.048);
+  else{entry.displayMatrix=newPred.slice();resetDisplayErrorOffset(entry);}
 
   // Rolling pre-touch pose ring buffer.
   if(conf>=0.30){
@@ -4544,12 +4626,14 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         if(entry.stillSamples.length>=2&&atMs-entry.stillSinceMs>=450){
           const locked=meanRigid(entry.stillSamples);
           entry.lockState='locked';
+          entry.lockedSinceMs=atMs;
           entry.lockedMatrix=locked.slice();
           entry.lockQuality={decimate,apparentEdgePx,confidence:conf,refineCount:0};
           entry.refineSamples=[];
           entry.displayMatrix=locked.slice();
           entry.targetMatrix=locked.slice();
           entry.lastMatrix=locked.slice();
+          resetDisplayErrorOffset(entry);
           entry.stillAnchor=null;entry.stillSinceMs=null;entry.stillSamples=[];
           entry.lockFlashUntilMs=atMs+400;
           tagPredictor.reset(tagId);
@@ -4721,22 +4805,38 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
         type:'hand-released',tagId:entry.tagId,handedness:pred.prevHand,reason:pred.reason,
         atPerformanceMs:performance.now(),
       });
+      entry.lockState='moving';
+      entry.lockedSinceMs=0;
+      entry.releaseSpeedMps=Math.max(entry.lastSpeedMps||0,0.35);
+      entry.postReleaseBoostUntilMs=now+500;
       entry.pendingTrail.discard();
       entry.pendingJump=null;
       entry.skipNextJumpGuardUntilMs=now+900;
-      const keepRendered=pred.reason==='pinch-opened'&&(pred.opticalAgeMs??Infinity)<=240;
-      const snapPose=keepRendered
-        ?(entry.displayMatrix||pred.lastOpticalPose||entry.lastOpticalMatrix)
-        :(pred.lastOpticalPose||entry.lastOpticalMatrix||entry.lockedMatrix||entry.displayMatrix);
-      tagPredictor.reset(entry.tagId);
-      // Freeze target at the release spot (or snap back to grounded optical pose on timeout/watchdog release so tags never float off in mid-air).
-      if(snapPose){
-        entry.displayMatrix=snapPose.slice();
-        entry.targetMatrix=snapPose.slice();
-        entry.lastMatrix=snapPose.slice();
-        entry.stillAnchor=snapPose.slice();
-        entry.stillSinceMs=now;
-        entry.stillSamples=[snapPose.slice()];
+      const smoothRelease=pred.reason==='pinch-opened'||pred.reason==='hand-pulled-away'||pred.reason==='optical-disagreement';
+      if(smoothRelease){
+        const handoverBase=(Number.isFinite(xrTimeMs)&&tagPredictor.predict(entry.tagId,xrTimeMs))||entry.targetMatrix||entry.displayMatrix;
+        if(handoverBase){
+          if(entry.displayMatrix)captureDisplayErrorOffset(entry,handoverBase,0.095);
+          else{entry.displayMatrix=handoverBase.slice();resetDisplayErrorOffset(entry);}
+          entry.targetMatrix=handoverBase.slice();
+          entry.lastMatrix=handoverBase.slice();
+          entry.stillAnchor=handoverBase.slice();
+          entry.stillSinceMs=now;
+          entry.stillSamples=[handoverBase.slice()];
+        }
+      }else{
+        const snapPose=pred.lastOpticalPose||entry.lastOpticalMatrix||entry.lockedMatrix||entry.displayMatrix;
+        tagPredictor.reset(entry.tagId);
+        resetDisplayErrorOffset(entry);
+        // Snap back to grounded optical pose on timeout/watchdog release so tags never float off in mid-air.
+        if(snapPose){
+          entry.displayMatrix=snapPose.slice();
+          entry.targetMatrix=snapPose.slice();
+          entry.lastMatrix=snapPose.slice();
+          entry.stillAnchor=snapPose.slice();
+          entry.stillSinceMs=now;
+          entry.stillSamples=[snapPose.slice()];
+        }
       }
     }
     const wasCoupled=entry.handCoupled;
@@ -4798,7 +4898,10 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       entry.recHoldSince=null;entry.recHoldConsumed=false;
       if(entry.lockState!=='settling'||entry.lockedMatrix||entry.displayMatrix||entry.currentPose){
         tagPredictor.reset(entry.tagId);
+        resetDisplayErrorOffset(entry);
         entry.lockState='settling';
+        entry.lockedSinceMs=0;
+        entry.lastOpticalXrTimeMs=0;
         entry.lockedMatrix=null;
         entry.displayMatrix=null;
         entry.targetMatrix=null;
@@ -4823,14 +4926,15 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       if(entry.lockState==='locked'&&entry.lockedMatrix){
         // 100% rigid — zero wobble, zero drift.
         entry.displayMatrix=entry.lockedMatrix;
-      }else{
-        const predTarget=(entry.lockState==='moving'&&Number.isFinite(xrTimeMs))
-          ?(tagPredictor.predict(entry.tagId,xrTimeMs)||entry.targetMatrix)
-          :entry.targetMatrix;
+      }else if(entry.lockState==='moving'){
+        const predTarget=(Number.isFinite(xrTimeMs)?tagPredictor.predict(entry.tagId,xrTimeMs):null)||entry.targetMatrix;
         if(predTarget){
-          const conf=entry.targetConfidence??1;
-          const speed=entry.lockState==='moving'?(38.0*Math.max(0.6,conf)):14.0;
-          const alpha=1-Math.exp(-dt*speed);
+          entry.displayMatrix=entry.displayMatrix?applyAndDecayErrorOffset(entry,predTarget,dt):predTarget.slice();
+        }
+      }else{
+        const predTarget=entry.targetMatrix;
+        if(predTarget){
+          const alpha=1-Math.exp(-dt*24.0);
           entry.displayMatrix=entry.displayMatrix?blendRigid(entry.displayMatrix,predTarget,alpha):predTarget.slice();
         }
       }
@@ -5087,7 +5191,7 @@ function clearAllUserItems(){
   clearPins();
   tagHandCoupler.reset();
   tagPredictor.reset();
-  focusSweepCounter=0;focusPartialMissStreak=0;
+  focusScheduler.reset();
   liveTouchLoaderActive=false;
   pinLoadSprite.visible=false;
   for(const e of movableTools.values())disposeMovableEntry(e);
@@ -5110,7 +5214,7 @@ function clearExtras(){
   clearPins();
   tagHandCoupler.reset();
   tagPredictor.reset();
-  focusSweepCounter=0;focusPartialMissStreak=0;
+  focusScheduler.reset();
   handHistory.clear();
   for(const e of movableTools.values())disposeMovableEntry(e);
   for(const extra of placedExtras.values()){
@@ -5656,6 +5760,10 @@ function observeExtraTags(observation,sample,assoc){
   const perimeterMaxRms=Math.min(2.2,staticMaxRms+0.25);
   const farMode=Boolean(lastQualityState.longRangeActive);
   const steadyBoost=lastQualityState.tier!=='fluid'&&!hasActiveMovableTag(atMs);
+  const focusIdsSet=new Set(activeFocusTagIds);
+  if(Array.isArray(sample.settings?.focusTagIds)){
+    for(const id of sample.settings.focusTagIds)focusIdsSet.add(id);
+  }
   const valid=[];
   for(const raw of all){
     if(counts.get(raw.id)!==1)continue;
@@ -5663,7 +5771,9 @@ function observeExtraTags(observation,sample,assoc){
     const generic=isGenericTag(raw.id);
     if(!generic&&staticGate.frozen)continue;
     const existingMov=generic?movableTools.get(raw.id):null;
+    const isFocusedTag=generic&&focusIdsSet.has(raw.id);
     const isTrackedMoving=Boolean(existingMov&&(existingMov.handCoupled||existingMov.recording||existingMov.lockState==='moving'));
+    const relaxFocusGates=isTrackedMoving||isFocusedTag;
     const solved=resolveUnassignedTagPose(
       raw,
       K,
@@ -5671,8 +5781,11 @@ function observeExtraTags(observation,sample,assoc){
         ?{minEdgePx:farMode?8:(steadyBoost?8.5:9),minAreaPx:farMode?64:72,maxRmsPx:perimeterMaxRms,minCosView:0.22,maxDepthM:farMode?3.2:(steadyBoost?2.6:2.2),scaleRmsFactor:0.08}
         :{
           minEdgePx:farMode?9:(steadyBoost?10:11),minAreaPx:farMode?80:(steadyBoost?92:110),
-          maxRmsPx:generic?carriedMaxRms:staticMaxRms,minCosView:0.30,maxDepthM:farMode?3.5:(steadyBoost?2.6:1.95),
-          scaleRmsFactor:isTrackedMoving?0.085:0.055,softFallbackMaxRms:isTrackedMoving?1.45:0.55,
+          maxRmsPx:relaxFocusGates?Math.max(carriedMaxRms,2.8):(generic?carriedMaxRms:staticMaxRms),
+          minCosView:relaxFocusGates?0.22:0.30,
+          maxDepthM:farMode?3.5:(steadyBoost?2.6:1.95),
+          scaleRmsFactor:relaxFocusGates?0.11:0.055,
+          softFallbackMaxRms:relaxFocusGates?2.4:0.55,
         },
     );
     if(!solved)continue;
@@ -5780,6 +5893,7 @@ function observeExtraTags(observation,sample,assoc){
         nearHand,
         allowRefine:!useCarried&&lastQualityState.allowRefine&&staticGate.confidence>=0.72,
         softFallback:v.softFallback,
+        inFocus:focusIdsSet.has(v.tagId),
       });
       continue;
     }
@@ -6520,7 +6634,7 @@ function clean(s){
   if(session!==s)return;
   finalizeDiagnostics();
   space?.removeEventListener?.('reset',reset);
-  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
+  assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
   hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;perimeterOfferSuppressed=false;
   modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';modeColorPokeSince=null;modeColorPokeConsumed=false;modeColorCooldownUntil=0;lastModeColorKey='';turboBarSprite.visible=false;lastTurboBarKey='';
   modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
@@ -6546,7 +6660,7 @@ function clean(s){
 }
 
 function reset(){
-  epoch++;history=[];obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();resetAnchorStability();clearTrail();
+  epoch++;history=[];obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;handHistory.clear();resetAnchorStability();clearTrail();
   anchor.resetReference(space,context(),performance.now());
   if(!anchor.state().created){profile=null;extraScanActive=false;clearExtras();assistant.reset();assistant.begin();}
 }
@@ -6580,10 +6694,12 @@ async function toggleExtraScan(){
   const now=performance.now();
   if(extraScanActive){
     extraScanActive=false;history=[];obsBuffer.clear();capture.stop();
-    tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();
+    tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;activeFocusTagIds.clear();handHistory.clear();
     liveTouchLoaderActive=false;
     for(const e of movableTools.values()){
       e.pendingTrail.discard();
+      resetDisplayErrorOffset(e);
+      e.lockedSinceMs=0;e.lastOpticalXrTimeMs=0;
       if(e.recording){
         e.recording=false;e.lastRecLineMatrix=null;e.lastRecFrameMatrix=null;
         drawRecOrbPill(e,false,false);
@@ -6623,11 +6739,12 @@ async function toggleExtraScan(){
     status('MEASURE mode · camera OFF (90 FPS)');
     showHudToast('■ MEASURE MODE · 90 FPS','#22c55e');
   }else{
-    extraScanActive=true;obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();
+    extraScanActive=true;obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;activeFocusTagIds.clear();handHistory.clear();
     for(const e of movableTools.values()){
       if(e.visible&&e.currentPose){
         e.lastOpticalAtMs=now;
         e.lastAt=now;
+        if(e.lockState==='locked')e.lockedSinceMs=now;
         drawLiveBadge(e,e.lockState);
       }
     }
@@ -6716,86 +6833,108 @@ function buildScanPriorRois(){
   return rois.length?rois:undefined;
 }
 
+function syncFocusLiveBadges(){
+  if(!extraScanActive)return;
+  for(const e of movableTools.values()){
+    if(!e.visible)continue;
+    drawLiveBadge(e,e.recording?'rec':e.lockState,e.handCoupled);
+  }
+}
+
+function setsEqual(a,b){
+  if(a.size!==b.size)return false;
+  for(const v of a)if(!b.has(v))return false;
+  return true;
+}
+
 function buildScanFocusRois(){
-  if(!extraScanActive||!profile?.viewerFromCameraGL)return undefined;
+  if(!extraScanActive||!profile?.viewerFromCameraGL){
+    return {mode:'wide',rois:undefined,tagIds:[],activeTagIds:[],searchingTagIds:[],speedFirst:false,isBackgroundSweep:false,sweepDecimate:2,skipReason:'inactive'};
+  }
   const K=lastObs?.cameraModel||profile?.K;
-  if(!K)return undefined;
+  if(!K){
+    return {mode:'wide',rois:undefined,tagIds:[],activeTagIds:[],searchingTagIds:[],speedFirst:false,isBackgroundSweep:false,sweepDecimate:2,skipReason:'no-camera'};
+  }
   let latest=null;
   for(let i=history.length-1;i>=Math.max(0,history.length-8);i--){
     const h=history[i];
     if(h&&!h.emulatedPosition&&h.worldFromAnchor&&h.worldFromViewer){latest=h;break;}
   }
-  if(!latest)return undefined;
+  if(!latest){
+    return {mode:'wide',rois:undefined,tagIds:[],activeTagIds:[],searchingTagIds:[],speedFirst:false,isBackgroundSweep:false,sweepDecimate:2,skipReason:'no-xr-pose'};
+  }
 
   const now=performance.now();
-  const lFromCam=product(inverse(latest.worldFromAnchor),product(latest.worldFromViewer,profile.viewerFromCameraGL));
-  const camPosL=[lFromCam[12],lFromCam[13],lFromCam[14]];
   const farMode=Boolean(lastQualityState.longRangeActive);
-  // Awareness of the last full-frame detectMs breaks any self-triggering stale->full-frame death spiral.
-  const staleBudgetMs=Math.max(420,(lastSampleStats?.detectMs||0)+220);
+  const tRoi=Number.isFinite(lastXrTime)?lastXrTime+(profile?.timeOffsetMs??-45):null;
+  const viewerAtRoi=(tRoi!=null?poseAt(history,tRoi):null)||latest.worldFromViewer;
   const candidates=[];
-  let hasRecording=false,hasAnyActive=false,hasFreshActive=false;
 
   for(const entry of movableTools.values()){
-    const freshOptical=entry.lastOpticalAtMs>0&&(now-entry.lastOpticalAtMs)<=staleBudgetMs;
+    const freshOptical=entry.lastOpticalAtMs>0&&(now-entry.lastOpticalAtMs)<=1800;
     if(!entry.visible&&!(entry.displayMatrix&&freshOptical))continue;
     const moving=entry.lockState==='moving';
     const settling=entry.lockState==='settling';
-    const isActive=entry.handCoupled||entry.recording||moving;
-    const m=entry.displayMatrix||entry.targetMatrix||entry.lockedMatrix;
-    if(!m)continue;
-    const nearHand=!isActive&&!settling&&Number.isFinite(lastXrTime)&&isTagNearAnyHand(m,lastXrTime,0.25);
-    if(!isActive&&!settling&&!nearHand)continue;
-    if(isActive){
-      hasAnyActive=true;
-      if(entry.recording)hasRecording=true;
+    const locked=entry.lockState==='locked';
+    const baseMat=entry.lockedMatrix||entry.displayMatrix||entry.targetMatrix;
+    if(!baseMat)continue;
+    const nearHand=locked&&!entry.recording&&!entry.handCoupled&&Number.isFinite(lastXrTime)&&isTagNearAnyHand(baseMat,lastXrTime,0.25);
+
+    let predMat=null;
+    if(entry.handCoupled&&tRoi!=null){
+      predMat=tagHandCoupler.predictAt(entry.tagId,handHistory,tRoi);
+    }else if(moving&&tRoi!=null){
+      predMat=tagPredictor.predict(entry.tagId,tRoi);
     }
-    if(!freshOptical)continue;
-    if(isActive)hasFreshActive=true;
-    let pos=[m[12],m[13],m[14]];
-    if(entry.handCoupled&&entry.lastOpticalMatrix&&entry.displayMatrix){
+
+    let pos;
+    if(predMat){
+      pos=[predMat[12],predMat[13],predMat[14]];
+    }else if(entry.handCoupled&&entry.lastOpticalMatrix&&entry.displayMatrix){
       const om=entry.lastOpticalMatrix,dm=entry.displayMatrix;
-      if(Math.hypot(dm[12]-om[12],dm[13]-om[13],dm[14]-om[14])<=0.30){
-        pos=[om[12]*0.15+dm[12]*0.85,om[13]*0.15+dm[13]*0.85,om[14]*0.15+dm[14]*0.85];
-      }
+      pos=Math.hypot(dm[12]-om[12],dm[13]-om[13],dm[14]-om[14])<=0.30
+        ?[om[12]*0.45+dm[12]*0.55,om[13]*0.45+dm[13]*0.55,om[14]*0.45+dm[14]*0.55]
+        :[dm[12],dm[13],dm[14]];
+    }else{
+      const m=entry.displayMatrix||entry.targetMatrix||entry.lockedMatrix;
+      pos=[m[12],m[13],m[14]];
     }
-    const distToCameraM=Math.hypot(pos[0]-camPosL[0],pos[1]-camPosL[1],pos[2]-camPosL[2]);
-    const spd=Math.max(entry.lastSpeedMps||0,tagPredictor.speedOf(entry.tagId)?.speedMps||0);
-    const halfPx=Math.min(240,Math.max(110,Math.round((entry.lastApparentEdgePx||44)*2.2+Math.min(130,spd*165))));
+
+    const releaseBoost=entry.postReleaseBoostUntilMs>0&&now<=entry.postReleaseBoostUntilMs;
+    const spd=Math.max(entry.lastSpeedMps||0,tagPredictor.speedOf(entry.tagId)?.speedMps||0,releaseBoost?(entry.releaseSpeedMps||0.35):0);
+    const baseHalfPx=Math.round((entry.lastApparentEdgePx||44)*1.9+Math.min(115,spd*130));
+    const halfPx=Math.min(220,Math.max(releaseBoost?140:96,baseHalfPx+(releaseBoost?40:0)));
     candidates.push({
       tagId:entry.tagId,
       pos,
       halfPx,
       minDistM:0.10,
-      maxDistM:farMode?2.4:1.75,
+      maxDistM:farMode?2.50:1.85,
       recording:entry.recording,
       handCoupled:entry.handCoupled,
       moving,
       settling,
+      nearHand,
+      locked,
+      stillDurationMs:locked&&entry.lockedSinceMs>0?Math.max(0,now-entry.lockedSinceMs):0,
+      lastOpticalAtMs:entry.lastOpticalAtMs||0,
+      speedMps:spd,
       apparentEdgePx:entry.lastApparentEdgePx||0,
-      distToCameraM,
     });
   }
 
-  if(hasAnyActive&&!hasFreshActive)return undefined;
-  const chosen=prioritizeFocusCandidates(candidates,{maxCount:3});
-  if(!chosen.length)return undefined;
-  if(focusPartialMissStreak>=2)return undefined;
-  // Pure check: focusSweepCounter only advances on real completed observations in onObservation.
-  const sweepEvery=hasRecording?30:(hasAnyActive?20:12);
-  if(focusSweepCounter>=sweepEvery)return undefined;
-
-  const rois=projectPriorRois({
-    pointsL:chosen,
+  return focusScheduler.plan({
+    candidates,
     worldFromAnchor:latest.worldFromAnchor,
-    worldFromViewer:latest.worldFromViewer,
+    worldFromViewer:viewerAtRoi,
     viewerFromCameraGL:profile.viewerFromCameraGL,
     K,
     width:K.width,
     height:K.height,
-    maxRois:chosen.length,
+    nowMs:now,
+    farMode,
+    recentDetectMs:recentFocusDetectMs,
   });
-  return rois.length?rois:undefined;
 }
 
 try{
@@ -6841,16 +6980,27 @@ try{
         };
       }
       const fast=Boolean(extraScanActive&&$('fastScan')?.checked);
-      if(!fast){scanPulseCounter=0;focusSweepCounter=0;focusPartialMissStreak=0;}
+      if(!fast){
+        scanPulseCounter=0;focusScheduler.reset();
+        if(activeFocusTagIds.size){activeFocusTagIds.clear();syncFocusLiveBadges();}
+      }
       const activeMoving=fast&&hasActiveMovableTag();
-      const focusRois=fast?buildScanFocusRois():undefined;
-      const priorRois=(fast&&!focusRois&&!activeMoving)?buildScanPriorRois():undefined;
-      const effDecimate=focusRois?2:(activeMoving?2:(fast?q.scanDecimate:1));
-      const effMaxHz=focusRois?28:(activeMoving?Math.max(10,q.scanMaxHz):(fast?q.scanMaxHz:5));
+      const focusPlan=fast?buildScanFocusRois():{mode:'wide',rois:undefined,tagIds:[],activeTagIds:[],searchingTagIds:[],speedFirst:false,isBackgroundSweep:false,sweepDecimate:2,skipReason:'fast-off'};
+      const focusRois=focusPlan.rois;
+      const priorRois=(fast&&!focusRois&&!focusPlan.isBackgroundSweep&&!activeMoving)?buildScanPriorRois():undefined;
+      const effDecimate=focusRois?2:(focusPlan.isBackgroundSweep?focusPlan.sweepDecimate:(activeMoving?3:(fast?q.scanDecimate:1)));
+      const effMaxHz=focusRois?60:(focusPlan.isBackgroundSweep?60:(activeMoving?30:(fast?Math.max(12,q.scanMaxHz):5)));
       return {
         horizontalFovDeg:65,printScale:1,maxLongEdge:1280,experimentalCalibration:profile,
         decimate:effDecimate,maxHz:effMaxHz,detectMode:fast?q.detectMode:'full',trackRefIds:null,solveUnassigned:Boolean(profile),
         priorRois,focusRois,
+        ...(focusRois?{focusSpeedFirst:focusPlan.speedFirst,focusFallbackDecimate:3}:null),
+        focusMode:focusPlan.mode,
+        focusIsBackgroundSweep:focusPlan.isBackgroundSweep,
+        focusSearchingTagIds:focusPlan.searchingTagIds,
+        focusTagIds:focusPlan.tagIds,
+        focusActiveTagIds:focusPlan.activeTagIds,
+        focusSkipReason:focusPlan.skipReason,
       };
     },
     onError:e=>{diagnostics?.errors.push({at:performance.now(),message:e.message});status(e.message);},
@@ -6869,28 +7019,55 @@ try{
       const cap=sample.videoFrameMetadata?.captureTime;
       const lag=Number.isFinite(cap)?sample.submittedAtPerformanceMs-cap:null;
       const curPhase=assistant?.phase?.()??'idle';
+      const sampleFocusTagIds=Array.isArray(sample.settings?.focusTagIds)?sample.settings.focusTagIds:[];
+      const sampleFocusMode=sample.settings?.focusMode??'wide';
+      const sampleIsBgSweep=Boolean(sample.settings?.focusIsBackgroundSweep);
+      const sampleSearchingIds=Array.isArray(sample.settings?.focusSearchingTagIds)?sample.settings.focusSearchingTagIds:[];
       lastSampleStats={
         serial:sample.serial,decimate:sample.decimate,detectMode:sample.detectMode??null,
         coarseMs:sample.coarseMs??null,roiMs:sample.roiMs??null,roiCount:sample.roiCount??null,priorRoiCount:sample.priorRoiCount??0,
         focusRoiCount:sample.focusRoiCount??0,focusHit:Boolean(sample.focusHit),focusMissedBoxes:sample.focusMissedBoxes??0,
+        focusTagIds:sampleFocusTagIds,focusMode:sampleFocusMode,isBackgroundSweep:sampleIsBgSweep,
+        searchingTagIds:sampleSearchingIds,focusSpeedFirst:Boolean(sample.settings?.focusSpeedFirst),
+        focusSkipReason:sample.settings?.focusSkipReason??null,
         detectMs:sample.detectMs,readbackMs:sample.mainThreadReadbackMs,
         preprocessMs:sample.workerPreprocessMs,poseFitMs:sample.poseFitMs,captureLagMs:lag,capturedInRvfc:sample.capturedInRvfc,
         readbackMode:sample.readbackMode,metadataMediaTimeDeltaS:sample.metadataMediaTimeDeltaS,
         mode:curPhase!=='ready'?'calibrating':(extraScanActive?'scan':'measure'),
       };
       if(extraScanActive){
-        if((sample.focusRoiCount??0)>0&&sample.focusHit){
-          focusSweepCounter++;
-          if((sample.focusMissedBoxes??0)>0)focusPartialMissStreak++;
-          else focusPartialMissStreak=0;
-        }else{
-          focusSweepCounter=0;
-          focusPartialMissStreak=0;
+        const isFocusFrame=(sample.focusRoiCount??0)>0;
+        const seenRawIds=new Set((observation.unassignedDetections||[]).map(d=>d.id));
+        if(isFocusFrame&&sample.focusHit&&Number.isFinite(sample.detectMs)){
+          recentFocusDetectMs=recentFocusDetectMs*0.65+sample.detectMs*0.35;
         }
-        if((sample.focusRoiCount??0)===0&&smoothedHeadAngDegS<22)scanPulseCounter++;
+        focusScheduler.reportObservation({
+          seenIds:seenRawIds,
+          focusTagIds:sampleFocusTagIds,
+          isFocusFrame,
+          isBackgroundSweep:sampleIsBgSweep,
+          focusHit:Boolean(sample.focusHit),
+          nowMs:now,
+        });
+        let nextFocusIds;
+        if(sampleFocusMode==='wide'){
+          nextFocusIds=new Set();
+        }else if(isFocusFrame&&sample.focusHit){
+          nextFocusIds=new Set(sampleFocusTagIds.filter(id=>seenRawIds.has(id)));
+        }else if(sampleIsBgSweep){
+          nextFocusIds=new Set(sampleFocusTagIds.filter(id=>seenRawIds.has(id)||activeFocusTagIds.has(id)));
+        }else{
+          nextFocusIds=new Set();
+        }
+        if(!setsEqual(activeFocusTagIds,nextFocusIds)){
+          activeFocusTagIds=nextFocusIds;
+          syncFocusLiveBadges();
+        }
+        if(!isFocusFrame&&smoothedHeadAngDegS<22)scanPulseCounter++;
         else if(smoothedHeadAngDegS>=22)scanPulseCounter=0;
       }else{
-        focusSweepCounter=0;focusPartialMissStreak=0;scanPulseCounter=0;
+        focusScheduler.reset();recentFocusDetectMs=15;scanPulseCounter=0;
+        if(activeFocusTagIds.size)activeFocusTagIds.clear();
       }
       if(diagnostics){
         if(diagnostics.samples.length<340)diagnostics.samples.push(lastSampleStats);
@@ -7079,7 +7256,7 @@ try{
       }
 
       session=acquired;sessionId=`quest-${++sessionCount}`;epoch=0;history=[];obsBuffer.clear();clearExtras();clearTrail();resetSpatialPortals();audit.reset();
-      hold={sinceMs:null,progress:0,fire:false};extraScanActive=false;reanchorConfirmUntil=0;scanPulseCounter=0;focusSweepCounter=0;focusPartialMissStreak=0;tagPredictor.reset();
+      hold={sinceMs:null,progress:0,fire:false};extraScanActive=false;reanchorConfirmUntil=0;scanPulseCounter=0;recentFocusDetectMs=15;tagPredictor.reset();focusScheduler.reset();
       adaptiveQuality.setMode(currentQualityMode());
       adaptiveQuality.setLongRange(currentLongRangeEnabled());
       adaptiveQuality.reset();

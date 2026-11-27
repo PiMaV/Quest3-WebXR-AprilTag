@@ -206,6 +206,7 @@ export function createTagHandCoupler(options?: Record<string, number>): {
     opticalConfidence?: number;
   }): Record<string, unknown>;
   predict(tagId: number, handHistory: ReturnType<typeof createHandHistory>, nowXrTimeMs: number): Record<string, unknown>;
+  predictAt(tagId: number, handHistory: ReturnType<typeof createHandHistory>, targetXrTimeMs: number): Matrix4Array | null;
   isHandCarrying(handedness: 'left' | 'right', tagId?: number | null): boolean;
   stateOf(tagId: number): { mode: string; handedness: 'left' | 'right' | null; gripKind: string | null; leverArmM?: number };
   reset(tagId?: number | null): void;
@@ -316,9 +317,83 @@ export function smoothAxisTail(
 export const TAG_PREDICTOR_DEFAULTS: Readonly<Record<string, number>>;
 export function createTagMotionPredictor(options?: Record<string, number>): {
   observe(tagId: number, lFromTag: Matrix4Array, obsTimeMs: number): { speedMps: number; angDegPerSec: number } | null;
+  seed(
+    tagId: number,
+    lFromTag: Matrix4Array,
+    obsTimeMs: number,
+    opts?: { velL?: Vec3 | null; angLocal?: Vec3 | null },
+  ): { speedMps: number; angDegPerSec: number } | null;
   predict(tagId: number, nowTimeMs: number): Matrix4Array | null;
   speedOf(tagId: number): { speedMps: number; angDegPerSec: number } | null;
   reset(tagId?: number | null): void;
+};
+
+// src/focus-scheduler.mjs
+export const FOCUS_SCHEDULER_DEFAULTS: Readonly<Record<string, number>>;
+export interface FocusSchedulerCandidate {
+  tagId: number;
+  pos: Vec3;
+  halfPx?: number;
+  minDistM?: number;
+  maxDistM?: number;
+  recording?: boolean;
+  handCoupled?: boolean;
+  moving?: boolean;
+  settling?: boolean;
+  nearHand?: boolean;
+  locked?: boolean;
+  stillDurationMs?: number;
+  lastOpticalAtMs?: number;
+  speedMps?: number;
+  apparentEdgePx?: number;
+}
+export interface FocusSchedulerPlan {
+  mode: 'single-focus' | 'multi-focus' | 'wide';
+  rois: [number, number, number, number][] | undefined;
+  tagIds: number[];
+  activeTagIds: number[];
+  searchingTagIds: number[];
+  speedFirst: boolean;
+  isBackgroundSweep: boolean;
+  sweepDecimate: 1 | 1.5 | 2 | 3 | 4;
+  skipReason: string | null;
+}
+export function projectTagGazeMetrics(
+  posL: Vec3,
+  camGLFromL: Matrix4Array,
+  K: { fx: number; fy: number; cx: number; cy: number },
+  width: number,
+  height: number,
+): { inFrustum: boolean; angleDeg: number; distM: number; u: number; v: number; zCV: number };
+export function createFocusScheduler(options?: Record<string, number>): {
+  plan(input?: {
+    candidates?: FocusSchedulerCandidate[];
+    worldFromAnchor?: Matrix4Array | null;
+    worldFromViewer?: Matrix4Array | null;
+    viewerFromCameraGL?: Matrix4Array | null;
+    K?: { fx: number; fy: number; cx: number; cy: number } | null;
+    width?: number;
+    height?: number;
+    nowMs?: number;
+    farMode?: boolean;
+    recentDetectMs?: number;
+  }): FocusSchedulerPlan;
+  reportObservation(input?: {
+    seenIds?: Iterable<number>;
+    focusTagIds?: number[];
+    isFocusFrame?: boolean;
+    isBackgroundSweep?: boolean;
+    focusHit?: boolean;
+    nowMs?: number;
+  }): void;
+  reset(): void;
+  state(): {
+    mode: 'single-focus' | 'multi-focus' | 'wide';
+    primaryTagId: number | null;
+    slotIds: number[];
+    lastSweepAtMs: number;
+    partialMissStreak: number;
+  };
 };
 
 // src/version.mjs

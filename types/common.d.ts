@@ -218,13 +218,15 @@ export interface CameraSettings {
   printScale?: number;
   maxLongEdge?: number;
   maxHz?: number;
-  decimate?: 1 | 1.5 | 2;
+  decimate?: 1 | 1.5 | 2 | 3 | 4;
   detectMode?: 'full' | 'two-stage' | 'fast';
   trackRefIds?: number[] | null;
   solveUnassigned?: boolean;
   unassignedTagEdgeMm?: UnassignedTagEdgeSpec | null;
   priorRois?: [number, number, number, number][];
   focusRois?: [number, number, number, number][];
+  focusSpeedFirst?: boolean;
+  focusFallbackDecimate?: 1 | 1.5 | 2 | 3 | 4;
   experimentalCalibration?: CalibrationProfile | null;
 }
 
@@ -233,7 +235,7 @@ export interface CameraSample {
   generation: number;
   context: XrContext;
   mainThreadReadbackMs: number;
-  decimate: 1 | 1.5 | 2;
+  decimate: 1 | 1.5 | 2 | 3 | 4;
   cameraModel: CameraIntrinsics;
   geometry: RigDefinition;
   submittedAtPerformanceMs: number;
@@ -274,7 +276,7 @@ export interface CameraState {
   resizeModeFallback: boolean;
   lastError: { name: string; message: string; constraint: string | null } | null;
   rvfcStalled: boolean;
-  decimate: 1 | 1.5 | 2;
+  decimate: 1 | 1.5 | 2 | 3 | 4;
   detectMode: string;
   frameStalled: boolean;
   evidenceAgeMs: number | null;

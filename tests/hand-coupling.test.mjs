@@ -146,6 +146,15 @@ test('pinched 20 mm card couples accurately despite 140 ms camera lag and releas
   const errMm=Math.hypot(pred.lFromTag[12]-truth1294[12],pred.lFromTag[13]-truth1294[13],pred.lFromTag[14]-truth1294[14])*1000;
   assert.ok(errMm<1.0,`expected < 1 mm lag-free prediction error, got ${errMm.toFixed(2)} mm`);
 
+  // Read-only predictAt() resolves historical capture-time pose without mutating state or releasing.
+  const histPose=coupler.predictAt(300,hh,1210);
+  assert.ok(histPose&&isRigidPose(histPose));
+  const truth1210=product(hh.sampleAt('right',1210).lFromHand,offset);
+  assert.ok(Math.hypot(histPose[12]-truth1210[12],histPose[13]-truth1210[13],histPose[14]-truth1210[14])*1000<1.0);
+  assert.equal(coupler.isHandCarrying('right',300),true);
+  assert.equal(coupler.predictAt(300,hh,500),null); // before history window -> null without releasing
+  assert.equal(coupler.isHandCarrying('right',300),true);
+
   // User opens fingers (pinch gap jumps from 18 mm -> 58 mm) and pulls fingertips back -> instant 0-ms release!
   hh.push(makeHandAt(handPoseAt(1511),1511,'right',{pinchGapM:0.058,fingerOffsetZ:-0.03}));
   const rel=coupler.predict(300,hh,1511);

@@ -45,15 +45,15 @@ export interface AprilTagDetectionRun {
 }
 
 export interface AprilTagDetector {
-  setDecimate(next: 1 | 1.5 | 2): void;
-  setOptions(opts?: { decimate?: 1 | 1.5 | 2; refineEdges?: boolean | number }): void;
+  setDecimate(next: 1 | 1.5 | 2 | 3 | 4): void;
+  setOptions(opts?: { decimate?: 1 | 1.5 | 2 | 3 | 4; refineEdges?: boolean | number }): void;
   detect(gray: Uint8Array, width: number, height: number): RawMarker[];
   detectTwoStage(
     gray: Uint8Array,
     width: number,
     height: number,
     opts?: {
-      coarseDecimate?: 1 | 1.5 | 2;
+      coarseDecimate?: 1 | 1.5 | 2 | 3 | 4;
       padFrac?: number;
       minPadPx?: number;
       maxRois?: number;
@@ -77,6 +77,9 @@ export interface AprilTagDetector {
       maxRois?: number;
       maxTotalAreaFrac?: number;
       coarseAreaThreshold?: number;
+      speedFirst?: boolean;
+      speedSmallAreaThreshold?: number;
+      allowFullFallback?: boolean;
       fallbackOpts?: Record<string, unknown>;
     },
   ): AprilTagDetectionRun;
@@ -87,4 +90,4 @@ export function prioritizeFocusCandidates<T extends FocusCandidate>(
   candidates: T[],
   options?: { maxCount?: number; siblingRadiusM?: number },
 ): T[];
-export function createAprilTagDetector(wasm: unknown, decimate?: 1 | 1.5 | 2): AprilTagDetector;
+export function createAprilTagDetector(wasm: unknown, decimate?: 1 | 1.5 | 2 | 3 | 4): AprilTagDetector;

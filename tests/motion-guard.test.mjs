@@ -145,6 +145,11 @@ test('CARRIED_MOTION_GATE_DEFAULTS keeps walking handheld tags active while free
   assert.equal(walk.frozen,false);
   assert.ok(walk.confidence>0.75,`expected carried walk confidence > 0.75, got ${walk.confidence}`);
 
+  // Following a rolling object with a natural 60-65 deg/s head pan must stay above the 0.30 optical drop floor.
+  const panFollow=evaluateMotionGate({angDegPerSec:65,linMPerSec:0.15},{source:'xr-history'},CARRIED_MOTION_GATE_DEFAULTS);
+  assert.equal(panFollow.frozen,false);
+  assert.ok(panFollow.confidence>=0.35,`expected pan-follow confidence >= 0.35, got ${panFollow.confidence}`);
+
   const whip=evaluateMotionGate({angDegPerSec:110,linMPerSec:0.40},{source:'xr-history'},CARRIED_MOTION_GATE_DEFAULTS);
   assert.equal(whip.frozen,true);
   assert.equal(whip.confidence,0);

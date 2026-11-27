@@ -641,6 +641,14 @@ export function createTagHandCoupler(options={}){
     };
   }
 
+  function predictAt(tagId,handHistory,targetXrTimeMs){
+    const st=states.get(tagId);
+    if(!st||st.mode!=='coupled'||!st.handFromTag||!handHistory||!Number.isFinite(targetXrTimeMs))return null;
+    const hSample=handHistory.sampleAt(st.handedness,targetXrTimeMs);
+    if(!hSample||hSample.frameKind!==st.frameKind)return null;
+    return product(hSample.lFromHand,st.handFromTag);
+  }
+
   function isHandCarrying(handedness,tagId=null){
     if(tagId!=null){
       const st=states.get(tagId);
@@ -663,5 +671,5 @@ export function createTagHandCoupler(options={}){
     else states.clear();
   }
 
-  return {observeOptical,predict,isHandCarrying,stateOf,reset};
+  return {observeOptical,predict,predictAt,isHandCarrying,stateOf,reset};
 }
