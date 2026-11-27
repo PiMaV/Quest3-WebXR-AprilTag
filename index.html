@@ -307,6 +307,15 @@
       white-space: nowrap;
     }
 
+    .hero-meta a {
+      transition: color 0.16s ease, opacity 0.16s ease;
+    }
+
+    .hero-meta a:hover, .hero-meta a:focus-visible {
+      color: var(--dampf);
+      opacity: 1;
+    }
+
     .targets-row {
       margin-top: 18px;
       display: grid;
@@ -564,7 +573,7 @@
             <p class="hero-sub"><strong>Hand tracking first. Controllers optional.</strong> · No Unity. No installation. Open source.</p>
             <p class="hero-pitch">Attach a tag. Move the object. Track it in 3D. Real objects. Real motion. Real coordinates. <em>Tangible Mixed Reality meets spatial measurement.</em></p>
           </div>
-          <p class="hero-meta">Apache-2.0 · Zero build step</p>
+          <p class="hero-meta">Apache-2.0 · Zero build step · <a href="./examples/minimal.html">Dev MWE →</a></p>
         </div>
 
         <div class="targets-row" id="markers" aria-label="1:1 calibration targets">
@@ -643,6 +652,8 @@
         </div>
 
         <div class="doc-pills">
+          <a class="doc-pill" href="./examples/minimal.html">Minimal Starter (MWE) →</a>
+          <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/examples/minimal.mjs" target="_blank" rel="noopener">MWE Source (minimal.mjs) ↗</a>
           <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/architecture.md" target="_blank" rel="noopener">How It Works &amp; Architecture ↗</a>
           <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/controls.md" target="_blank" rel="noopener">Controls (SCAN / MEASURE) ↗</a>
           <a class="doc-pill" href="https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/main/docs/benchmarks.md" target="_blank" rel="noopener">Benchmarks &amp; Scope ↗</a>

@@ -187,17 +187,20 @@ Zero build step required (Node `>= 22` for automated tests and the zero-dependen
 # 1. Run automated tests
 npm test
 
-# 2. Start the zero-dependency static server (serves index.html at /)
-npm run serve
+# 2. Start the LAN static server on 0.0.0.0:8765 (serves / , /examples/quest.html , /examples/minimal.html)
+npm run serve:lan
+# Equivalent to:
+node scripts/serve.mjs --host 0.0.0.0 --port 8765
 
-# Optional: serve under a subpath (production serves at the domain root q3.mess.engineering)
+# For Quest Browser Secure Context over LAN HTTPS with your own certificate:
+node scripts/serve.mjs --cert cert.pem --key key.pem --host 0.0.0.0 --port 8765
+
+# Optional: localhost-only server (127.0.0.1:8443) or subpath (--base /Quest3-WebXR-AprilTag)
+npm run serve
 node scripts/serve.mjs --base /Quest3-WebXR-AprilTag
 
-# 3a. Meta Quest 3 over USB (localhost is a Secure Context, no TLS cert needed)
+# Optional: USB tunnel when using localhost:8443 instead of LAN
 adb reverse tcp:8443 tcp:8443
 # Open in Meta Quest Browser: http://localhost:8443/examples/quest.html
 # Or minimal starter:         http://localhost:8443/examples/minimal.html
-
-# 3b. Or serve over LAN HTTPS with your own certificate
-node scripts/serve.mjs --cert cert.pem --key key.pem --host 0.0.0.0 --port 8443
 ```

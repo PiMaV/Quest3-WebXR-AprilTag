@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Standalone zero-dependency static server for Quest 3 WebXR testing.
 // Usage:
-//   npm run serve                                     (http://127.0.0.1:8443 for adb reverse -> http://localhost:8443)
+//   npm run serve:lan                                 (http://0.0.0.0:8765 for LAN / Quest 3 access)
+//   npm run serve                                     (http://127.0.0.1:8443 for localhost / adb reverse)
 //   node scripts/serve.mjs --base /Quest3-WebXR-AprilTag
-//   node scripts/serve.mjs --cert c.pem --key k.pem --host 0.0.0.0 --port 8443
+//   node scripts/serve.mjs --cert c.pem --key k.pem --host 0.0.0.0 --port 8765
 import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
@@ -89,10 +90,15 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
     const proto=useTls?'https':'http';
     const basePath=opts.base?`${opts.base}/`:'/';
     console.log(`Quest3-WebXR-AprilTag server running at ${proto}://${opts.host}:${opts.port}${basePath}`);
-    console.log(`Quest demo: ${proto}://${opts.host}:${opts.port}${opts.base}/examples/quest.html`);
+    console.log(`Quest demo:      ${proto}://${opts.host}:${opts.port}${opts.base}/examples/quest.html`);
+    console.log(`Minimal starter: ${proto}://${opts.host}:${opts.port}${opts.base}/examples/minimal.html`);
     if(!useTls){
-      console.log(`For Meta Quest 3 over USB: adb reverse tcp:${opts.port} tcp:${opts.port}`);
-      console.log(`Then open in Quest Browser: http://localhost:${opts.port}${opts.base}/examples/quest.html`);
+      if(opts.host==='127.0.0.1'||opts.host==='localhost'){
+        console.log(`For Meta Quest 3 over USB: adb reverse tcp:${opts.port} tcp:${opts.port}`);
+        console.log(`Then open in Quest Browser: http://localhost:${opts.port}${opts.base}/examples/quest.html`);
+      }else{
+        console.log(`LAN access: http://<LAN-IP>:${opts.port}${opts.base}/ (pass --cert <pem> --key <pem> for HTTPS)`);
+      }
     }
   });
 }

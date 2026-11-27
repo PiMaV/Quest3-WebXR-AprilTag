@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.3.0] - 2026-11-27
+
+### Added
+- **Homepage Dev MWE Entry & LAN Server Shortcut:** Added subtle `Dev MWE →` link and `Minimal Starter (MWE)` / `MWE Source (minimal.mjs)` doc pills to [`index.html`](index.html), `← Home` and `View minimal.mjs ↗` links to [`examples/minimal.html`](examples/minimal.html), `npm run serve:lan` (`--host 0.0.0.0 --port 8765`) in [`package.json`](package.json) and [`scripts/serve.mjs`](scripts/serve.mjs), and updated local LAN dev documentation in [`docs/architecture.md`](docs/architecture.md).
+
+### Fixed
+- **Perimeter Fence Missing-in-View Pruning:** Pruned disappeared perimeter fence markers when missing inside the camera view ([`src/perimeter-fence.mjs`](src/perimeter-fence.mjs), [`examples/quest.mjs`](examples/quest.mjs)).
+
+---
+
 ## [1.2.0] - 2026-11-27
 
 ### Added
