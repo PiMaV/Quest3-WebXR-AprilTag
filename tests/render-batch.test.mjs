@@ -468,3 +468,85 @@ test('createInstancedPool alertAttribute isolates shared geometry, packs aAlert 
   sharedGeo.dispose();
   mat.dispose();
 });
+
+test('createPathTubeMesh supports vertexColors + aDash attributes and zero-position syncColors / syncOutsideFlags', () => {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
+  const tube = createPathTubeMesh(16, mat, {
+    radius: 0.0015,
+    sides: 5,
+    vertexColors: true,
+    dashAttribute: true,
+    renderOrder: 2,
+    name: 'test-colored-dashed-tube',
+  });
+
+  const colAttr = tube.mesh.geometry.getAttribute('color');
+  const dashAttr = tube.mesh.geometry.getAttribute('aDash');
+  const posAttr = tube.mesh.geometry.getAttribute('position');
+  assert.ok(colAttr, 'color attribute must exist');
+  assert.ok(dashAttr, 'aDash attribute must exist');
+
+  const pts = new Float32Array(16 * 3);
+  const cols = new Float32Array(16 * 3);
+  const outside = new Uint8Array(16);
+  // 4 collinear points spaced 0.03 m along +X
+  for (let i = 0; i < 4; i++) {
+    pts[i * 3] = i * 0.03;
+    cols[i * 3] = i * 0.25;
+    cols[i * 3 + 1] = 0.5;
+    cols[i * 3 + 2] = 1 - i * 0.25;
+    outside[i] = i >= 2 ? 1 : 0;
+  }
+
+  assert.equal(tube.syncFromPositions(pts, 3, { colors: cols, outsideFlags: outside, fromIndex: 0 }), 2);
+  assert.equal(tube.syncFromPositions(pts, 4, { colors: cols, outsideFlags: outside, fromIndex: 2 }), 3);
+
+  const colArr = colAttr.array;
+  const dashArr = dashAttr.array;
+  // Ring 2 color replicated across all 5 ring vertices
+  for (let s = 0; s < 5; s++) {
+    const off = (2 * 5 + s) * 3;
+    assert.ok(Math.abs(colArr[off] - 0.5) < 1e-6);
+    assert.ok(Math.abs(colArr[off + 1] - 0.5) < 1e-6);
+    assert.ok(Math.abs(colArr[off + 2] - 0.5) < 1e-6);
+  }
+  // Ring 3 cumulative arc length = 0.09 m, outside flag = 1
+  for (let s = 0; s < 5; s++) {
+    const dOff = (3 * 5 + s) * 2;
+    assert.ok(Math.abs(dashArr[dOff] - 0.09) < 1e-5);
+    assert.equal(dashArr[dOff + 1], 1);
+  }
+  // Ring 1 outside flag = 0, arc length = 0.03 m
+  assert.ok(Math.abs(dashArr[5 * 2] - 0.03) < 1e-5);
+  assert.equal(dashArr[5 * 2 + 1], 0);
+
+  // syncColors must update color buffer without touching position.version or aDash.version
+  const posVerBefore = posAttr.version;
+  const dashVerBefore = dashAttr.version;
+  const colVerBefore = colAttr.version;
+  const nextCols = new Float32Array(16 * 3);
+  for (let i = 0; i < 4; i++) {
+    nextCols[i * 3] = 0.9;
+    nextCols[i * 3 + 1] = 0.2;
+    nextCols[i * 3 + 2] = 0.1;
+  }
+  assert.equal(tube.syncColors(nextCols, 4), 4);
+  assert.equal(posAttr.version, posVerBefore, 'syncColors must not mark position dirty');
+  assert.equal(dashAttr.version, dashVerBefore, 'syncColors must not mark aDash dirty');
+  assert.ok(colAttr.version > colVerBefore);
+  assert.ok(Math.abs(colArr[3 * 5 * 3] - 0.9) < 1e-6);
+
+  // syncOutsideFlags must update aDash.y while preserving arc lengths and not touching position/color
+  const colVerBeforeFlags = colAttr.version;
+  const flipped = new Uint8Array([1, 1, 0, 0]);
+  assert.equal(tube.syncOutsideFlags(flipped, 4), 4);
+  assert.equal(posAttr.version, posVerBefore);
+  assert.equal(colAttr.version, colVerBeforeFlags);
+  assert.ok(dashAttr.version > dashVerBefore);
+  assert.ok(Math.abs(dashArr[3 * 5 * 2] - 0.09) < 1e-5, 'arc length must be preserved');
+  assert.equal(dashArr[3 * 5 * 2 + 1], 0);
+  assert.equal(dashArr[1], 1);
+
+  tube.dispose();
+  mat.dispose();
+});

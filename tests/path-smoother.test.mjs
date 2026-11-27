@@ -9,6 +9,9 @@ import {
   RIBBON_SPEED_DEFAULTS,
   speedToRibbonHalfWidth,
   speedToHeatColor,
+  TURBO_SPEED_DEFAULTS,
+  turboColormap,
+  speedToTurboColor,
 } from '../src/path-smoother.mjs';
 import {isRigidPose} from '../src/anchor.mjs';
 import {vectorRigid} from '../src/runtime.mjs';
@@ -153,4 +156,46 @@ test('smoothAxisTail preserves unit vectors, pins endpoints, and skips filtering
   const flipOut=new Float32Array(flipRaw.length);
   smoothAxisTail(flipRaw,flipOut,3);
   assert.ok(Math.abs(flipOut[3]-(-1))<1e-6&&Math.abs(flipOut[4])<1e-6);
+});
+
+test('turboColormap and speedToTurboColor map 0..600 mm/s across official Google Turbo stops with clamping and out reuse',()=>{
+  assert.equal(TURBO_SPEED_DEFAULTS.refSpeedMps,0.60);
+
+  const outBuf=new Float32Array(3);
+  const c0=turboColormap(0);
+  const cLow=turboColormap(0,outBuf);
+  assert.equal(cLow,outBuf);
+  // t=0 (#30123b indigo)
+  assert.ok(Math.abs(cLow[0]-0.18995)<1e-5);
+  assert.ok(Math.abs(cLow[1]-0.07176)<1e-5);
+  assert.ok(Math.abs(cLow[2]-0.23217)<1e-5);
+
+  // Key intermediate stops
+  const cCyan=turboColormap(0.25);
+  assert.ok(cCyan[2]>0.9&&cCyan[1]>0.7&&cCyan[0]<0.2,'t=0.25 must be bright cyan-blue');
+  const cLime=turboColormap(0.50);
+  assert.ok(cLime[1]>0.95&&cLime[0]>0.6&&cLime[2]<0.3,'t=0.50 must be lime green-yellow');
+  const cOrange=turboColormap(0.75);
+  assert.ok(cOrange[0]>0.95&&cOrange[1]>0.45&&cOrange[1]<0.55&&cOrange[2]<0.2,'t=0.75 must be vivid orange');
+
+  // t=1 (#7a0403 deep crimson)
+  const cHigh=turboColormap(1);
+  assert.ok(Math.abs(cHigh[0]-0.47960)<1e-5);
+  assert.ok(Math.abs(cHigh[1]-0.01583)<1e-5);
+  assert.ok(Math.abs(cHigh[2]-0.01055)<1e-5);
+
+  // Clamping & non-finite guards
+  assert.deepEqual(turboColormap(-0.5),c0);
+  assert.deepEqual(turboColormap(NaN),c0);
+  assert.deepEqual(turboColormap(Infinity),c0);
+  assert.deepEqual(turboColormap(2.5),cHigh);
+
+  // Speed mapping at 0, 300 mm/s, 600 mm/s, >600 mm/s, and custom refSpeedMps
+  assert.deepEqual(speedToTurboColor(0),c0);
+  assert.deepEqual(speedToTurboColor(0.30),cLime);
+  assert.deepEqual(speedToTurboColor(0.60),cHigh);
+  assert.deepEqual(speedToTurboColor(1.50),cHigh);
+  const reused=speedToTurboColor(0.5,{refSpeedMps:1.0,out:outBuf});
+  assert.equal(reused,outBuf);
+  assert.ok(Math.abs(reused[1]-cLime[1])<1e-6);
 });

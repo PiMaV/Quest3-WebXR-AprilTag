@@ -7,12 +7,12 @@ import {
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
   createPerfTracker,ADAPTIVE_QUALITY_MODES,createAdaptiveQualityController,
-  projectPriorRois,prioritizeFocusCandidates,fuseCommittedTrailSegment,smoothLineTail,smoothAxisTail,
-  RIBBON_SPEED_DEFAULTS,speedToRibbonHalfWidth,
+  projectPriorRois,prioritizeFocusCandidates,fuseCommittedTrailSegment,smoothLineTail,
+  TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor,
   createTagMotionPredictor,APP_VERSION_LABEL,
 } from '../src/index.mjs';
 import {
-  createInstancedPool,createAxesBatch,createPathRibbonMesh,createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh,
+  createInstancedPool,createAxesBatch,createPathTubeMesh,createBadgeAtlas,createBillboardAtlasMesh,createOrientedAtlasMesh,
 } from '../src/three.mjs';
 import {associateAnchorCapture,auditAnchorObservation,createAnchorAudit} from '../src/anchor-audit.mjs';
 import {createPerimeterFence,isPerimeterTag,perimeterRole,FENCE_HEIGHT_M} from '../src/perimeter-fence.mjs';
@@ -26,10 +26,23 @@ const urlParams=new URLSearchParams(location.search);
 const aaToggleEl=$('aaToggle');
 const qualityModeEl=$('qualityMode');
 const longRangeEl=$('longRange');
+const trailColorModeEl=$('trailColorMode');
+const TRAIL_COLOR_MODES=Object.freeze(['id','speed']);
 if(urlParams.has('aa')&&aaToggleEl)aaToggleEl.checked=urlParams.get('aa')!=='0';
 const reqQuality=urlParams.get('quality');
 if(reqQuality&&ADAPTIVE_QUALITY_MODES.includes(reqQuality)&&qualityModeEl)qualityModeEl.value=reqQuality;
 if(urlParams.has('range')&&longRangeEl)longRangeEl.checked=urlParams.get('range')==='far'||urlParams.get('range')==='1';
+const reqTrailColor=urlParams.get('trailColor');
+if(reqTrailColor&&TRAIL_COLOR_MODES.includes(reqTrailColor)&&trailColorModeEl)trailColorModeEl.value=reqTrailColor;
+const currentTrailColorMode=()=>{
+  if(urlParams.has('trailColor')){
+    const qv=urlParams.get('trailColor');
+    if(TRAIL_COLOR_MODES.includes(qv))return qv;
+  }
+  const v=trailColorModeEl?.value;
+  return TRAIL_COLOR_MODES.includes(v)?v:'id';
+};
+let trailColorMode=currentTrailColorMode();
 const currentAaEnabled=()=>urlParams.has('aa')?urlParams.get('aa')!=='0':Boolean($('aaToggle')?.checked??true);
 const currentQualityMode=()=>{
   const v=$('qualityMode')?.value;
@@ -85,9 +98,14 @@ function warmupSceneShaders(r,scn,cam){
   tmpLineGeo.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0.01,0,0],3));
   const tmpLineMat=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.65});
   const tmpLine=new THREE.Line(tmpLineGeo,tmpLineMat);
+  const tmpTrailGeo=new THREE.BufferGeometry();
+  tmpTrailGeo.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0.01,0,0,0,0.01,0],3));
+  tmpTrailGeo.setAttribute('color',new THREE.Float32BufferAttribute([1,1,1,1,1,1,1,1,1],3));
+  tmpTrailGeo.setAttribute('aDash',new THREE.Float32BufferAttribute([0,1,0.01,1,0.02,1],2));
+  const tmpTrail=new THREE.Mesh(tmpTrailGeo,trailLineMat);
   const tmpSpriteMat=new THREE.SpriteMaterial({color:0xffffff,transparent:true,depthTest:false,depthWrite:false});
   const tmpSprite=new THREE.Sprite(tmpSpriteMat);
-  scn.add(tmpInst,tmpAxes,tmpLine,tmpSprite);
+  scn.add(tmpInst,tmpAxes,tmpLine,tmpTrail,tmpSprite);
   const prevFrameCount=frameBatch.mesh.count;
   const prevAlertGlowCount=alertGlowBatch.mesh.count;
   if(prevFrameCount===0)frameBatch.mesh.count=1;
@@ -98,10 +116,11 @@ function warmupSceneShaders(r,scn,cam){
   }catch{}
   frameBatch.mesh.count=prevFrameCount;
   alertGlowBatch.mesh.count=prevAlertGlowCount;
-  scn.remove(tmpInst,tmpAxes,tmpLine,tmpSprite);
+  scn.remove(tmpInst,tmpAxes,tmpLine,tmpTrail,tmpSprite);
   tmpInst.dispose();tmpGeo.dispose();tmpInstMat.dispose();
   tmpAxes.geometry.dispose();tmpAxes.material.dispose();
   tmpLineGeo.dispose();tmpLineMat.dispose();
+  tmpTrailGeo.dispose();
   tmpSpriteMat.dispose();
   for(let i=0;i<targets.length;i++)targets[i].visible=prevVis[i];
 }
@@ -550,7 +569,7 @@ function resetAnchorStability(){
   anchorBaseline=null;hasPrevAnchorWorld=false;anchorWinHead=0;anchorWinCount=0;
   liveJitterMm=null;liveDriftMm=null;liveDriftDeg=null;
 }
-let lastSampleStats=null,lastObs=null,lastObsAtMs=0,lastAuditRow=null,lastAuditAt=0,lastMotionState=null,rvfcWindowStart=null,rvfcWindowCount=0,rvfcHz=0,scanPulseCounter=0,focusSweepCounter=0,focusPartialMissStreak=0;
+let lastSampleStats=null,lastObs=null,lastObsAtMs=0,lastAuditRow=null,lastAuditAt=0,lastMovedTargetAt=0,lastMotionState=null,rvfcWindowStart=null,rvfcWindowCount=0,rvfcHz=0,scanPulseCounter=0,focusSweepCounter=0,focusPartialMissStreak=0;
 let calViewerPoses=[],lastCalCount=0,lastCalPhase='idle';
 let placedExtras=new Map(),extraPending=new Map(),movableTools=new Map(),lastDiagnostics=null,diagnostics=null;
 function pushDiagEvent(ev){
@@ -1062,12 +1081,33 @@ function getThickTagFrameGeo(edgeMm){
 
 const MAX_TRAIL_WAYPOINTS=600;
 const PATHLINE_DEFAULTS=Object.freeze({
-  ribbonHalfWidthM:RIBBON_SPEED_DEFAULTS.minHalfWidthM,
-  ribbonOpacity:0.48,
-  ribbonEdgeOpacity:0.95,
+  lineRadiusM:0.0015, // 3.0 mm calm uniform 3D line
+  lineSides:5,
+  lineOpacity:0.94,
+  dashPeriodM:0.024,  // ~13.9 mm dash / ~10.1 mm gap outside perimeter
+  dashDuty:0.58,
+  turboRefSpeedMps:TURBO_SPEED_DEFAULTS.refSpeedMps, // 0.60 m/s = 600 mm/s
   waypointDotRadiusM:0.0030,
   timeCopyDotRadiusM:0.0046,
 });
+const trailLineMat=new THREE.MeshBasicMaterial({
+  color:0xffffff,
+  vertexColors:true,
+  transparent:true,
+  opacity:PATHLINE_DEFAULTS.lineOpacity,
+});
+trailLineMat.customProgramCacheKey=()=>'trail-line-dash-v1';
+trailLineMat.onBeforeCompile=shader=>{
+  shader.vertexShader=shader.vertexShader
+    .replace('#include <common>','#include <common>\nattribute vec2 aDash;\nvarying vec2 vDash;')
+    .replace('#include <begin_vertex>','#include <begin_vertex>\nvDash = aDash;');
+  shader.fragmentShader=shader.fragmentShader
+    .replace('#include <common>','#include <common>\nvarying vec2 vDash;')
+    .replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>\nif (vDash.y > 0.5) {\n  float dashPhase = fract(vDash.x / ${PATHLINE_DEFAULTS.dashPeriodM.toFixed(4)});\n  if (dashPhase > ${PATHLINE_DEFAULTS.dashDuty.toFixed(2)}) discard;\n}`,
+    );
+};
 const _tmpMat4=new THREE.Matrix4();
 const _tmpScale=new THREE.Vector3(1.12,1.12,1);
 const _tmpPlaneScale=new THREE.Vector3(0.0224,0.0224,1);
@@ -1887,13 +1927,31 @@ modeClearSprite.scale.set(0.072,0.030,1);
 modeClearSprite.renderOrder=14;
 modePillGroup.add(modeClearSprite);
 
+const modeColorCanvas=document.createElement('canvas');modeColorCanvas.width=256;modeColorCanvas.height=96;
+const modeColorTex=makeUiTexture(modeColorCanvas);
+const modeColorSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeColorTex,transparent:true,depthTest:false,depthWrite:false}));
+modeColorSprite.position.set(0.088,0,0);
+modeColorSprite.scale.set(0.076,0.030,1);
+modeColorSprite.renderOrder=14;
+modePillGroup.add(modeColorSprite);
+
 const modeInfoCanvas=document.createElement('canvas');modeInfoCanvas.width=96;modeInfoCanvas.height=96;
 const modeInfoTex=makeUiTexture(modeInfoCanvas);
 const modeInfoSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:modeInfoTex,transparent:true,depthTest:false,depthWrite:false}));
-modeInfoSprite.position.set(0.064,0,0);
+modeInfoSprite.position.set(0.148,0,0);
 modeInfoSprite.scale.set(0.030,0.030,1);
 modeInfoSprite.renderOrder=14;
 modePillGroup.add(modeInfoSprite);
+
+const turboBarCanvas=document.createElement('canvas');turboBarCanvas.width=560;turboBarCanvas.height=92;
+const turboBarTex=makeUiTexture(turboBarCanvas);
+turboBarTex.colorSpace=THREE.SRGBColorSpace;
+const turboBarSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:turboBarTex,transparent:true,depthTest:false,depthWrite:false}));
+turboBarSprite.position.set(0,-0.044,-0.002);
+turboBarSprite.scale.set(0.260,0.042,1);
+turboBarSprite.visible=false;
+turboBarSprite.renderOrder=14;
+modePillGroup.add(turboBarSprite);
 
 const modeHelpCanvas=document.createElement('canvas');modeHelpCanvas.width=560;modeHelpCanvas.height=318;
 const modeHelpTex=makeUiTexture(modeHelpCanvas);
@@ -1904,11 +1962,12 @@ modeHelpSprite.visible=false;
 modeHelpSprite.renderOrder=15;
 modePillGroup.add(modeHelpSprite);
 
-let hoveredModePill=false,hoveredModeMain=false,hoveredModeInfo=false,hoveredModeFence=false,hoveredModeClear=false;
+let hoveredModePill=false,hoveredModeMain=false,hoveredModeInfo=false,hoveredModeFence=false,hoveredModeClear=false,hoveredModeColor=false;
 let modePillPokeSince=null,modePillPokeConsumed=false,modePillCooldownUntil=0,lastModePillKey='';
 let modeFencePokeSince=null,modeFencePokeConsumed=false,modeFenceCooldownUntil=0,lastModeFenceKey='';
 let modeClearPokeSince=null,modeClearPokeConsumed=false,modeClearCooldownUntil=0,lastModeClearKey='';
-let modeHelpOpen=false,modeInfoPokeSince=null,modeInfoPokeConsumed=false,modeInfoCooldownUntil=0,lastModeInfoKey='',lastModeHelpKey='';
+let modeColorPokeSince=null,modeColorPokeConsumed=false,modeColorCooldownUntil=0,lastModeColorKey='';
+let modeHelpOpen=false,modeInfoPokeSince=null,modeInfoPokeConsumed=false,modeInfoCooldownUntil=0,lastModeInfoKey='',lastModeHelpKey='',lastTurboBarKey='';
 const userItemCount=()=>movableTools.size+placedExtras.size+pinnedPoints.size;
 function drawModeClearBtn(itemCount,hot,prog=0){
   const hasItems=itemCount>0;
@@ -1982,6 +2041,89 @@ function drawModePillCard(scanActive,hot,prog=0){
   ctx.textAlign='left';
   modePillTex.needsUpdate=true;
 }
+function drawModeColorBtn(colorMode,hot,prog=0){
+  const isSpeed=colorMode==='speed';
+  const key=`${isSpeed?1:0}:${hot?1:0}:${Math.round(prog*20)}`;
+  if(key===lastModeColorKey)return;
+  lastModeColorKey=key;
+  const ctx=modeColorCanvas.getContext('2d');
+  ctx.clearRect(0,0,256,96);
+  ctx.fillStyle=isSpeed?(hot?'rgba(54,24,10,0.96)':'rgba(34,16,8,0.92)'):(hot?'rgba(14,32,52,0.96)':'rgba(12,22,38,0.92)');
+  ctx.beginPath();ctx.roundRect(4,4,248,88,24);ctx.fill();
+  ctx.strokeStyle=hot?'#fde047':(isSpeed?'#f97316':'#38bdf8');
+  ctx.lineWidth=hot?5:3.5;ctx.stroke();
+  if(prog>0.02){
+    ctx.fillStyle=isSpeed?'rgba(249,115,22,0.32)':'rgba(56,189,248,0.30)';
+    ctx.beginPath();ctx.roundRect(6,6,Math.max(16,244*Math.min(1,prog)),84,22);ctx.fill();
+  }
+  ctx.fillStyle=hot?'#ffffff':(isSpeed?'#fdba74':'#7dd3fc');
+  ctx.font='bold 24px system-ui,sans-serif';ctx.textAlign='center';
+  ctx.fillText(isSpeed?'TRAIL: SPEED':'TRAIL: ID',128,42);
+  if(isSpeed){
+    const grad=ctx.createLinearGradient(34,0,136,0);
+    for(let s=0;s<=16;s++){
+      const t=s/16;
+      const [r,g,b]=turboColormap(t);
+      grad.addColorStop(t,`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`);
+    }
+    ctx.fillStyle=grad;
+    ctx.beginPath();ctx.roundRect(34,60,102,14,7);ctx.fill();
+    ctx.fillStyle='#fed7aa';ctx.font='bold 16px ui-monospace,monospace';ctx.textAlign='left';
+    ctx.fillText('TURBO',146,73);
+  }else{
+    const swatches=['#22d3ee','#fb923c','#34d399','#f472b6'];
+    for(let i=0;i<swatches.length;i++){
+      ctx.fillStyle=swatches[i];
+      ctx.beginPath();ctx.arc(46+i*20,67,6.5,0,Math.PI*2);ctx.fill();
+    }
+    ctx.fillStyle='#bae6fd';ctx.font='bold 16px ui-monospace,monospace';ctx.textAlign='left';
+    ctx.fillText('UNIQUE',132,73);
+  }
+  ctx.textAlign='left';
+  modeColorTex.needsUpdate=true;
+}
+function drawTurboColorBar(refSpeedMps){
+  const maxMm=Math.max(100,Math.round((refSpeedMps||0.60)*1000));
+  const key=`${maxMm}`;
+  if(key===lastTurboBarKey)return;
+  lastTurboBarKey=key;
+  const ctx=turboBarCanvas.getContext('2d');
+  ctx.clearRect(0,0,560,92);
+  ctx.fillStyle='rgba(7,12,24,0.92)';
+  ctx.beginPath();ctx.roundRect(4,4,552,84,18);ctx.fill();
+  ctx.strokeStyle='rgba(148,163,184,0.42)';ctx.lineWidth=2.5;ctx.stroke();
+
+  ctx.fillStyle='#e2e8f0';ctx.font='bold 16px system-ui,sans-serif';ctx.textAlign='left';
+  ctx.fillText('SPEED · TURBO',18,27);
+  ctx.fillStyle='#94a3b8';ctx.font='bold 15px ui-monospace,monospace';ctx.textAlign='right';
+  ctx.fillText('mm/s',542,27);
+
+  const barX=20,barY=36,barW=520,barH=18;
+  const grad=ctx.createLinearGradient(barX,0,barX+barW,0);
+  for(let s=0;s<=32;s++){
+    const t=s/32;
+    const [r,g,b]=turboColormap(t);
+    grad.addColorStop(t,`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`);
+  }
+  ctx.fillStyle=grad;
+  ctx.beginPath();ctx.roundRect(barX,barY,barW,barH,9);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.28)';ctx.lineWidth=1.5;ctx.stroke();
+
+  ctx.strokeStyle='rgba(248,250,252,0.72)';ctx.lineWidth=1.8;
+  ctx.fillStyle='#e2e8f0';ctx.font='bold 16px ui-monospace,monospace';
+  const ticks=[0,1/3,2/3,1];
+  for(let i=0;i<ticks.length;i++){
+    const f=ticks[i];
+    const tx=barX+f*barW;
+    ctx.beginPath();ctx.moveTo(tx,barY+barH-2);ctx.lineTo(tx,barY+barH+5);ctx.stroke();
+    const val=Math.round(f*maxMm);
+    const label=i===ticks.length-1?`${val}+`:`${val}`;
+    ctx.textAlign=i===0?'left':(i===ticks.length-1?'right':'center');
+    ctx.fillText(label,tx,barY+barH+24);
+  }
+  ctx.textAlign='left';
+  turboBarTex.needsUpdate=true;
+}
 function drawModeInfoBtn(open,hot,prog=0){
   const key=`${open?1:0}:${hot?1:0}:${Math.round(prog*20)}`;
   if(key===lastModeInfoKey)return;
@@ -2022,13 +2164,13 @@ function drawModeHelpCard(scanActive){
   const lines=scanActive?[
     '• Look at AprilTags (300–359) to auto-lock in 3D',
     '• Grab & move tag/ruler → 90 Hz hand tracking',
-    '• Hold [● REC] above tag → record speed path',
-    '• Hold [⏱ MARK] below tag → mark snapshot',
+    '• Hold [● REC] above tag → record 3D line (dashed outside fence)',
+    '• Poke [TRAIL: ID/SPEED] → switch Unique vs. Turbo color',
     '• Poke [■ MEASURE] or Left Fist → switch mode',
   ]:[
     '• Hover any tag/point → X/Y/Z, speed & 3D square',
     '• Pinch / Trigger point → pin & measure distance',
-    '• Pin 2+ points → automatic 3D distance rails',
+    '• Poke [TRAIL: ID/SPEED] or Left Wrist → switch trail color',
     '• Poke [↺ CLEAR ALL] on table → reset tags & trails',
     '• Poke [● SCAN] or Left Fist → scan more tags',
   ];
@@ -2051,42 +2193,59 @@ function toggleModeHelp(now=performance.now()){
 function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   const anchored=Boolean(world)&&asPhase==='ready'&&(anPhase==='tracking'||anPhase==='created');
   if(!anchored){
-    modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;
+    modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;
     modePillPokeSince=null;modePillPokeConsumed=false;
     modeFencePokeSince=null;modeFencePokeConsumed=false;
     modeClearPokeSince=null;modeClearPokeConsumed=false;
+    modeColorPokeSince=null;modeColorPokeConsumed=false;
     modeInfoPokeSince=null;modeInfoPokeConsumed=false;
     modeHelpSprite.visible=false;
+    turboBarSprite.visible=false;
     return;
   }
   modePillGroup.visible=true;
   const itemCount=userItemCount();
   const probes=frameInputs.getProbesL();
-  let bestDist=Infinity,bestInfoDist=Infinity,bestFenceDist=Infinity,bestClearDist=Infinity;
+  let bestDist=Infinity,bestInfoDist=Infinity,bestFenceDist=Infinity,bestClearDist=Infinity,bestColorDist=Infinity;
   for(const pr of probes){
     const d=Math.hypot(pr.pos[0]-0.11,pr.pos[1]+0.048,pr.pos[2]-0.032);
-    const di=Math.hypot(pr.pos[0]-0.174,pr.pos[1]+0.048,pr.pos[2]-0.032);
+    const di=Math.hypot(pr.pos[0]-0.258,pr.pos[1]+0.048,pr.pos[2]-0.032);
     const df=Math.hypot(pr.pos[0]-0.020,pr.pos[1]+0.048,pr.pos[2]-0.032);
     const dc=Math.hypot(pr.pos[0]+0.062,pr.pos[1]+0.048,pr.pos[2]-0.032);
-    recordProbeProximity(pr.probeId,Math.min(d,di,df,dc));
+    const dCol=Math.hypot(pr.pos[0]-0.198,pr.pos[1]+0.048,pr.pos[2]-0.032);
+    recordProbeProximity(pr.probeId,Math.min(d,di,df,dc,dCol));
     if(d<bestDist)bestDist=d;
     if(di<bestInfoDist)bestInfoDist=di;
     if(df<bestFenceDist)bestFenceDist=df;
     if(dc<bestClearDist)bestClearDist=dc;
+    if(dCol<bestColorDist)bestColorDist=dCol;
   }
-  hoveredModeMain=bestDist<0.044;
-  hoveredModeInfo=bestInfoDist<0.034;
-  hoveredModeFence=Boolean(perimeterFence)&&bestFenceDist<0.038;
-  hoveredModeClear=bestClearDist<0.038;
-  hoveredModePill=hoveredModeMain||hoveredModeInfo||hoveredModeFence||hoveredModeClear;
+
+  // Exclusive closest-button arbitration so adjacent pills never double-trigger.
+  let closestBtn=null,closestDist=Infinity;
+  const consider=(id,dist,maxDist)=>{if(dist<maxDist&&dist<closestDist){closestDist=dist;closestBtn=id;}};
+  consider('main',bestDist,0.044);
+  consider('info',bestInfoDist,0.034);
+  if(perimeterFence)consider('fence',bestFenceDist,0.038);
+  consider('clear',bestClearDist,0.038);
+  consider('color',bestColorDist,0.038);
+
+  hoveredModeMain=closestBtn==='main';
+  hoveredModeInfo=closestBtn==='info';
+  hoveredModeFence=closestBtn==='fence';
+  hoveredModeClear=closestBtn==='clear';
+  hoveredModeColor=closestBtn==='color';
+  hoveredModePill=Boolean(closestBtn);
+
   modePillSprite.scale.set(hoveredModeMain?0.096:0.086,hoveredModeMain?0.034:0.030,1);
   modeInfoSprite.scale.set(hoveredModeInfo?0.035:0.030,hoveredModeInfo?0.035:0.030,1);
   modeFenceSprite.visible=Boolean(perimeterFence);
   modeFenceSprite.scale.set(hoveredModeFence?0.080:0.072,hoveredModeFence?0.034:0.030,1);
   modeClearSprite.scale.set(hoveredModeClear&&itemCount>0?0.080:0.072,hoveredModeClear&&itemCount>0?0.034:0.030,1);
+  modeColorSprite.scale.set(hoveredModeColor?0.084:0.076,hoveredModeColor?0.034:0.030,1);
 
   let prog=0;
-  if(bestDist<0.038&&now>=modePillCooldownUntil){
+  if(closestBtn==='main'&&bestDist<0.038&&now>=modePillCooldownUntil){
     if(!modePillPokeConsumed){
       if(modePillPokeSince==null)modePillPokeSince=now;
       prog=Math.min(1,(now-modePillPokeSince)/220);
@@ -2101,7 +2260,7 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   }
 
   let fenceProg=0;
-  if(perimeterFence&&bestFenceDist<0.034&&now>=modeFenceCooldownUntil){
+  if(closestBtn==='fence'&&perimeterFence&&bestFenceDist<0.034&&now>=modeFenceCooldownUntil){
     if(!modeFencePokeConsumed){
       if(modeFencePokeSince==null)modeFencePokeSince=now;
       fenceProg=Math.min(1,(now-modeFencePokeSince)/220);
@@ -2116,7 +2275,7 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   }
 
   let clearProg=0;
-  if(itemCount>0&&bestClearDist<0.034&&now>=modeClearCooldownUntil){
+  if(closestBtn==='clear'&&itemCount>0&&bestClearDist<0.034&&now>=modeClearCooldownUntil){
     if(!modeClearPokeConsumed){
       if(modeClearPokeSince==null)modeClearPokeSince=now;
       clearProg=Math.min(1,(now-modeClearPokeSince)/350);
@@ -2130,8 +2289,23 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
     if(bestClearDist>0.050)modeClearPokeConsumed=false;
   }
 
+  let colorProg=0;
+  if(closestBtn==='color'&&bestColorDist<0.034&&now>=modeColorCooldownUntil){
+    if(!modeColorPokeConsumed){
+      if(modeColorPokeSince==null)modeColorPokeSince=now;
+      colorProg=Math.min(1,(now-modeColorPokeSince)/220);
+      if(colorProg>=1){
+        modeColorPokeConsumed=true;modeColorPokeSince=null;modeColorCooldownUntil=now+650;
+        toggleTrailColorMode();
+      }
+    }
+  }else{
+    modeColorPokeSince=null;
+    if(bestColorDist>0.050)modeColorPokeConsumed=false;
+  }
+
   let infoProg=0;
-  if(bestInfoDist<0.028&&now>=modeInfoCooldownUntil){
+  if(closestBtn==='info'&&bestInfoDist<0.028&&now>=modeInfoCooldownUntil){
     if(!modeInfoPokeConsumed){
       if(modeInfoPokeSince==null)modeInfoPokeSince=now;
       infoProg=Math.min(1,(now-modeInfoPokeSince)/220);
@@ -2150,7 +2324,10 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
     drawModeFenceBtn(perimeterFence.status(),perimeterFence.dynamicCount(),hoveredModeFence,fenceProg);
   }
   drawModeClearBtn(userItemCount(),hoveredModeClear,clearProg);
+  drawModeColorBtn(trailColorMode,hoveredModeColor,colorProg);
   drawModeInfoBtn(modeHelpOpen,hoveredModeInfo,infoProg);
+  turboBarSprite.visible=trailColorMode==='speed';
+  if(turboBarSprite.visible)drawTurboColorBar(PATHLINE_DEFAULTS.turboRefSpeedMps);
   modeHelpSprite.visible=modeHelpOpen;
   if(modeHelpOpen)drawModeHelpCard(extraScanActive);
 }
@@ -3701,52 +3878,136 @@ function drawMarkOrbPill(entry,hot){
   });
 }
 
+const _trailColorTmp=new THREE.Color();
+const _turboSrgbBuf=new Float32Array(3);
+const _trailOutsidePosBuf=[0,0,0];
+
+function writeSampleLinearColor(entry,speedMps,outArr,offset){
+  if(trailColorMode==='speed'){
+    speedToTurboColor(speedMps,{refSpeedMps:PATHLINE_DEFAULTS.turboRefSpeedMps,out:_turboSrgbBuf});
+    _trailColorTmp.setRGB(_turboSrgbBuf[0],_turboSrgbBuf[1],_turboSrgbBuf[2],THREE.SRGBColorSpace);
+    outArr[offset]=_trailColorTmp.r;
+    outArr[offset+1]=_trailColorTmp.g;
+    outArr[offset+2]=_trailColorTmp.b;
+    return;
+  }
+  const rgb=entry.uniqueLinearRgb;
+  outArr[offset]=rgb[0];
+  outArr[offset+1]=rgb[1];
+  outArr[offset+2]=rgb[2];
+}
+
+function waypointDotColorFor(entry,wp){
+  if(wp?.isTimeCopy)return entry.timeCopyDotColor;
+  if(trailColorMode==='speed'){
+    const spd=Number.isFinite(wp?.speedMps)?wp.speedMps:0;
+    speedToTurboColor(spd,{refSpeedMps:PATHLINE_DEFAULTS.turboRefSpeedMps,out:_turboSrgbBuf});
+    _trailColorTmp.setRGB(_turboSrgbBuf[0],_turboSrgbBuf[1],_turboSrgbBuf[2],THREE.SRGBColorSpace);
+    return _trailColorTmp;
+  }
+  return entry.dotColor;
+}
+
+function recolorMovableTrail(entry){
+  if(entry.trailTube&&entry.lineCount>0&&entry.lineColors&&entry.lineSpeeds){
+    const n=entry.lineCount;
+    const s=entry.lineSpeeds;
+    for(let i=0;i<n;i++){
+      const spd=(i>0&&i<n-1)?(s[i-1]*0.25+s[i]*0.50+s[i+1]*0.25):s[i];
+      writeSampleLinearColor(entry,spd,entry.lineColors,i*3);
+    }
+    entry.trailTube.syncColors(entry.lineColors,n);
+  }
+  if(entry.dotsMesh&&entry.waypoints.length>0){
+    for(let i=0;i<entry.waypoints.length;i++){
+      entry.dotsMesh.setColorAt(i,waypointDotColorFor(entry,entry.waypoints[i]));
+    }
+    if(entry.dotsMesh.instanceColor)entry.dotsMesh.instanceColor.needsUpdate=true;
+  }
+}
+
+function syncMovableTrailOutsideFlags(entry){
+  if(!entry.trailTube||!entry.lineOutside||!entry.linePositions||entry.lineCount<=0)return;
+  const n=entry.lineCount;
+  const fenceActive=Boolean(perimeterFence?.isActive?.());
+  let changed=false;
+  let prevOut=false;
+  for(let i=0;i<n;i++){
+    let next=0;
+    if(fenceActive){
+      const o=i*3;
+      _trailOutsidePosBuf[0]=entry.linePositions[o];
+      _trailOutsidePosBuf[1]=entry.linePositions[o+1];
+      _trailOutsidePosBuf[2]=entry.linePositions[o+2];
+      next=perimeterFence.isOutsideXY(_trailOutsidePosBuf,{wasOutside:prevOut}).outside?1:0;
+      prevOut=next===1;
+    }
+    if(entry.lineOutside[i]!==next){
+      entry.lineOutside[i]=next;
+      changed=true;
+    }
+  }
+  if(changed){
+    entry.trailTube.syncOutsideFlags(entry.lineOutside,n);
+  }
+}
+
+function setTrailColorMode(nextMode,{silent=false}={}){
+  const resolved=nextMode==='speed'?'speed':'id';
+  if(trailColorMode===resolved)return;
+  trailColorMode=resolved;
+  if(trailColorModeEl)trailColorModeEl.value=resolved;
+  for(const entry of movableTools.values())recolorMovableTrail(entry);
+  lastModeColorKey='';
+  turboBarSprite.visible=Boolean(modePillGroup.visible&&resolved==='speed');
+  if(turboBarSprite.visible)drawTurboColorBar(PATHLINE_DEFAULTS.turboRefSpeedMps);
+  pushDiagEvent({type:'trail-color-mode',mode:resolved,atPerformanceMs:performance.now()});
+  if(!silent){
+    playModeTick('pin');
+    showHudToast(
+      resolved==='speed'?'TRAIL: SPEED (TURBO 0–600 mm/s)':'TRAIL: UNIQUE TAG COLOR',
+      resolved==='speed'?'#f97316':'#38bdf8',
+      1600,
+    );
+  }
+}
+function toggleTrailColorMode(){
+  setTrailColorMode(trailColorMode==='speed'?'id':'speed');
+}
+if(trailColorModeEl){
+  trailColorModeEl.onchange=()=>{
+    if(urlParams.has('trailColor'))urlParams.delete('trailColor');
+    setTrailColorMode(trailColorModeEl.value,{silent:true});
+  };
+}
+
 function ensureMovableTrailVisuals(entry){
   const accentCol=new THREE.Color(entry.theme.hex);
-  if(!entry.ribbonRgb){
-    const h=entry.theme.hex;
-    entry.ribbonRgb=[((h>>16)&255)/255,((h>>8)&255)/255,(h&255)/255];
+  if(!entry.uniqueLinearRgb){
+    entry.uniqueLinearRgb=[accentCol.r,accentCol.g,accentCol.b];
   }
-  if(!entry.trailRibbon){
+  if(!entry.trailTube){
     const rawLinePositions=new Float32Array(MAX_LINE_PTS*3);
     const linePositions=new Float32Array(MAX_LINE_PTS*3);
-    const rawLineRightAxes=new Float32Array(MAX_LINE_PTS*3);
-    const lineRightAxes=new Float32Array(MAX_LINE_PTS*3);
     const lineSpeeds=new Float32Array(MAX_LINE_PTS);
-    const lineHalfWidths=new Float32Array(MAX_LINE_PTS);
     const lineColors=new Float32Array(MAX_LINE_PTS*3);
-    const lineMat=new THREE.MeshBasicMaterial({
-      color:0xffffff,
+    const lineOutside=new Uint8Array(MAX_LINE_PTS);
+    const trailTube=createPathTubeMesh(MAX_LINE_PTS,trailLineMat,{
+      radius:PATHLINE_DEFAULTS.lineRadiusM,
+      sides:PATHLINE_DEFAULTS.lineSides,
       vertexColors:true,
-      transparent:true,
-      opacity:PATHLINE_DEFAULTS.ribbonOpacity,
-      side:THREE.DoubleSide,
-      depthWrite:false,
-    });
-    const lineEdgeMat=new THREE.LineBasicMaterial({
-      color:0xffffff,
-      vertexColors:true,
-      transparent:true,
-      opacity:PATHLINE_DEFAULTS.ribbonEdgeOpacity,
-    });
-    const trailRibbon=createPathRibbonMesh(MAX_LINE_PTS,lineMat,{
-      edgeMaterial:lineEdgeMat,
-      halfWidth:PATHLINE_DEFAULTS.ribbonHalfWidthM,
-      rightEdgeTint:0.22,
+      dashAttribute:true,
       renderOrder:2,
-      name:`ribbon-${entry.tagId}`,
+      name:`trail-${entry.tagId}`,
     });
-    extraRoot.add(trailRibbon.mesh,trailRibbon.edgeLines);
-    entry.trailRibbon=trailRibbon;
+    extraRoot.add(trailTube.mesh);
+    entry.trailTube=trailTube;
     entry.rawLinePositions=rawLinePositions;
     entry.linePositions=linePositions;
-    entry.rawLineRightAxes=rawLineRightAxes;
-    entry.lineRightAxes=lineRightAxes;
     entry.lineSpeeds=lineSpeeds;
-    entry.lineHalfWidths=lineHalfWidths;
     entry.lineColors=lineColors;
-    entry.lineMat=lineMat;
-    entry.lineEdgeMat=lineEdgeMat;
+    entry.lineOutside=lineOutside;
+    entry.lastTrailFenceVer=perimeterFence?.version?.()??-1;
   }
   if(!entry.dotsMesh){
     const dotColor=new THREE.Color(0xf8fafc).lerp(accentCol,0.65);
@@ -3799,7 +4060,7 @@ function createMovableTool(tagId,edgeMm){
     markOrbSlot,markPillSlot,markPillKey:'',
     visible:false,faceVisible:false,recOrbVisible:false,markOrbVisible:false,outsidePerimeter:false,lastAlertFenceVer:-1,
     frameColorHex:theme.hex,recOrbColorHex:0x0ea5e9,markOrbColorHex:0x22d3ee,recOrbScale:1,
-    trailRibbon:null,ribbonRgb:null,rawLinePositions:null,linePositions:null,rawLineRightAxes:null,lineRightAxes:null,lineSpeeds:null,lineHalfWidths:null,lineColors:null,lineMat:null,lineEdgeMat:null,lineCount:0,
+    trailTube:null,uniqueLinearRgb:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineColors:null,lineOutside:null,lastTrailFenceVer:-1,lineCount:0,
     dotsMesh:null,dotMat:null,dotColor:null,timeCopyDotColor:null,
     waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,smoothedSpeedMps:0,hasEverAnnouncedLock:false,
     lockState:'settling',settleSamples:[],lockedMatrix:null,lockQuality:null,refineSamples:[],relocPending:null,
@@ -3837,22 +4098,14 @@ function appendLinePoint(entry,pose,speedMps=0){
   if(!pose||pose.length<16)return;
   ensureMovableTrailVisuals(entry);
   const cx=pose[12],cy=pose[13],cz=pose[14];
-  let rx=pose[0],ry=pose[1],rz=pose[2];
-  const rLen=Math.hypot(rx,ry,rz);
-  if(Number.isFinite(rLen)&&rLen>1e-5){rx/=rLen;ry/=rLen;rz/=rLen;}
-  else{rx=1;ry=0;rz=0;}
-  const rawHW=speedToRibbonHalfWidth(speedMps);
-  const [cr,cg,cb]=entry.ribbonRgb;
   const fullRebuild=entry.lineCount>=MAX_LINE_PTS;
   let idx;
   if(fullRebuild){
     entry.rawLinePositions.copyWithin(0,3,MAX_LINE_PTS*3);
     entry.linePositions.copyWithin(0,3,MAX_LINE_PTS*3);
-    entry.rawLineRightAxes.copyWithin(0,3,MAX_LINE_PTS*3);
-    entry.lineRightAxes.copyWithin(0,3,MAX_LINE_PTS*3);
     entry.lineSpeeds.copyWithin(0,1,MAX_LINE_PTS);
-    entry.lineHalfWidths.copyWithin(0,1,MAX_LINE_PTS);
     entry.lineColors.copyWithin(0,3,MAX_LINE_PTS*3);
+    entry.lineOutside.copyWithin(0,1,MAX_LINE_PTS);
     idx=MAX_LINE_PTS-1;
   }else{
     idx=entry.lineCount++;
@@ -3860,21 +4113,33 @@ function appendLinePoint(entry,pose,speedMps=0){
   const i=idx*3;
   entry.rawLinePositions[i]=cx;entry.rawLinePositions[i+1]=cy;entry.rawLinePositions[i+2]=cz;
   entry.linePositions[i]=cx;entry.linePositions[i+1]=cy;entry.linePositions[i+2]=cz;
-  entry.rawLineRightAxes[i]=rx;entry.rawLineRightAxes[i+1]=ry;entry.rawLineRightAxes[i+2]=rz;
-  entry.lineRightAxes[i]=rx;entry.lineRightAxes[i+1]=ry;entry.lineRightAxes[i+2]=rz;
   entry.lineSpeeds[idx]=speedMps;
-  entry.lineHalfWidths[idx]=rawHW;
-  entry.lineColors[i]=cr;entry.lineColors[i+1]=cg;entry.lineColors[i+2]=cb;
+  writeSampleLinearColor(entry,speedMps,entry.lineColors,i);
   if(idx>=2){
     const avgSpd=entry.lineSpeeds[idx-2]*0.25+entry.lineSpeeds[idx-1]*0.50+speedMps*0.25;
-    entry.lineHalfWidths[idx-1]=speedToRibbonHalfWidth(avgSpd);
+    writeSampleLinearColor(entry,avgSpd,entry.lineColors,(idx-1)*3);
   }
   smoothLineTail(entry.rawLinePositions,entry.linePositions,entry.lineCount,{maxDeviationM:0.012});
-  smoothAxisTail(entry.rawLineRightAxes,entry.lineRightAxes,entry.lineCount);
-  entry.trailRibbon.syncFromPositions(entry.linePositions,entry.lineCount,{
-    rightAxes:entry.lineRightAxes,
-    halfWidths:entry.lineHalfWidths,
+  const fenceActive=Boolean(perimeterFence?.isActive?.());
+  const outStart=fullRebuild?0:Math.max(0,entry.lineCount-4);
+  let prevOut=outStart>0?entry.lineOutside[outStart-1]===1:false;
+  for(let k=outStart;k<entry.lineCount;k++){
+    if(!fenceActive){
+      entry.lineOutside[k]=0;
+      continue;
+    }
+    const ko=k*3;
+    _trailOutsidePosBuf[0]=entry.linePositions[ko];
+    _trailOutsidePosBuf[1]=entry.linePositions[ko+1];
+    _trailOutsidePosBuf[2]=entry.linePositions[ko+2];
+    const out=perimeterFence.isOutsideXY(_trailOutsidePosBuf,{wasOutside:prevOut}).outside;
+    entry.lineOutside[k]=out?1:0;
+    prevOut=out;
+  }
+  entry.lastTrailFenceVer=perimeterFence?.version?.()??-1;
+  entry.trailTube.syncFromPositions(entry.linePositions,entry.lineCount,{
     colors:entry.lineColors,
+    outsideFlags:entry.lineOutside,
     fromIndex:fullRebuild?0:Math.max(0,entry.lineCount-6),
   });
 }
@@ -4400,6 +4665,10 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
   const dt=Math.min(0.05,Math.max(0.004,dtSec||1/90));
   const curFenceVer=perimeterFence?.version?.()??-1;
   for(const entry of movableTools.values()){
+    if(entry.trailTube&&entry.lineCount>0&&entry.lastTrailFenceVer!==curFenceVer){
+      entry.lastTrailFenceVer=curFenceVer;
+      syncMovableTrailOutsideFlags(entry);
+    }
     if(!extraScanActive){
       // MEASURE mode (90 FPS): keep every locked tag anchored & visible at its static currentPose so it can be hovered/pinned immediately.
       const needsModeSync=!entry.measureModeApplied||entry.measureSyncedPose!==entry.currentPose;
@@ -4751,7 +5020,7 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
     elapsedS:Math.max(0,(atMs-entry.firstAtMs)/1000),clock,
   };
   const dotR=isTimeCopy?PATHLINE_DEFAULTS.timeCopyDotRadiusM:PATHLINE_DEFAULTS.waypointDotRadiusM;
-  const dotCol=isTimeCopy?entry.timeCopyDotColor:entry.dotColor;
+  const dotCol=waypointDotColorFor(entry,wp);
   if(entry.waypoints.length>=MAX_TRAIL_WAYPOINTS){
     entry.waypoints.shift();
     entry.waypoints.push(wp);
@@ -4760,7 +5029,7 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
       const r=w.isTimeCopy?PATHLINE_DEFAULTS.timeCopyDotRadiusM:PATHLINE_DEFAULTS.waypointDotRadiusM;
       _tmpMat4.makeScale(r,r,r).setPosition(w.centerL[0],w.centerL[1],w.centerL[2]);
       entry.dotsMesh.setMatrixAt(i,_tmpMat4);
-      entry.dotsMesh.setColorAt(i,w.isTimeCopy?entry.timeCopyDotColor:entry.dotColor);
+      entry.dotsMesh.setColorAt(i,waypointDotColorFor(entry,w));
     }
   }else{
     const idx=entry.waypoints.length;
@@ -4796,18 +5065,14 @@ function disposeMovableEntry(e){
   if(e.recPillSlot>=0){badgeMesh.clearSlot(e.recPillSlot);badgeAtlas.release(e.recPillSlot);}
   if(e.markOrbSlot>=0)recOrbBatch.free(e.markOrbSlot);
   if(e.markPillSlot>=0){badgeMesh.clearSlot(e.markPillSlot);badgeAtlas.release(e.markPillSlot);}
-  if(e.trailRibbon){
-    extraRoot.remove(e.trailRibbon.mesh,e.trailRibbon.edgeLines);
-    e.trailRibbon.dispose();
-    e.lineMat?.dispose?.();
-    e.lineEdgeMat?.dispose?.();
+  if(e.trailTube){
+    extraRoot.remove(e.trailTube.mesh);
+    e.trailTube.dispose();
     e.rawLinePositions=null;
     e.linePositions=null;
-    e.rawLineRightAxes=null;
-    e.lineRightAxes=null;
     e.lineSpeeds=null;
-    e.lineHalfWidths=null;
     e.lineColors=null;
+    e.lineOutside=null;
   }
   if(e.dotsMesh){
     extraRoot.remove(e.dotsMesh);
@@ -5341,7 +5606,9 @@ function observeExtraTags(observation,sample,assoc){
   if(!extraScanActive||!assoc)return;
   const K=observation.cameraModel,all=observation.unassignedDetections??[];
   const atMs=sample.submittedAtPerformanceMs;
-  const camInL=resolveCameraInL(observation,assoc);
+  // Once the L-angle XR anchor is locked, never pull camera-in-L toward the physical L-target
+  // (e.g. when picking up a Tablet/e-Ink target to track 300/301 in 3D without 4 cm bridge-jumping).
+  const camInL=resolveCameraInL(observation,assoc,{allowOpticalBridge:false});
   if(!camInL)return;
   const velocity=viewerVelocityAt(history,assoc.targetXrTimeMs,sample.context);
   const staticGate=evaluateMotionGate(velocity,{source:camInL.source},{
@@ -5910,6 +6177,8 @@ function renderRightHud(now,as,an,cs){
     if(mm<3){badge='ON POINT';badgeColor='#16a34a';}
     else if(mm<10){badge='OK';badgeColor='#ca8a04';}
     else{badge='DRIFT';badgeColor='#ea580c';}
+  }else if((an.phase==='tracking'||an.phase==='created')&&now-lastMovedTargetAt<2500){
+    title2='ANCHOR FIXED · L-TARGET MOVED';badge='FIXED';badgeColor='#0284c7';
   }else if(an.phase==='tracking'||an.phase==='created'){
     title2=`JITTER: ${liveJitterMm!=null?liveJitterMm.toFixed(2):'–'}mm · DRIFT: ${liveDriftMm!=null?liveDriftMm.toFixed(1):'–'}mm`;
     if(liveJitterMm!=null){
@@ -6165,6 +6434,7 @@ function finalizeDiagnostics(){
     maxFrameGapMs,
     lastFps:fpsHistory.at(-1)??null,
     historySamples:history.length,
+    trailColorMode,
     frameTiming:perfSnap.frameTiming,
     hud:perfSnap.hud,
     anchorStability:perfSnap.anchorStability,
@@ -6206,7 +6476,7 @@ function clean(s){
   space?.removeEventListener?.('reset',reset);
   assistant?.dispose();assistant=null;capture.stop();anchor.end(performance.now());obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusSweepCounter=0;focusPartialMissStreak=0;handHistory.clear();clearTrail();hideWaypointInspector();hideAllProbeCursors();clearPins();resetSpatialPortals();
   hoveredTlOffer=false;tlOfferPressSince=null;tlOfferGroup.visible=false;fenceGroup.visible=false;fenceRiseStartMs=0;perimeterCompleteAnnounced=false;perimeterOfferSuppressed=false;
-  modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';
+  modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';modeColorPokeSince=null;modeColorPokeConsumed=false;modeColorCooldownUntil=0;lastModeColorKey='';turboBarSprite.visible=false;lastTurboBarKey='';
   modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
   session=null;space=null;floorSpace=null;profile=null;extraScanActive=false;lastMotionState=null;lastObs=null;lastObsAtMs=0;reanchorConfirmUntil=0;resetAnchorStability();
   hasPrevViewerPose=false;smoothedHeadAngDegS=0;smoothedHeadLinMS=0;appliedFoveation=null;
@@ -6239,7 +6509,7 @@ async function triggerReanchor(){
   const now=performance.now();
   if(!anchor.reanchor(now,'trigger'))return;
   extraScanActive=false;reanchorConfirmUntil=0;resetAnchorStability();
-  clearExtras();obsBuffer.clear();audit.reset();lastAuditRow=null;
+  clearExtras();obsBuffer.clear();audit.reset();lastAuditRow=null;lastMovedTargetAt=0;
   status('Re-anchoring · starting camera…');
   if(!await capture.start())status('Failed to restart camera for re-anchoring.');
 }
@@ -6248,7 +6518,7 @@ async function triggerRecalibrate(){
   if(!session||!assistant)return;
   const now=performance.now();
   extraScanActive=false;reanchorConfirmUntil=0;resetAnchorStability();
-  profile=null;clearExtras();clearPins();clearTrail();obsBuffer.clear();audit.reset();lastAuditRow=null;
+  profile=null;clearExtras();clearPins();clearTrail();obsBuffer.clear();audit.reset();lastAuditRow=null;lastMovedTargetAt=0;
   resetOrbitGuide();
   anchor.reanchor(now,'recalibrate');
   assistant.retry();
@@ -6769,12 +7039,13 @@ try{
       adaptiveQuality.reset();
       appliedFoveation=null;lastQualityState=adaptiveQuality.state();
       hasPrevViewerPose=false;smoothedHeadAngDegS=0;smoothedHeadLinMS=0;rightMidPinchSince=null;perimeterOfferSuppressed=false;
-      lastModePillKey='';modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';
+      trailColorMode=currentTrailColorMode();
+      lastModePillKey='';modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';modeColorPokeSince=null;modeColorPokeConsumed=false;modeColorCooldownUntil=0;lastModeColorKey='';turboBarSprite.visible=false;lastTurboBarKey='';
       modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
       hudPanelsVisible=false;hudDragState=null;resetHudCache();perfTracker.reset();
       leftFistToggle.reset();leftFistFlashUntil=0;leftFistFlashPos=null;leftFistFlashToScan=false;
       lastXrTime=null;fpsHistory=[];stabilityHistory=[];rmsHistory=[];maxFrameGapMs=0;resetAnchorStability();
-      lastAuditRow=null;lastMotionState=null;lastSampleStats=null;lastObs=null;lastObsAtMs=0;lastCalPhase='idle';lastCalCount=0;
+      lastAuditRow=null;lastMovedTargetAt=0;lastMotionState=null;lastSampleStats=null;lastObs=null;lastObsAtMs=0;lastCalPhase='idle';lastCalCount=0;
       rvfcWindowStart=performance.now();rvfcWindowCount=capture.presentedCallbacks?.()??capture.state().presentedCallbacks;rvfcHz=0;
       diagnostics={appVersion:APP_VERSION_LABEL,startedAt:new Date().toISOString(),userAgent:navigator.userAgent,sessionId,rigId:rig.id,samples:[],events:[],errors:[]};
 
@@ -6803,10 +7074,11 @@ try{
           if(showcaseOpen&&showcaseHoverZone){triggerShowcaseAction(showcaseHoverZone,now);return;}
           // Priority 1: Pinch/Trigger on a pinned card's red [×] close orb removes that pin.
           if(hoveredClosePinKey){unpinWaypoint(hoveredClosePinKey);return;}
-          // Priority 1b: Pinch/Trigger while hovering the anchored [◈ FENCE] / [■ MEASURE / ● SCAN] / [ ? ] buttons.
+          // Priority 1b: Pinch/Trigger while hovering the anchored [◈ FENCE] / [■ MEASURE / ● SCAN] / [TRAIL] / [ ? ] buttons.
           if(hoveredModeInfo){toggleModeHelp(now);return;}
           if(hoveredModeFence){togglePerimeterFence(now);return;}
           if(hoveredModeClear&&userItemCount()>0){clearAllUserItems();return;}
+          if(hoveredModeColor){toggleTrailColorMode();return;}
           if(hoveredModeMain){toggleExtraScan();return;}
           // Priority 2: Controller Trigger pins/unpins immediately with ✓ confirmation burst; bare-hand pinch uses the 350 ms radial loader.
           if(hoveredWaypoint){
@@ -6942,7 +7214,14 @@ try{
           if(assoc){
             observeExtraTags(item.observation,item.sample,assoc);
             const row=auditAnchorObservation(item.observation,item.sample,assoc,rig);
-            if(row){audit.observe(row);lastAuditRow=row;lastAuditAt=now;}
+            if(row){
+              if(row.positionDifferenceMm>50||row.orientationDifferenceDeg>10){
+                lastMovedTargetAt=now;
+                lastAuditRow=null;
+              }else{
+                audit.observe(row);lastAuditRow=row;lastAuditAt=now;
+              }
+            }
           }
         }
       }
@@ -7205,26 +7484,37 @@ try{
           drawFistProgressBadge(1,leftFistFlashToScan,true);
         }
 
-        // 3. Left Menu Pinky (↺ CLEAR ALL) ONLY works while in MEASURE mode with Wrist Menu open (keeps Perimeter Fence intact).
+        // 3. Left Menu Ring (TRAIL: ID / TURBO) & Pinky (↺ CLEAR ALL) ONLY work while in MEASURE mode with Wrist Menu open (keeps Perimeter Fence intact).
         const dIndex=jDist(jt,ji);
         let activeFinger=null;
         const allowMenuPinch=inView&&now>=leftHandCooldownUntil&&dIndex>0.035&&leftMenuOpen;
+        const dRing=allowMenuPinch?jDist(jt,jr):Infinity;
         const dPinky=allowMenuPinch?jDist(jt,jp):Infinity;
-        if(dPinky<PINCH_DIST){
-          activeFinger='pinky';
+        if(dRing<PINCH_DIST&&dRing<=dPinky){
+          leftPinkyPinchSince=null;activeFinger='ring';
+          if(leftRingPinchSince==null)leftRingPinchSince=now;
+          const p=Math.min(1,(now-leftRingPinchSince)/HOLD_MS);
+          showRingAt(jt,jr,trailColorMode==='speed'?0xf97316:0x38bdf8,p);
+          if(p>=1){leftRingPinchSince=null;leftHandCooldownUntil=now+900;toggleTrailColorMode();}
+        }else if(dPinky<PINCH_DIST){
+          leftRingPinchSince=null;activeFinger='pinky';
           if(leftPinkyPinchSince==null)leftPinkyPinchSince=now;
           const p=Math.min(1,(now-leftPinkyPinchSince)/HOLD_MS);
           showRingAt(jt,jp,0xf59e0b,p);
           if(p>=1){leftPinkyPinchSince=null;leftHandCooldownUntil=now+1200;clearAllUserItems();}
         }else{
+          leftRingPinchSince=null;
           leftPinkyPinchSince=null;
         }
-        leftRingPinchSince=null;
 
         if(leftMenuOpen){
+          const trailColorLabel=trailColorMode==='speed'?'TRAIL: TURBO':'TRAIL: ID';
+          const trailColorAccent=trailColorMode==='speed'?'#f97316':'#38bdf8';
           const pHudL=placePill(fingerBadgeIdx,ji,canScan,hudPanelsVisible?'HUD OFF':'HUD ON','#c084fc',wristPillPokeId==='l-hud');
+          const pColorL=placePill(fingerBadgeRing,jr,canScan,trailColorLabel,trailColorAccent,activeFinger==='ring'||wristPillPokeId==='l-color');
           const pPinky=placePill(fingerBadgePinky,jp,canScan,'↺ CLEAR ALL','#fbbf24',activeFinger==='pinky'||wristPillPokeId==='l-pinky');
           if(pHudL)openPills.push({id:'l-hud',probeId:'hand:right',pos:pHudL,poker:rightIdxPos,color:0xc084fc,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;hudPanelsVisible=!hudPanelsVisible;if(hudPanelsVisible)resetHudCache();else hudDragState=null;playModeTick('pin');showHudToast(hudPanelsVisible?'HUD SHOWN':'HUD HIDDEN','#c084fc',1400);}});
+          if(pColorL)openPills.push({id:'l-color',probeId:'hand:right',pos:pColorL,poker:rightIdxPos,color:trailColorMode==='speed'?0xf97316:0x38bdf8,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;toggleTrailColorMode();}});
           if(pPinky)openPills.push({id:'l-pinky',probeId:'hand:right',pos:pPinky,poker:rightIdxPos,color:0xf59e0b,action:()=>{leftMenuOpenUntil=0;leftHandCooldownUntil=now+900;clearAllUserItems();}});
         }
       }else{

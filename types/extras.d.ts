@@ -97,7 +97,13 @@ export function computePinPillPositions(
 
 // src/motion-guard.mjs
 export const MOTION_GATE_DEFAULTS: Readonly<Record<string, number>>;
-export const OPTICAL_BRIDGE_DEFAULTS: Readonly<Record<string, number>>;
+export const OPTICAL_BRIDGE_DEFAULTS: Readonly<{
+  allowOpticalBridge: boolean;
+  minTags: number;
+  maxOpticalRmsPx: number;
+  maxDivergenceM: number;
+  maxDivergenceDeg: number;
+}>;
 export const CARRIED_MOTION_GATE_DEFAULTS: Readonly<Record<string, number>>;
 export function viewerVelocityAt(
   history: XrHistoryEntry[],
@@ -108,7 +114,13 @@ export function viewerVelocityAt(
 export function resolveCameraInL(
   observation: ReferenceObservation | null | undefined,
   assoc: AnchorAssociation | null | undefined,
-  options?: Record<string, number>,
+  options?: {
+    allowOpticalBridge?: boolean;
+    minTags?: number;
+    maxOpticalRmsPx?: number;
+    maxDivergenceM?: number;
+    maxDivergenceDeg?: number;
+  },
 ): {
   lFromCamera: Matrix4Array;
   source: 'optical-l' | 'xr-history';
@@ -260,6 +272,9 @@ export const RIBBON_SPEED_DEFAULTS: Readonly<{
   refSpeedMps: number;
   exponent: number;
 }>;
+export const TURBO_SPEED_DEFAULTS: Readonly<{
+  refSpeedMps: number;
+}>;
 export function fuseCommittedTrailSegment<T extends { pose: Matrix4Array }>(
   confirmed: T[],
   opticalPose: Matrix4Array | null | undefined,
@@ -280,6 +295,14 @@ export function speedToRibbonHalfWidth(
   opts?: Partial<typeof RIBBON_SPEED_DEFAULTS>,
 ): number;
 export function speedToHeatColor(
+  speedMps: number,
+  opts?: { refSpeedMps?: number; out?: Vec3 | Float32Array | null },
+): Vec3 | Float32Array;
+export function turboColormap(
+  t: number,
+  out?: Vec3 | Float32Array | null,
+): Vec3 | Float32Array;
+export function speedToTurboColor(
   speedMps: number,
   opts?: { refSpeedMps?: number; out?: Vec3 | Float32Array | null },
 ): Vec3 | Float32Array;

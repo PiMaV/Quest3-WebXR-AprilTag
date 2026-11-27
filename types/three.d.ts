@@ -42,7 +42,26 @@ export interface PathTubeMesh {
   mesh: ThreeObjectLike & { geometry: { dispose(): void } };
   capacity: number;
   sides: number;
-  syncFromPositions(rawPositions: ArrayLike<number>, count: number, radii?: ArrayLike<number> | null): number;
+  syncFromPositions(
+    rawPositions: ArrayLike<number>,
+    count: number,
+    opts?: {
+      radii?: ArrayLike<number> | null;
+      colors?: ArrayLike<number> | null;
+      outsideFlags?: ArrayLike<number> | null;
+      fromIndex?: number;
+    },
+  ): number;
+  syncColors(
+    sampleColors: ArrayLike<number>,
+    count: number,
+    opts?: { fromIndex?: number },
+  ): number;
+  syncOutsideFlags(
+    outsideFlags: ArrayLike<number>,
+    count: number,
+    opts?: { fromIndex?: number },
+  ): number;
   clear(): void;
   activeSegments(): number;
   dispose(): void;
@@ -134,7 +153,14 @@ export function createAxesBatch(maxAxes: number, opts?: { renderOrder?: number }
 export function createPathTubeMesh(
   maxPoints: number,
   material: unknown,
-  opts?: { radius?: number; sides?: number; renderOrder?: number; name?: string },
+  opts?: {
+    radius?: number;
+    sides?: number;
+    vertexColors?: boolean;
+    dashAttribute?: boolean;
+    renderOrder?: number;
+    name?: string;
+  },
 ): PathTubeMesh;
 export function createPathRibbonMesh(
   maxPoints: number,

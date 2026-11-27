@@ -38,9 +38,10 @@ test('vendored AprilTag WASM loads in Node and detects tag36h11 with LL,LR,UR,UL
   const wasm=await AprilTagWasm({wasmBinary});
   const detector=createAprilTagDetector(wasm,1);
 
-  // Official tag36h11 row-major bitmaps (ID 0 + A4 IDs 350/351/352 + Tablet/e-Ink IDs 370/371/372).
+  // Official tag36h11 row-major bitmaps (ID 0 + A4 IDs 350/351/352 + Tablet/e-Ink IDs 370/371/372 + demo pair 300/301).
   for(const [expectedId,code] of [
     [0,0x000000d5d628584n],
+    [300,0x248affc29n],[301,0xfb57dcd11n],
     [350,0x89ded4ea1n],[351,0x256a0ba34n],[352,0xb6948e627n],
     [370,0xeafb4ae59n],[371,0x7ca7fe2bdn],[372,0x1490ca8f6n],
   ]){

@@ -15,6 +15,7 @@ export const MOTION_GATE_DEFAULTS=Object.freeze({
 });
 
 export const OPTICAL_BRIDGE_DEFAULTS=Object.freeze({
+  allowOpticalBridge:true,
   minTags:3,
   maxOpticalRmsPx:1.0,
   maxDivergenceM:0.04,
@@ -122,6 +123,7 @@ export function resolveCameraInL(observation,assoc,options={}){
   const rms=lTool?.reprojectionRmsPx;
 
   if(
+    cfg.allowOpticalBridge!==false&&
     lTool&&
     lTool.mode==='joint-rigid-tags'&&
     tagCount>=cfg.minTags&&

@@ -201,6 +201,65 @@ export function speedToHeatColor(speedMps, {
   return [r, g, b];
 }
 
+export const TURBO_SPEED_DEFAULTS = Object.freeze({
+  refSpeedMps: 0.60, // 0–600 mm/s default display envelope
+});
+
+// Official Google Turbo sRGB LUT (17 stops at t = 0/16 .. 16/16; Apache-2.0, Anton Mikhailov).
+const TURBO_STOPS = Object.freeze([
+  Object.freeze([0.18995, 0.07176, 0.23217]), // 0/16  #30123b
+  Object.freeze([0.25107, 0.25237, 0.63374]), // 1/16
+  Object.freeze([0.27628, 0.42118, 0.89123]), // 2/16
+  Object.freeze([0.25862, 0.57958, 0.99876]), // 3/16
+  Object.freeze([0.15844, 0.73551, 0.92305]), // 4/16
+  Object.freeze([0.09267, 0.86554, 0.76230]), // 5/16
+  Object.freeze([0.19659, 0.94901, 0.59466]), // 6/16
+  Object.freeze([0.42778, 0.99419, 0.38575]), // 7/16
+  Object.freeze([0.64362, 0.98999, 0.23356]), // 8/16
+  Object.freeze([0.80473, 0.92452, 0.20459]), // 9/16
+  Object.freeze([0.93301, 0.81236, 0.22667]), // 10/16
+  Object.freeze([0.99314, 0.67408, 0.20348]), // 11/16
+  Object.freeze([0.98360, 0.49291, 0.12849]), // 12/16
+  Object.freeze([0.92105, 0.31489, 0.05475]), // 13/16
+  Object.freeze([0.81608, 0.18462, 0.01809]), // 14/16
+  Object.freeze([0.66449, 0.08436, 0.00424]), // 15/16
+  Object.freeze([0.47960, 0.01583, 0.01055]), // 16/16 #7a0403
+]);
+
+/**
+ * Sample Google's Turbo perceptual colormap at normalized scalar t in [0..1] (sRGB [r, g, b] in [0..1]).
+ */
+export function turboColormap(t, out = null) {
+  const x = Number.isFinite(t) ? Math.max(0, Math.min(1, t)) : 0;
+  const scaled = x * 16;
+  const i0 = Math.min(15, scaled | 0);
+  const f = scaled - i0;
+  const s0 = TURBO_STOPS[i0];
+  const s1 = TURBO_STOPS[i0 + 1];
+  const r = s0[0] + (s1[0] - s0[0]) * f;
+  const g = s0[1] + (s1[1] - s0[1]) * f;
+  const b = s0[2] + (s1[2] - s0[2]) * f;
+  if (out) {
+    out[0] = r;
+    out[1] = g;
+    out[2] = b;
+    return out;
+  }
+  return [r, g, b];
+}
+
+/**
+ * Map instantaneous tangential path speed (m/s) to a Google Turbo sRGB color [r, g, b] in [0..1].
+ */
+export function speedToTurboColor(speedMps, {
+  refSpeedMps = TURBO_SPEED_DEFAULTS.refSpeedMps,
+  out = null,
+} = {}) {
+  const refV = Number.isFinite(refSpeedMps) && refSpeedMps > 1e-4 ? refSpeedMps : TURBO_SPEED_DEFAULTS.refSpeedMps;
+  const v = Number.isFinite(speedMps) && speedMps > 0 ? speedMps : 0;
+  return turboColormap(Math.max(0, Math.min(1, v / refV)), out);
+}
+
 function writeNormalizedVec3(out, off, x, y, z) {
   const len = Math.hypot(x, y, z);
   if (len > 1e-6) {

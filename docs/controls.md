@@ -27,8 +27,8 @@ Used for discovering markers, tracking generic tagged objects, recording 3D moti
 - **Dedicated IDs without a profile (`x50–x99`, e.g. `250–299`):** Shown as static locked markers scaled by ID class (`requiredTagEdgeMm`) with their ID rendered flat on the tag matrix, plus a one-time warning.
 - **Table Perimeter Fence (`353–359`):** Reserved perimeter markers (activated via `TL` `353`, labeled `YL` `358`, `TL` `353`, `XT` `357`, `TR` `354`, `YR` `359`, `BR` `355`, `XB` `356`) build a 20 cm clockwise table fence.
 - **Time-Copy Snapshots (`[⏱ MARK]`):** Hold an index fingertip `0.40 s` on the bottom **`[⏱ MARK]`** pill below any tag (in mid-air or flat on the table, positioned clear of left/right grabbing fingers) to freeze a **Time-Copy** point marker at its live 3D pose.
-- **3D Twist-Ribbon Path Recording (`[● REC]`):** Hold **`[● REC]`** (`0.65 s` start / `0.35 s` stop) above a tag to record a **tag-colored 2-edge Twist-Ribbon** (retains per-tag object color while modulating width `5–35 mm` (`7×`) across `0–550 mm/s` to show 3D roll/twist and speed in 2 draw calls) with waypoint dots.
-- **Mode Switch & Reset:** On the anchored L-angle bar, tap **`[■ MEASURE / ● SCAN]`**, **`[◈ FENCE]`**, or **`[↺ CLEAR ALL]`** (clears user-scanned tags, trails, Time-Copies, and pins while keeping the Perimeter Fence active), or use a frontal **Left Fist Hold (`0.85 s`)** / Controller Grip.
+- **3D Path Recording (`[● REC]`):** Hold **`[● REC]`** (`0.65 s` start / `0.35 s` stop) above a tag to record a calm, uniform **`3.0 mm` 3D line** (`1` draw call via `createPathTubeMesh`) with waypoint dots. Segments outside an active Table Perimeter Fence render cleanly **dashed**.
+- **Mode Switch, Trail Color & Reset:** On the anchored L-angle bar, tap **`[■ MEASURE / ● SCAN]`**, **`[TRAIL: ID / SPEED]`** (instantly toggles all recorded and live trails between **Unique Tag Color** and **Google Turbo Speed `0–600 mm/s`** with an anchored **Turbo Color Bar** underneath), **`[◈ FENCE]`**, or **`[↺ CLEAR ALL]`** (clears user-scanned tags, trails, Time-Copies, and pins while keeping the Perimeter Fence active), or use a frontal **Left Fist Hold (`0.85 s`)** / Controller Grip.
 
 ---
 
@@ -39,8 +39,9 @@ Pure native WebXR anchor tracking — low power and free of optical stutter.
 - **Fingertip Hover Inspection:** Hover any locked tag, Time-Copy, or path waypoint with your index fingertip to reveal the full 3D tag square (with a red `LL` origin corner dot showing tag orientation), orientation plane, tangential speed (`mm/s`), and metric coordinates (`X / Y / Z / Floor`).
 - **Pinning & Distance Rails:** **Index + Thumb Pinch** (left or right hand, or Controller Trigger) exclusively pins/unpins hovered points for live pairwise 3D distance rails (`mm`, `ΔZ`, `Δt`), preventing accidental free-hand pill brushing.
 - **Gated Wrist Menu** (`1.2 s` steady frontal palm gaze or `120 ms` tap on the inner Wrist-Dot):
-  - `↺ CLEAR ALL` — clears user-scanned tags, trails, Time-Copies, and pins while preserving the Perimeter Fence.
-  - `HUD ON/OFF` — toggles floating diagnostic HUD panels.
+  - `HUD ON/OFF` (Left Index) — toggles floating diagnostic HUD panels.
+  - `TRAIL: ID / TURBO` (Left Ring) — toggles recorded trails between Unique Tag Color and Google Turbo Speed (`0–600 mm/s`).
+  - `↺ CLEAR ALL` (Left Pinky) — clears user-scanned tags, trails, Time-Copies, and pins while preserving the Perimeter Fence.
   - `Q: AUTO / FLUID / CRISP` — switches motion-adaptive rendering quality.
   - `RANGE: AUTO 1.5 / EXP 1.0` — `AUTO 1.5` caps at `decimate = 1.5` when steady and locks to `decimate = 2` whenever moving/active; `EXP 1.0` enables idle-only `decimate = 1` above `78 FPS`.
   - `↺ RECALIBRATE` — clears active profile check and enters fresh calibration.

@@ -107,6 +107,11 @@ test('resolveCameraInL prefers clean same-frame optical L-pose over lagged XR es
   const movedCamGLFromL=inverse(vectorRigid([0.2,-0.1,0,0.185,0.05,0.55]));
   const movedObs={tools:[{...goodObs.tools[0],cameraFromTool:glToCvPose(movedCamGLFromL)}]};
   assert.equal(resolveCameraInL(movedObs,assoc).source,'xr-history');
+
+  // Disabling the optical bridge keeps camera-in-L strictly locked to the native XR anchor (no 0..4 cm jump when moving the L-target).
+  const fixedOnly=resolveCameraInL(goodObs,assoc,{allowOpticalBridge:false});
+  assert.equal(fixedOnly.source,'xr-history');
+  assert.ok(Math.abs(fixedOnly.lFromCamera[12]-0.125)<1e-6);
 });
 
 test('evaluateMotionGate freezes fast head turns, damps moderate turns, and grants wider envelope to optical-l',()=>{

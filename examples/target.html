@@ -307,20 +307,23 @@
         questHref:'./quest.html',
       },
       tablet:{
-        wMm:200.0,hMm:150.0,cardX:59,cardY:62,qzScale:1.25,
-        note:'<strong>20 × 15 cm Digital Target (iPad / e-Ink · IDs 370 / 371 / 372, 150 × 110 mm L-span, 20 mm tags):</strong> Match a bank/ID card to the dashed box for 1:1, or download the crisp B&amp;W PNG/PDF for an e-Ink reader. In Quest Demo select <em>Tablet / e-Ink (370 / 371 / 372)</em>.',
+        wMm:200.0,hMm:150.0,cardX:59,cardY:69.3333,qzScale:1.06,
+        note:'<strong>20 × 15 cm Digital Target (iPad / e-Ink · L-angle 370 / 371 / 372 + Demo Pair 300 / 301, Δ 60 mm, 20 mm tags):</strong> Match a bank/ID card to the dashed box for 1:1, lock the L-angle flat on your desk, then pick up the tablet to track <code>300</code> &amp; <code>301</code> in 3D.',
         pdfHref:'../print/tablet_200x150mm_370_371_372.pdf',
         pdfLabel:'Download 20×15 cm PDF',
         questHref:'./quest.html?rig=tablet',
       },
     };
 
-    // Exact tag36h11 6x6 row-major bitmaps for IDs 370 / 371 / 372 verified against vendor/apriltag/apriltag_wasm.wasm.
+    // Exact tag36h11 6x6 row-major bitmaps for IDs 370 / 371 / 372 + demo pair 300 / 301 verified against vendor/apriltag/apriltag_wasm.wasm.
     // Geometry matches rigs/ms-qr-tablet-l.json (20.0 mm tags; 370=[10,10], 371=[160,10], 372=[10,120] in mm from bottom-left).
+    // Demo tracking pair: 300=[78,48] (center 88,58 mm) & 301=[138,48] (center 148,58 mm) -> exact 60.0 mm center-to-center.
     var TABLET_TAGS=[
       {id:370,role:'ORIGIN',x0:10,yBottom:10,size:20,bits:'111010101111101101001010111001011001',labelX:36,labelY:142},
       {id:371,role:'+X 150 mm',x0:160,yBottom:10,size:20,bits:'011111001010011111111110001010111101',labelX:154,labelY:142,anchor:'end'},
       {id:372,role:'+Y 110 mm',x0:10,yBottom:120,size:20,bits:'000101001001000011001010100011110110',labelX:40,labelY:21},
+      {id:300,role:'DEMO',x0:78,yBottom:48,size:20,bits:'001001001000101011111111110000101001',labelX:88,labelY:107.2,anchor:'middle'},
+      {id:301,role:'DEMO',x0:138,yBottom:48,size:20,bits:'111110110101011111011100110100010001',labelX:148,labelY:107.2,anchor:'middle'},
     ];
 
     var sheet=document.getElementById('sheet');
@@ -379,9 +382,16 @@
       qrImage.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href','./assets/qr_eb_mess_icu.png');
       tabletSvg.appendChild(qrImage);
       // Clean top header outside ISO card quiet zone.
-      tabletSvg.appendChild(el('text',{x:118,y:12,'text-anchor':'middle',fill:'#334155','font-size':3.2,'font-family':'system-ui,sans-serif','font-weight':'600'},'M.E.S.S. DIGITAL TARGET · eb.mess.icu · 200 × 150 mm'));
+      tabletSvg.appendChild(el('text',{x:118,y:10.5,'text-anchor':'middle',fill:'#334155','font-size':3.2,'font-family':'system-ui,sans-serif','font-weight':'600'},'M.E.S.S. DIGITAL TARGET · eb.mess.icu · 200 × 150 mm'));
 
-      // Render exact 20.0 mm AprilTags (370 / 371 / 372).
+      // Subtle 60.0 mm center-to-center dimension callout between demo tags 300 & 301 (>= 6 mm quiet zone from both tags).
+      tabletSvg.appendChild(el('line',{x1:104,y1:92,x2:132,y2:92,stroke:'#64748b','stroke-width':0.45,'stroke-dasharray':'1.6 1.1'}));
+      tabletSvg.appendChild(el('line',{x1:104,y1:90.2,x2:104,y2:93.8,stroke:'#64748b','stroke-width':0.45}));
+      tabletSvg.appendChild(el('line',{x1:132,y1:90.2,x2:132,y2:93.8,stroke:'#64748b','stroke-width':0.45}));
+      tabletSvg.appendChild(el('text',{x:118,y:89.2,'text-anchor':'middle',fill:'#334155','font-size':3.0,'font-family':'ui-monospace,monospace','font-weight':'bold'},'Δ 60.0 mm'));
+      tabletSvg.appendChild(el('text',{x:118,y:97.2,'text-anchor':'middle',fill:'#64748b','font-size':2.3,'font-family':'system-ui,sans-serif','font-weight':'600'},'MOVE AFTER LOCK'));
+
+      // Render exact 20.0 mm AprilTags (L-angle 370 / 371 / 372 + demo tracking pair 300 / 301).
       for(var i=0;i<TABLET_TAGS.length;i++){
         var t=TABLET_TAGS[i];
         var yTop=150-(t.yBottom+t.size);

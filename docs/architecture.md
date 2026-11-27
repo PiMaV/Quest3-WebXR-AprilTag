@@ -169,12 +169,12 @@ Physical rig and print-sheet definitions live in [`rigs/ms-qr-main-l.json`](../r
 | [`src/motion-guard.mjs`](../src/motion-guard.mjs) | Head-motion velocity gating (`evaluateMotionGate`, `evaluateCarriedJumpGuard`) and same-frame optical L-angle bridge (`resolveCameraInL`) |
 | [`src/hand-coupling.mjs`](../src/hand-coupling.mjs) + [`src/hand-gesture.mjs`](../src/hand-gesture.mjs) | 90 Hz rigid-palm & multi-tag ruler hand-tracking coupling for movable tags (`300–349`) and scale-invariant fist/wrist gestures |
 | [`src/tag-predictor.mjs`](../src/tag-predictor.mjs) | Damped constant-velocity 6DOF optical velocity/lead prediction for uncoupled moving AprilTags |
-| [`src/path-smoother.mjs`](../src/path-smoother.mjs) | Trail segment fusion (`fuseCommittedTrailSegment`), position/axis tail smoothing, velocity tube & Twist-Ribbon width/heatmap helpers (`speedToRibbonHalfWidth`, `speedToHeatColor`) |
+| [`src/path-smoother.mjs`](../src/path-smoother.mjs) | Trail segment fusion (`fuseCommittedTrailSegment`), position/axis tail smoothing, Google Turbo colormap (`turboColormap`, `speedToTurboColor`), and velocity tube/ribbon helpers (`speedToTubeRadius`, `speedToRibbonHalfWidth`, `speedToHeatColor`) |
 | [`src/perf-stats.mjs`](../src/perf-stats.mjs) + [`src/adaptive-quality.mjs`](../src/adaptive-quality.mjs) | Zero-alloc frame timing, `opticalLagMs` & `mm/s` telemetry (`trackingBenchmark`), and motion-adaptive quality controller (`auto` / `fluid` / `crisp`) |
 | [`src/anchor-audit.mjs`](../src/anchor-audit.mjs) | Strictly read-only optical comparison against native anchor pose (`usedToCorrectAnchor: false`) |
 | [`src/tool-scan.mjs`](../src/tool-scan.mjs) + [`src/perimeter-fence.mjs`](../src/perimeter-fence.mjs) | Multi-view 6DOF registration for loose plates and clockwise 20 cm perimeter fence (`353–359`) |
 | [`src/tag-callout.mjs`](../src/tag-callout.mjs) + [`src/tag-tap.mjs`](../src/tag-tap.mjs) | View-aware 3D callout layout (`computeHoverCardLayout`, `computePinPillPositions`) and full-face tag surface / pinch proximity metrics |
-| [`src/three.mjs`](../src/three.mjs) + [`src/ui-atlas.mjs`](../src/ui-atlas.mjs) + [`src/render-batch.mjs`](../src/render-batch.mjs) | Optional Three.js subpath (`./three`) with instanced pools, badge atlases, 2-edge Twist-Ribbon (`createPathRibbonMesh`), and variable-radius tube (`createPathTubeMesh`) helpers |
+| [`src/three.mjs`](../src/three.mjs) + [`src/ui-atlas.mjs`](../src/ui-atlas.mjs) + [`src/render-batch.mjs`](../src/render-batch.mjs) | Optional Three.js subpath (`./three`) with instanced pools, badge atlases, vertex-colored & dashed-capable 3D tube (`createPathTubeMesh`), and 2-edge Twist-Ribbon (`createPathRibbonMesh`) helpers |
 | [`src/frame-evidence.mjs`](../src/frame-evidence.mjs) + [`src/xr-exit.mjs`](../src/xr-exit.mjs) + [`src/version.mjs`](../src/version.mjs) | Frozen-frame pixel change fingerprinting, Quest controller long-press exit helper, and shared `APP_VERSION_LABEL` |
 
 ---

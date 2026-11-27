@@ -426,12 +426,16 @@ export function createAxesBatch(maxAxes, { renderOrder = 0 } = {}) {
 export function createPathTubeMesh(maxPoints, material, {
   radius = 0.0014,
   sides = 5,
+  vertexColors = false,
+  dashAttribute = false,
   renderOrder = 0,
   name = '',
 } = {}) {
   const cap = Math.max(2, maxPoints | 0);
   const segSides = Math.max(3, Math.min(12, sides | 0));
   const defaultRadius = Number.isFinite(radius) && radius > 1e-5 ? radius : 0.0014;
+  const useVertexColors = Boolean(vertexColors || material?.vertexColors);
+  const useDash = Boolean(dashAttribute);
 
   const positions = new Float32Array(cap * segSides * 3);
   const ringNormals = new Float32Array(cap * 3);
@@ -471,6 +475,28 @@ export function createPathTubeMesh(maxPoints, material, {
   const posAttr = new THREE.BufferAttribute(positions, 3);
   posAttr.setUsage(THREE.DynamicDrawUsage);
   geometry.setAttribute('position', posAttr);
+
+  let colors = null;
+  let colAttr = null;
+  if (useVertexColors) {
+    colors = new Float32Array(cap * segSides * 3);
+    colors.fill(1);
+    colAttr = new THREE.BufferAttribute(colors, 3);
+    colAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('color', colAttr);
+  }
+
+  let arcLengths = null;
+  let dashData = null;
+  let dashAttr = null;
+  if (useDash) {
+    arcLengths = new Float32Array(cap);
+    dashData = new Float32Array(cap * segSides * 2);
+    dashAttr = new THREE.BufferAttribute(dashData, 2);
+    dashAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('aDash', dashAttr);
+  }
+
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   geometry.setDrawRange(0, 0);
 
@@ -481,7 +507,12 @@ export function createPathTubeMesh(maxPoints, material, {
 
   let activePoints = 0;
 
-  function syncFromPositions(linePositions, count, { radii = null, fromIndex = 0 } = {}) {
+  function syncFromPositions(linePositions, count, {
+    radii = null,
+    colors: sampleColors = null,
+    outsideFlags = null,
+    fromIndex = 0,
+  } = {}) {
     const n = Math.max(0, Math.min(cap, count | 0));
     activePoints = n;
     if (n < 2 || !linePositions) {
@@ -607,11 +638,87 @@ export function createPathTubeMesh(maxPoints, material, {
         positions[vOff + 1] = py + ny * c + by * sn;
         positions[vOff + 2] = pz + nz * c + bz * sn;
       }
+
+      if (colAttr && sampleColors) {
+        const sr = sampleColors[pOff];
+        const sg = sampleColors[pOff + 1];
+        const sb = sampleColors[pOff + 2];
+        const cr = Number.isFinite(sr) ? sr : 1;
+        const cg = Number.isFinite(sg) ? sg : 1;
+        const cb = Number.isFinite(sb) ? sb : 1;
+        for (let s = 0; s < segSides; s++) {
+          const vOff = vBase + s * 3;
+          colors[vOff] = cr;
+          colors[vOff + 1] = cg;
+          colors[vOff + 2] = cb;
+        }
+      }
+
+      if (dashAttr) {
+        const arc = i === 0
+          ? 0
+          : arcLengths[i - 1] + Math.hypot(
+            px - linePositions[pOff - 3],
+            py - linePositions[pOff - 2],
+            pz - linePositions[pOff - 1],
+          );
+        arcLengths[i] = arc;
+        const outFlag = (outsideFlags && outsideFlags[i]) ? 1 : 0;
+        const dBase = i * segSides * 2;
+        for (let s = 0; s < segSides; s++) {
+          const dOff = dBase + s * 2;
+          dashData[dOff] = arc;
+          dashData[dOff + 1] = outFlag;
+        }
+      }
     }
 
     geometry.setDrawRange(0, (n - 1) * segSides * 6);
     posAttr.needsUpdate = true;
+    if (colAttr && sampleColors) colAttr.needsUpdate = true;
+    if (dashAttr) dashAttr.needsUpdate = true;
     return n - 1;
+  }
+
+  function syncColors(sampleColors, count, { fromIndex = 0 } = {}) {
+    if (!colAttr || !sampleColors) return 0;
+    const n = Math.max(0, Math.min(cap, count | 0));
+    if (n === 0) return 0;
+    const start = Math.max(0, Math.min(n - 1, fromIndex | 0));
+    for (let i = start; i < n; i++) {
+      const pOff = i * 3;
+      const sr = sampleColors[pOff];
+      const sg = sampleColors[pOff + 1];
+      const sb = sampleColors[pOff + 2];
+      const cr = Number.isFinite(sr) ? sr : 1;
+      const cg = Number.isFinite(sg) ? sg : 1;
+      const cb = Number.isFinite(sb) ? sb : 1;
+      const vBase = i * segSides * 3;
+      for (let s = 0; s < segSides; s++) {
+        const vOff = vBase + s * 3;
+        colors[vOff] = cr;
+        colors[vOff + 1] = cg;
+        colors[vOff + 2] = cb;
+      }
+    }
+    colAttr.needsUpdate = true;
+    return n;
+  }
+
+  function syncOutsideFlags(outsideFlags, count, { fromIndex = 0 } = {}) {
+    if (!dashAttr) return 0;
+    const n = Math.max(0, Math.min(cap, count | 0));
+    if (n === 0) return 0;
+    const start = Math.max(0, Math.min(n - 1, fromIndex | 0));
+    for (let i = start; i < n; i++) {
+      const outFlag = (outsideFlags && outsideFlags[i]) ? 1 : 0;
+      const dBase = i * segSides * 2;
+      for (let s = 0; s < segSides; s++) {
+        dashData[dBase + s * 2 + 1] = outFlag;
+      }
+    }
+    dashAttr.needsUpdate = true;
+    return n;
   }
 
   function clear() {
@@ -628,6 +735,8 @@ export function createPathTubeMesh(maxPoints, material, {
     capacity: cap,
     sides: segSides,
     syncFromPositions,
+    syncColors,
+    syncOutsideFlags,
     clear,
     activeSegments: () => Math.max(0, activePoints - 1),
     dispose,

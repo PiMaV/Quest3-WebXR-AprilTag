@@ -9,12 +9,12 @@ Every physical coordinate measurement depends on an exact **1:1 millimeter-accur
 | Target | Tag IDs | Physical Size | Live 1:1 Viewer | Printable PDF | Rig Definition |
 |---|---|---|---|---|---|
 | **SCREEN / A4** | `350 / 351 / 352` | `297 × 210 mm` sheet · `230 × 170 mm` L-span | [Open 1:1 Screen Target →](https://q3.mess.engineering/examples/target.html) | [`sheet_A4_eb_mess_icu_en_full_pieces_print.pdf`](../print/sheet_A4_eb_mess_icu_en_full_pieces_print.pdf) | [`rigs/ms-qr-main-l.json`](../rigs/ms-qr-main-l.json) |
-| **TABLET / e-Ink** | `370 / 371 / 372` | `200 × 150 mm` sheet · `150 × 110 mm` L-span | [Open 1:1 Tablet Target →](https://q3.mess.engineering/examples/target.html?mode=tablet) | [`tablet_200x150mm_370_371_372.pdf`](../print/tablet_200x150mm_370_371_372.pdf) | [`rigs/ms-qr-tablet-l.json`](../rigs/ms-qr-tablet-l.json) |
+| **TABLET / e-Ink** | `370 / 371 / 372` + demo `300 / 301` (`Δ 60 mm`) | `200 × 150 mm` sheet · `150 × 110 mm` L-span | [Open 1:1 Tablet Target →](https://q3.mess.engineering/examples/target.html?mode=tablet) | [`tablet_200x150mm_370_371_372.pdf`](../print/tablet_200x150mm_370_371_372.pdf) | [`rigs/ms-qr-tablet-l.json`](../rigs/ms-qr-tablet-l.json) |
 
 ### Ensuring Exact 1:1 Scale
 
 - **Printing:** Print the A4 or `200 × 150 mm` PDF at **100% scale** (disable "Fit to Page" / "Shrink to Fit"). Lay the printed sheet flat and stationary on your workbench.
-- **Screen / iPad / e-Ink Display:** Open [`examples/target.html`](https://q3.mess.engineering/examples/target.html) (or `?mode=tablet`), hold a standard **ISO/IEC 7810 ID-1 bank or ID card (`85.6 × 54.0 mm`)** against the dashed overlay box, and fine-tune the slider until the physical card matches 1:1. For e-Ink readers, use the **Download e-Ink PNG** button (`300 DPI`, `2362 × 1772 px`) or the `200 × 150 mm` PDF.
+- **Screen / iPad / e-Ink Display:** Open [`examples/target.html`](https://q3.mess.engineering/examples/target.html) (or `?mode=tablet`), hold a standard **ISO/IEC 7810 ID-1 bank or ID card (`85.6 × 54.0 mm`)** against the dashed overlay box, and fine-tune the slider until the physical card matches 1:1. For e-Ink readers, use the **Download e-Ink PNG** button (`300 DPI`, `2362 × 1772 px`) or the `200 × 150 mm` PDF. Once the Tablet/e-Ink L-angle (`370–372`) is locked flat on your desk, you can pick up the tablet and immediately track its built-in generic pair **`300 / 301`** (`20 mm`, exact `60.0 mm` center-to-center) in 3D without printing anything.
 - **Automatic Recognition:** `examples/quest.html` automatically detects whether you are using the A4 (`350–352`) or Tablet (`370–372`) L-angle.
 
 ---
