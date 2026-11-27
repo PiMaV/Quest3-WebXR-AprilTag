@@ -74,9 +74,9 @@
       <div class="roi-view"></div>
       <div>
         <ul class="roi-legend">
-          <li><i aria-hidden="true" style="color:#006d70">●</i>${labels.trail}</li>
-          <li><i aria-hidden="true" style="color:#944c12">✚</i>${labels.centre}</li>
-          <li><i aria-hidden="true" style="color:#423780">□</i>${labels.next}</li>
+          <li><i aria-hidden="true" style="color:var(--paper-teal)">●</i>${labels.trail}</li>
+          <li><i aria-hidden="true" style="color:var(--paper-crop)">✚</i>${labels.centre}</li>
+          <li><i aria-hidden="true" style="color:var(--paper-next)">□</i>${labels.next}</li>
         </ul>
         <dl>
           <div><dt>${labels.speed}</dt><dd class="roi-speed"></dd></div>
@@ -101,24 +101,24 @@
     const width = right - left, height = bottom - top;
     const inside = nextX - edgePx / 2 >= left && nextX + edgePx / 2 <= right
       && nextY - edgePx / 2 >= top && nextY + edgePx / 2 <= bottom;
-    const dots = trail.map(([x, y]) => svg`<circle cx="${x}" cy="${y}" r="9" fill="#006d70"/>`);
+    const dots = trail.map(([x, y]) => svg`<circle cx="${x}" cy="${y}" r="9" fill="var(--paper-teal)"/>`);
     const frameLabel = `${german ? "Bild" : "Frame"} ${frame} → ${frame + 1}`;
     panel.querySelector("output").textContent = frameLabel;
     slider.setAttribute("aria-valuetext", frameLabel);
     panel.querySelector(".roi-view").replaceChildren(svg`<svg class="roi-image" viewBox="0 0 1280 1080"
         role="img" aria-label="${frameLabel}. ${labels.trail}, ${labels.window}, ${labels.next}.">
-      <rect width="1280" height="1080" fill="#edf3f4"/>
+      <rect width="1280" height="1080" fill="var(--paper-plot)"/>
       <path d="M320 0V1080 M640 0V1080 M960 0V1080 M0 270H1280 M0 540H1280 M0 810H1280"
-            stroke="#d1dfe1" stroke-width="3" fill="none"/>
+            stroke="var(--paper-grid)" stroke-width="3" fill="none"/>
       <rect x="${left}" y="${top}" width="${width}" height="${height}"
-            fill="#dfaa68" fill-opacity=".25" stroke="#944c12" stroke-width="6"/>
-      <polyline points="${trail.map(p => p.join(",")).join(" ")}" fill="none" stroke="#006d70" stroke-width="6"/>
+            fill="var(--paper-shade)" fill-opacity=".25" stroke="var(--paper-crop)" stroke-width="6"/>
+      <polyline points="${trail.map(p => p.join(",")).join(" ")}" fill="none" stroke="var(--paper-teal)" stroke-width="6"/>
       ${dots}
-      <path d="M${lastX} ${lastY} L${u} ${v}" stroke="#944c12" stroke-width="5" stroke-dasharray="9 7"/>
-      <circle cx="${lastX}" cy="${lastY}" r="13" fill="#006d70" stroke="white" stroke-width="4"/>
-      <path d="M-16 0H16 M0 -16V16" transform="translate(${u} ${v})" stroke="#944c12" stroke-width="7"/>
+      <path d="M${lastX} ${lastY} L${u} ${v}" stroke="var(--paper-crop)" stroke-width="5" stroke-dasharray="9 7"/>
+      <circle cx="${lastX}" cy="${lastY}" r="13" fill="var(--paper-teal)" stroke="var(--paper-panel)" stroke-width="4"/>
+      <path d="M-16 0H16 M0 -16V16" transform="translate(${u} ${v})" stroke="var(--paper-crop)" stroke-width="7"/>
       <rect x="${nextX - edgePx / 2}" y="${nextY - edgePx / 2}" width="${edgePx}" height="${edgePx}"
-            fill="none" stroke="#423780" stroke-width="7"/>
+            fill="none" stroke="var(--paper-next)" stroke-width="7"/>
     </svg>`);
     panel.querySelector(".roi-speed").textContent = `${format(speed, 2)} m/s`;
     panel.querySelector(".roi-size").textContent = `${width} × ${height} px`;

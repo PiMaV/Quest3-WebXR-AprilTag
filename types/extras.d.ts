@@ -48,8 +48,14 @@ export const TAG_ACTION_PILL_DEFAULTS: {
   minRestMs: number;
   maxRestPosDispM: number;
   minRestAxisDot: number;
+  coupledMaxRestPosDispM: number;
+  coupledMinRestAxisDot: number;
   tagNearM: number;
+  zoneNearM: number;
   pillNearM: number;
+  belowOffsetM: number;
+  sideHalfSpanM: number;
+  minTableZ: number;
 };
 export interface TagRestState {
   anchorPos: Vec3 | null;
@@ -68,17 +74,31 @@ export function updateTagRestState(
     minRestMs?: number;
     maxRestPosDispM?: number;
     minRestAxisDot?: number;
+    coupledMaxRestPosDispM?: number;
+    coupledMinRestAxisDot?: number;
   },
 ): { isResting: boolean; restingMs: number };
+export function computeTagActionPillLayout(opts: {
+  tagMatrix: ArrayLike<number>;
+  edgeMm?: number;
+  viewerPosL?: ArrayLike<number> | null;
+  viewerRightL?: ArrayLike<number> | null;
+  viewerUpL?: ArrayLike<number> | null;
+  recording?: boolean;
+  belowOffsetM?: number;
+  sideHalfSpanM?: number;
+  minTableZ?: number;
+}): { zoneCenterL: Vec3; recPosL: Vec3; markPosL: Vec3 };
 export function evaluateTagActionPills(opts?: {
   isResting?: boolean;
-  handCoupled?: boolean;
   recording?: boolean;
   hasPose?: boolean;
   minTagDist?: number;
+  minZoneDist?: number;
   minRecDist?: number;
   minMarkDist?: number;
   tagNearM?: number;
+  zoneNearM?: number;
   pillNearM?: number;
 }): { showRec: boolean; showMark: boolean };
 
@@ -349,6 +369,40 @@ export function smoothAxisTail(
   outAxes: { [index: number]: number },
   count: number,
 ): void;
+export const MOTION_WAKE_DEFAULTS: Readonly<{
+  durationMs: number;
+  maxPoints: number;
+  minStepM: number;
+  minIntervalMs: number;
+  maxJumpM: number;
+  headFilterTauSec: number;
+  smoothPasses: number;
+  maxSmoothDeviationM: number;
+  minVisibleArcM: number;
+  minRadiusM: number;
+  maxRadiusM: number;
+  radiusExponent: number;
+  fadeExponent: number;
+  maxOpacity: number;
+}>;
+export interface MotionWakeSample {
+  count: number;
+  positions: Float32Array;
+  radii: Float32Array;
+  fades: Float32Array;
+  speeds: Float32Array;
+  arcLengthM: number;
+}
+export interface MotionWakeBuffer {
+  clear(): void;
+  seed(pos3: ArrayLike<number>, nowMs: number): boolean;
+  push(pos3: ArrayLike<number>, nowMs: number, opts?: { speedMps?: number | null }): boolean;
+  sample(nowMs: number, opts?: { includeLiveHead?: boolean }): MotionWakeSample;
+  hasPoints(): boolean;
+}
+export function createMotionWakeBuffer(
+  options?: Partial<typeof MOTION_WAKE_DEFAULTS>,
+): MotionWakeBuffer;
 
 // src/tag-predictor.mjs
 export const TAG_PREDICTOR_DEFAULTS: Readonly<Record<string, number>>;
@@ -414,6 +468,7 @@ export function createFocusScheduler(options?: Record<string, number>): {
     nowMs?: number;
     farMode?: boolean;
     recentDetectMs?: number;
+    maxForegroundTags?: number;
   }): FocusSchedulerPlan;
   reportObservation(input?: {
     seenIds?: Iterable<number>;

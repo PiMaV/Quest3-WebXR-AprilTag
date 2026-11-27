@@ -12,6 +12,8 @@ import {
   TURBO_SPEED_DEFAULTS,
   turboColormap,
   speedToTurboColor,
+  MOTION_WAKE_DEFAULTS,
+  createMotionWakeBuffer,
 } from '../src/path-smoother.mjs';
 import {isRigidPose} from '../src/anchor.mjs';
 import {vectorRigid} from '../src/runtime.mjs';
@@ -198,4 +200,66 @@ test('turboColormap and speedToTurboColor map 0..600 mm/s across official Google
   const reused=speedToTurboColor(0.5,{refSpeedMps:1.0,out:outBuf});
   assert.equal(reused,outBuf);
   assert.ok(Math.abs(reused[1]-cLime[1])<1e-6);
+});
+
+test('createMotionWakeBuffer suppresses micro-bumps, smooths jitter, interpolates continuous tail decay, resets jumps, and tapers monotonically',()=>{
+  const wake=createMotionWakeBuffer();
+  assert.equal(wake.hasPoints(),false);
+
+  // 1. Micro-bump suppression (< minVisibleArcM = 14 mm stays hidden with count === 0)
+  wake.seed([0,0,0],1000);
+  wake.push([0.008,0.002,0],1040);
+  wake.push([0.011,-0.001,0],1080);
+  const micro=wake.sample(1080);
+  assert.equal(micro.count,0);
+
+  // Once travel exceeds >= 14 mm, wake unfurls cleanly with monotonic tapered radii & fades
+  wake.push([0.025,0,0],1120,{speedMps:0.25});
+  wake.push([0.055,0,0],1160,{speedMps:0.45});
+  wake.push([0.095,0,0],1200,{speedMps:0.55});
+  const active=wake.sample(1200);
+  assert.ok(active.count>=4,`expected >=4 points after 95 mm motion, got ${active.count}`);
+  assert.ok(active.arcLengthM>=0.04);
+  for(let i=1;i<active.count;i++){
+    assert.ok(active.radii[i]>=active.radii[i-1]-1e-7,'radii must taper monotonically from tail to head');
+    assert.ok(active.fades[i]>=active.fades[i-1]-1e-7,'fades must grow monotonically from tail to head');
+  }
+  assert.ok(active.radii[0]>=MOTION_WAKE_DEFAULTS.minRadiusM-1e-7);
+  assert.ok(active.radii[active.count-1]<=MOTION_WAKE_DEFAULTS.maxRadiusM+1e-7);
+
+  // 2. Continuous tail interpolation at cutoffMs = nowMs - durationMs (no discrete vertex pop) and full fade to 0
+  const wakeInterp=createMotionWakeBuffer({durationMs:1000,headFilterTauSec:0,minStepM:0.005,minIntervalMs:10,minVisibleArcM:0.014});
+  wakeInterp.seed([0,0,0],0);
+  wakeInterp.push([0.05,0,0],400);
+  wakeInterp.push([0.10,0,0],800);
+  // At nowMs=1200 -> cutoffMs=200 (midpoint between t=0 at x=0 and t=400 at x=0.05 -> interpolated tail x=0.025, life=0)
+  const midDecay=wakeInterp.sample(1200,{includeLiveHead:false});
+  assert.equal(midDecay.count,3);
+  assert.ok(Math.abs(midDecay.positions[0]-0.025)<1e-5,`expected interpolated tail x=0.025, got ${midDecay.positions[0]}`);
+  assert.ok(Math.abs(midDecay.fades[0])<1e-6,'interpolated tail at cutoffMs must have fade === 0');
+  assert.ok(Math.abs(midDecay.radii[0]-MOTION_WAKE_DEFAULTS.minRadiusM)<1e-7);
+  // Past last knot + durationMs (800 + 1000 = 1800 ms), wake completely dissolves to count === 0
+  const expired=wakeInterp.sample(1800,{includeLiveHead:false});
+  assert.equal(expired.count,0);
+  assert.equal(wakeInterp.hasPoints(),false);
+
+  // 3. Head low-pass + 2-pass binomial smoothing attenuates alternating +/-12 mm jitter and bounds deviation <= maxSmoothDeviationM
+  const wakeSmooth=createMotionWakeBuffer({durationMs:2000,minStepM:0.010,minIntervalMs:10,headFilterTauSec:0.025,smoothPasses:2,maxSmoothDeviationM:0.014});
+  wakeSmooth.seed([0,0,0],0);
+  const rawPts=[[0.02,0.012,0],[0.04,-0.012,0],[0.06,0.012,0],[0.08,-0.012,0],[0.10,0.012,0],[0.12,-0.012,0]];
+  for(let i=0;i<rawPts.length;i++){
+    wakeSmooth.push(rawPts[i],(i+1)*30);
+  }
+  const sm=wakeSmooth.sample(210,{includeLiveHead:false});
+  assert.ok(sm.count>=4);
+  let maxAbsY=0;
+  for(let i=1;i<sm.count-1;i++){
+    maxAbsY=Math.max(maxAbsY,Math.abs(sm.positions[i*3+1]));
+  }
+  assert.ok(maxAbsY<0.008,`expected jitter attenuated below 8 mm, got ${maxAbsY}`);
+
+  // 4. Teleport jump (> maxJumpM) resets cleanly without emitting a long spike
+  wakeSmooth.push([0.50,0,0],240);
+  const afterJump=wakeSmooth.sample(240);
+  assert.equal(afterJump.count,0,'jump > maxJumpM must reset wake cleanly without drawing a spike');
 });

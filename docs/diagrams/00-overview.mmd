@@ -6,14 +6,22 @@ flowchart LR
   DET["AprilTag WASM<br/>image corners"]:::live
   CAL["1 Calibration<br/>K, viewerFromCameraGL, timeOffset"]:::once
   ORI["2 Origin Lock<br/>L-angle 350/351/352 → XRAnchor"]:::once
-  SINGLE["3a Single Tracking<br/>PnP + time alignment"]:::live
-  MULTI["3b Multi Tracking<br/>Focus-ROI, 3 tags"]:::live
-  HAND["3c Hand Coupling<br/>90 Hz rigid body"]:::live
-  PRED["4 Prediction<br/>damped lead pose"]:::live
-  PATH["5 Path Fusion<br/>trail smoothing"]:::live
-  FENCE["6 Perimeter Fence<br/>353–359"]:::live
-  OUT["Scene @ 90 Hz<br/>coordinates in L-frame"]:::out
-  CAM --> DET --> CAL --> ORI
-  ORI -->|camera off: MEASURE| OUT
-  ORI -->|camera on: SCAN| SINGLE --> MULTI --> HAND --> PRED --> PATH --> OUT
-  SINGLE --> FENCE --> OUT
+  SINGLE["3 Single Tracking<br/>PnP + time alignment"]:::live
+  MULTI["4 Multi Tracking<br/>Focus-ROI, 3 tags"]:::live
+  HAND["5 Hand Coupling<br/>90 Hz rigid body"]:::live
+  PRED["6 Prediction<br/>damped lead pose"]:::live
+  PATH["7 Path Fusion<br/>trail smoothing"]:::live
+  FENCE["8 Perimeter Fence<br/>353–359"]:::live
+  OUT["Scene at XR render cadence<br/>coordinates in L-frame"]:::out
+  CAM --> DET
+  DET -->|"stationary reference"| CAL --> ORI
+  ORI -->|"anchor frame"| OUT
+  ORI -->|"reference for SCAN"| SINGLE
+  DET -->|"tag corners"| SINGLE
+  SINGLE -->|"track candidates"| MULTI
+  MULTI -.->|"next search regions"| DET
+  SINGLE -->|"optical updates"| PRED --> OUT
+  SINGLE -->|"grasp confirmed"| HAND --> OUT
+  HAND -->|"pending trail"| PATH
+  SINGLE -->|"optical confirmation"| PATH --> OUT
+  SINGLE -->|"table markers"| FENCE --> OUT

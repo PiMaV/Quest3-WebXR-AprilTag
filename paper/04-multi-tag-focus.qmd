@@ -31,6 +31,6 @@ The previous demo capped focused submissions at 28 Hz. The current fast SCAN loo
 
 ## Implementation
 
-Local tracking revision `c6cb24a` · 2026-11-27. `src/focus-scheduler.mjs` · `src/camera.mjs` · `src/detector.mjs` · `examples/quest.mjs`
+v1.4.0 · 2026-11-27 · [src/focus-scheduler.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/focus-scheduler.mjs) · [src/camera.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/camera.mjs) · [src/detector.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/detector.mjs) · [examples/quest.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/examples/quest.mjs)
 
 Run from the repository root · `node --test tests/focus-scheduler.test.mjs tests/camera.test.mjs tests/wasm-smoke.test.mjs`

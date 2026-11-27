@@ -24,6 +24,6 @@ The accepted pose seeds a native XR anchor. Subsequent XR frames query its ancho
 
 ## Implementation
 
-Local tracking revision `c6cb24a` · 2026-11-27. `src/anchor.mjs` · `src/anchor-audit.mjs` · `examples/quest.mjs`
+v1.4.0 · 2026-11-27 · [src/anchor.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/anchor.mjs) · [src/anchor-audit.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/anchor-audit.mjs) · [examples/quest.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/examples/quest.mjs)
 
 Run from the repository root · `node --test tests/anchor.test.mjs tests/anchor-audit.test.mjs`

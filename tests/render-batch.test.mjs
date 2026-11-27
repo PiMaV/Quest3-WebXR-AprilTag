@@ -550,3 +550,38 @@ test('createPathTubeMesh supports vertexColors + aDash attributes and zero-posit
   tube.dispose();
   mat.dispose();
 });
+
+test('createPathTubeMesh supports optional per-vertex aFade attribute with clamping and preserves default omission', () => {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true });
+  const plainTube = createPathTubeMesh(8, mat, { sides: 4, vertexColors: true });
+  assert.equal(plainTube.mesh.geometry.getAttribute('aFade'), undefined, 'aFade must not exist when fadeAttribute is omitted');
+  plainTube.dispose();
+
+  const fadeTube = createPathTubeMesh(8, mat, { sides: 4, vertexColors: true, fadeAttribute: true, name: 'fade-tube' });
+  const fadeAttr = fadeTube.mesh.geometry.getAttribute('aFade');
+  assert.ok(fadeAttr, 'aFade attribute must exist when fadeAttribute: true');
+  assert.equal(fadeAttr.array.length, 8 * 4);
+
+  const pts = new Float32Array(4 * 3);
+  const cols = new Float32Array(4 * 3);
+  for (let i = 0; i < 4; i++) {
+    pts[i * 3] = i * 0.02;
+    cols[i * 3] = 1; cols[i * 3 + 1] = 1; cols[i * 3 + 2] = 1;
+  }
+  const fades = new Float32Array([-0.4, 0.25, 1.8, NaN]);
+  assert.equal(fadeTube.syncFromPositions(pts, 4, { colors: cols, fades, fromIndex: 0 }), 3);
+
+  const arr = fadeAttr.array;
+  const verBefore = fadeAttr.version;
+  // Ring 0 clamped from -0.4 to 0, Ring 1 = 0.25, Ring 2 clamped from 1.8 to 1, Ring 3 NaN fallback to 1
+  for (let s = 0; s < 4; s++) {
+    assert.equal(arr[0 * 4 + s], 0);
+    assert.ok(Math.abs(arr[1 * 4 + s] - 0.25) < 1e-6);
+    assert.equal(arr[2 * 4 + s], 1);
+    assert.equal(arr[3 * 4 + s], 1);
+  }
+  assert.ok(verBefore >= 1);
+
+  fadeTube.dispose();
+  mat.dispose();
+});

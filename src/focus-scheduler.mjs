@@ -109,6 +109,7 @@ export function createFocusScheduler(options = {}) {
     nowMs = performance.now(),
     farMode = false,
     recentDetectMs = 15,
+    maxForegroundTags = cfg.maxForegroundTags,
   } = {}) {
     if (!K || !(K.fx > 0) || !(K.fy > 0) || !(width >= 32) || !(height >= 32)) {
       return wideResult('no-camera', nowMs);
@@ -120,6 +121,10 @@ export function createFocusScheduler(options = {}) {
       slots.clear();
       return wideResult('no-candidates', nowMs);
     }
+
+    const maxFg = Number.isInteger(maxForegroundTags) && maxForegroundTags >= 1
+      ? maxForegroundTags
+      : cfg.maxForegroundTags;
 
     const lFromCameraGL = product(inverse(worldFromAnchor), worldFromViewer, viewerFromCameraGL);
     const camGLFromL = inverse(lFromCameraGL);
@@ -231,7 +236,7 @@ export function createFocusScheduler(options = {}) {
     if (ranked.length === 0) {
       return wideResult('no-candidates', nowMs);
     }
-    if (activeForegroundCount > cfg.maxForegroundTags) {
+    if (activeForegroundCount > maxFg) {
       return wideResult('crowd-wide', nowMs);
     }
 
@@ -242,7 +247,7 @@ export function createFocusScheduler(options = {}) {
       return (b.c.apparentEdgePx || 0) - (a.c.apparentEdgePx || 0);
     });
 
-    const chosen = ranked.slice(0, cfg.maxForegroundTags);
+    const chosen = ranked.slice(0, maxFg);
     const mode = chosen.length === 1 ? 'single-focus' : 'multi-focus';
     lastMode = mode;
     primaryTagId = chosen[0].tagId;

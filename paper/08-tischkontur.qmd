@@ -12,6 +12,8 @@ $$q=c+\lambda(p-c),\qquad\lambda=\frac{c_z}{c_z-p_z}.$$
 
 Die Implementierung begrenzt Höhe, Strahlneigung und horizontale Korrektur. Ist die Strahlprojektion unzuverlässig, verwendet sie $(p_x,p_y,0)$. Die vorgegebene Markerreihenfolge bestimmt die Polygonkanten. Position und Gierwinkel werden geglättet. Ein Sprung über 15 cm innerhalb von 500 ms erfordert eine weitere Beobachtung im Abstand von höchstens 6 cm zur vorgeschlagenen neuen Position.
 
+**Wann die Grenzanzeige umschaltet.** Die Demo verwendet die XY-Koordinaten des bewegten Tagzentrums in der Tischebene. Sie bestimmt den kürzesten Abstand zu einer Polygonkante, außen positiv und innen negativ. Bei mehr als 8 mm Außenabstand wird die Warnung aktiv, bei 2 mm oder weniger erlischt sie. Bei 5 mm außen bleibt somit der vorherige Zustand erhalten. Die Zaunhöhe von 20 cm betrifft nur die Darstellung.
+
 ## War ein fehlender Marker tatsächlich erkennbar?
 
 Nach Dezimierung kann selbst eine Vollbildsuche einen schräg gesehenen Tag verfehlen. Die neue Prüfung schätzt die **kurze projizierte Kante in Detektorpixeln**
@@ -26,6 +28,6 @@ Zusätzlich prüft die Anwendung Abstand, Blickwinkel, Bildrandreserve und eine 
 
 ## Implementierung
 
-Lokaler Arbeitsstand einschließlich Perimeteränderungen nach `c6cb24a` · 2026-11-27. `src/perimeter-fence.mjs` · `examples/quest.mjs`
+v1.4.0 · 2026-11-27 · [src/perimeter-fence.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/perimeter-fence.mjs) · [examples/quest.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/examples/quest.mjs)
 
 Prüflauf im Repository · `node --test tests/perimeter-fence.test.mjs`

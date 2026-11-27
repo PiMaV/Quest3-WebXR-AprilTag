@@ -227,3 +227,37 @@ test('adaptive 1-3 Hz background sweeps use decimate=3 while moving, decimate=2 
   assert.equal(crowd.skipReason, 'crowd-wide');
   assert.equal(crowd.rois, undefined);
 });
+
+test('createFocusScheduler.plan honors per-call maxForegroundTags override (e.g. REC ALL limit = 2)', () => {
+  const sched = createFocusScheduler();
+  const positions = [[-0.15, 0, -0.8], [0.17, 0, -0.8], [0, 0.20, -0.8]];
+  const makeMoving = (count, nowMs) => Array.from({ length: count }, (_, idx) => ({
+    tagId: 300 + idx,
+    pos: positions[idx],
+    halfPx: 96,
+    moving: true,
+    recording: true,
+    lastOpticalAtMs: nowMs,
+    apparentEdgePx: 42,
+  }));
+
+  // With maxForegroundTags: 2, 2 moving tags stay in multi-focus
+  const two = sched.plan({
+    candidates: makeMoving(2, 1000),
+    worldFromAnchor: I, worldFromViewer: I, viewerFromCameraGL: I,
+    K, width: K.width, height: K.height, nowMs: 1000, maxForegroundTags: 2,
+  });
+  assert.equal(two.mode, 'multi-focus');
+  assert.equal(two.tagIds.length, 2);
+  assert.equal(two.rois.length, 2);
+
+  // Adding a 3rd moving tag triggers crowd-wide fallback when maxForegroundTags: 2
+  const three = sched.plan({
+    candidates: makeMoving(3, 1050),
+    worldFromAnchor: I, worldFromViewer: I, viewerFromCameraGL: I,
+    K, width: K.width, height: K.height, nowMs: 1050, maxForegroundTags: 2,
+  });
+  assert.equal(three.mode, 'wide');
+  assert.equal(three.skipReason, 'crowd-wide');
+  assert.equal(three.rois, undefined);
+});

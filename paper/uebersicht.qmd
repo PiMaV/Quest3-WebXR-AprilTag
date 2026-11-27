@@ -6,7 +6,9 @@ subtitle: "Themenübersicht der technischen Kurzpaper"
 
 [English](overview.html){hreflang=en lang=en} · **Deutsch**
 
-Die Reihe folgt einem Messwert von den Bildecken bis zur Bewegung im WebXR-Raum. Jedes Kurzpaper soll die physikalische Frage, die verwendeten Größen und Gleichungen sowie eine Möglichkeit zur Überprüfung zeigen. Alle acht Kapitel liegen als Arbeitsfassungen vor. Die Trackingkapitel beschreiben die lokale Revision `c6cb24a` vom 27. November 2026. Kapitel 05 und 08 berücksichtigen zusätzlich die anschließenden lokalen Änderungen an Bedienung und Perimeter-Sichtbarkeit.
+Die Reihe folgt einem Messwert von den Bildecken bis zur Bewegung im WebXR-Raum. Jedes Kurzpaper soll die physikalische Frage, die verwendeten Größen und Gleichungen sowie eine Möglichkeit zur Überprüfung zeigen. Alle acht Kapitel liegen als Arbeitsfassungen vor. Die Referenz beschreibt **v1.4.0** vom 27. November 2026.
+
+**Messwerte einordnen.** Tagkanten und Winkelgeometrie geben den metrischen Maßstab vor. Passendes Rig wählen und die Maße auf Papier oder Display bei 1:1 prüfen. Die Kalibrierung bestimmt Kameramodell und Zeitabgleich. Der native Anker legt den Ursprung für eine XR-Sitzung fest. Eine optische Pose stammt aus einem Kamerabild. Zwischen zwei Aufnahmen kann die Anzeige aus der Handbewegung oder der Prädiktion fortgeschrieben werden. [Zielmaße und Tag-IDs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/docs/markers.md)
 
 | Fachdiagramm | Leitfrage für das Kurzpaper |
 |---|---|

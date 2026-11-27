@@ -5,7 +5,9 @@ subtitle: "Technical paper series"
 
 **English** · [Deutsch](uebersicht.html){hreflang=de lang=de}
 
-The series follows a measurement from the corners of a tag in a camera image to its motion in WebXR space. Each paper addresses a physical question, derives the equations used by the implementation and shows how to check the result. All eight chapters are available as working drafts. The tracking chapters describe local revision `c6cb24a` of 27 November 2026. Chapters 05 and 08 also include the local changes to interaction and perimeter visibility made after that commit.
+The series follows a measurement from the corners of a tag in a camera image to its motion in WebXR space. Each paper addresses a physical question, derives the equations used by the implementation and shows how to check the result. All eight chapters are available as working drafts. The reference describes release **v1.4.0** (27 November 2026).
+
+**Reading the results.** Tag edge lengths and target coordinates set the metric scale. Choose the matching rig and verify the printed or displayed dimensions at 1:1. Calibration estimates the camera model and timing. The native anchor defines the origin for one XR session. An optical pose comes from a camera observation. A hand-driven or predicted pose can update on intervening XR frames. [Target sizes and IDs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/docs/markers.md)
 
 | Diagram | Question |
 |---|---|

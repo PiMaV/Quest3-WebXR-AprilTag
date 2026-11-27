@@ -49,6 +49,7 @@ export interface PathTubeMesh {
       radii?: ArrayLike<number> | null;
       colors?: ArrayLike<number> | null;
       outsideFlags?: ArrayLike<number> | null;
+      fades?: ArrayLike<number> | null;
       fromIndex?: number;
     },
   ): number;
@@ -158,6 +159,7 @@ export function createPathTubeMesh(
     sides?: number;
     vertexColors?: boolean;
     dashAttribute?: boolean;
+    fadeAttribute?: boolean;
     renderOrder?: number;
     name?: string;
   },

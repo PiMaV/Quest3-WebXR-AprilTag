@@ -95,14 +95,21 @@ export function projectIndexSelectorPos(tipPos, refProximalPos, offsetM = INDEX_
 
 /**
  * Defaults for minimalist live-tag action pill visibility ([● REC / ■ STOP] & [⏱ MARK]).
- * Pills stay hidden while moving, while hand-coupled, and until a finger approaches a resting tag.
+ * Pills stay hidden while moving and until a non-carrying finger approaches a resting tag.
+ * Hand-coupled tags allow bimanual activation once held steady within hand-tremor tolerance.
  */
 export const TAG_ACTION_PILL_DEFAULTS = {
   minRestMs: 500,
   maxRestPosDispM: 0.012,
-  minRestAxisDot: 0.99, // ~8.1 deg orientation tolerance across normal & in-plane yaw
-  tagNearM: 0.16,
+  minRestAxisDot: 0.99, // ~8.1 deg orientation tolerance when resting freely
+  coupledMaxRestPosDispM: 0.022, // ~22 mm hand-tremor tolerance when held steady in one hand
+  coupledMinRestAxisDot: 0.965, // ~15 deg tilt/yaw tolerance when held steady in one hand
+  tagNearM: 0.14,
+  zoneNearM: 0.14,
   pillNearM: 0.12,
+  belowOffsetM: 0.056,
+  sideHalfSpanM: 0.043,
+  minTableZ: 0.018,
 };
 
 export function createTagRestState() {
@@ -118,8 +125,10 @@ export function resetTagRestState(state) {
 }
 
 /**
- * Track whether a movable AprilTag has remained stationary (un-coupled and within
- * tight 6DOF displacement tolerances) for at least `minRestMs` (default 500 ms).
+ * Track whether a movable AprilTag has remained stationary within tight 6DOF displacement
+ * tolerances for at least `minRestMs` (default 500 ms).
+ * Supports both free/placed tags (12 mm / ~8 deg) and steadily held hand-coupled tags
+ * (22 mm / ~15 deg) for bimanual interaction with the opposite hand.
  */
 export function updateTagRestState(
   state,
@@ -130,11 +139,12 @@ export function updateTagRestState(
     minRestMs = TAG_ACTION_PILL_DEFAULTS.minRestMs,
     maxRestPosDispM = TAG_ACTION_PILL_DEFAULTS.maxRestPosDispM,
     minRestAxisDot = TAG_ACTION_PILL_DEFAULTS.minRestAxisDot,
+    coupledMaxRestPosDispM = TAG_ACTION_PILL_DEFAULTS.coupledMaxRestPosDispM,
+    coupledMinRestAxisDot = TAG_ACTION_PILL_DEFAULTS.coupledMinRestAxisDot,
   } = {},
 ) {
   if (!state) return { isResting: false, restingMs: 0 };
   if (
-    handCoupled ||
     !tagMatrix ||
     tagMatrix.length < 15 ||
     !Number.isFinite(nowMs) ||
@@ -145,6 +155,9 @@ export function updateTagRestState(
     resetTagRestState(state);
     return { isResting: false, restingMs: 0 };
   }
+
+  const posLimitM = handCoupled ? coupledMaxRestPosDispM : maxRestPosDispM;
+  const axisDotLimit = handCoupled ? coupledMinRestAxisDot : minRestAxisDot;
 
   const tx = tagMatrix[12];
   const ty = tagMatrix[13];
@@ -178,7 +191,7 @@ export function updateTagRestState(
     zy * state.anchorZ[1] +
     zz * state.anchorZ[2];
 
-  if (posDisp > maxRestPosDispM || xDot < minRestAxisDot || zDot < minRestAxisDot) {
+  if (posDisp > posLimitM || xDot < axisDotLimit || zDot < axisDotLimit) {
     state.anchorPos = [tx, ty, tz];
     state.anchorX = [xx, xy, xz];
     state.anchorZ = [zx, zy, zz];
@@ -190,28 +203,126 @@ export function updateTagRestState(
   return { isResting: restingMs >= minRestMs, restingMs };
 }
 
+function normVec3(v, fallback) {
+  const len = Math.hypot(v[0], v[1], v[2]);
+  if (len < 1e-6) return fallback.slice();
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+/**
+ * Compute side-by-side bottom-of-tag 3D positions for [● REC / ■ STOP] and [⏱ MARK].
+ * Placing pills below the tag (or toward the viewer in front of flat tabletop tags) keeps
+ * the approaching hand completely out of the camera-to-tag line of sight and works
+ * symmetrically for both left- and right-handed users.
+ */
+export function computeTagActionPillLayout({
+  tagMatrix,
+  edgeMm = 20,
+  viewerPosL = null,
+  viewerRightL = null,
+  viewerUpL = null,
+  recording = false,
+  belowOffsetM = TAG_ACTION_PILL_DEFAULTS.belowOffsetM,
+  sideHalfSpanM = TAG_ACTION_PILL_DEFAULTS.sideHalfSpanM,
+  minTableZ = TAG_ACTION_PILL_DEFAULTS.minTableZ,
+}) {
+  const tx = tagMatrix[12];
+  const ty = tagMatrix[13];
+  const tz = tagMatrix[14];
+  const halfTag = (edgeMm / 1000) / 2;
+  const distBelow = Math.max(belowOffsetM, halfTag + 0.036);
+
+  const up = viewerUpL ? normVec3(viewerUpL, [0, 0, 1]) : [0, 0, 1];
+  const right = viewerRightL ? normVec3(viewerRightL, [1, 0, 0]) : [1, 0, 0];
+
+  let bx = tx - up[0] * distBelow;
+  let by = ty - up[1] * distBelow;
+  let bz = tz - up[2] * distBelow;
+  let rx = right[0];
+  let ry = right[1];
+  let rz = right[2];
+
+  const flatOnTable = Math.abs(tz) < 0.032 && Math.abs(tagMatrix[10]) > 0.85;
+  if (flatOnTable || bz < minTableZ) {
+    // Project "down" onto the horizontal table plane (pointing toward the viewer).
+    let hx = -up[0];
+    let hy = -up[1];
+    let hLen = Math.hypot(hx, hy);
+    if (hLen < 0.25 && viewerPosL) {
+      hx = viewerPosL[0] - tx;
+      hy = viewerPosL[1] - ty;
+      hLen = Math.hypot(hx, hy);
+    }
+    if (hLen > 1e-4) {
+      hx /= hLen;
+      hy /= hLen;
+    } else {
+      hx = 0;
+      hy = -1;
+    }
+    bx = tx + hx * distBelow;
+    by = ty + hy * distBelow;
+    bz = Math.max(minTableZ, tz + 0.012);
+
+    // Keep the side-by-side axis horizontal above the tabletop.
+    const rLen = Math.hypot(right[0], right[1]);
+    if (rLen > 1e-4) {
+      rx = right[0] / rLen;
+      ry = right[1] / rLen;
+      rz = 0;
+    } else {
+      rx = hy;
+      ry = -hx;
+      rz = 0;
+    }
+  }
+
+  const zoneCenterL = [bx, by, bz];
+  if (recording) {
+    return {
+      zoneCenterL,
+      recPosL: [bx, by, bz],
+      markPosL: [bx, by, bz],
+    };
+  }
+
+  const recPosL = [
+    bx - rx * sideHalfSpanM,
+    by - ry * sideHalfSpanM,
+    Math.max(flatOnTable ? minTableZ : -Infinity, bz - rz * sideHalfSpanM),
+  ];
+  const markPosL = [
+    bx + rx * sideHalfSpanM,
+    by + ry * sideHalfSpanM,
+    Math.max(flatOnTable ? minTableZ : -Infinity, bz + rz * sideHalfSpanM),
+  ];
+
+  return { zoneCenterL, recPosL, markPosL };
+}
+
 /**
  * Decide whether a movable tag's [● REC / ■ STOP] and [⏱ MARK] action pills should be visible.
- * Enforces minimalism: never shown while hand-coupled or moving; requires resting >= 500 ms
- * AND fingertip proximity. Active recording hides [■ STOP] during motion and reveals it again
- * only once the tag rests and a finger approaches.
+ * Distances must be measured from non-carrying probes only (so a hand carrying a tag never
+ * opens pills for itself, while the opposite hand can open them once the tag is held steady).
  */
 export function evaluateTagActionPills({
   isResting = false,
-  handCoupled = false,
   recording = false,
   hasPose = false,
   minTagDist = Infinity,
+  minZoneDist = Infinity,
   minRecDist = Infinity,
   minMarkDist = Infinity,
   tagNearM = TAG_ACTION_PILL_DEFAULTS.tagNearM,
+  zoneNearM = TAG_ACTION_PILL_DEFAULTS.zoneNearM,
   pillNearM = TAG_ACTION_PILL_DEFAULTS.pillNearM,
 } = {}) {
-  if (!hasPose || handCoupled || !isResting) {
+  if (!hasPose || !isResting) {
     return { showRec: false, showMark: false };
   }
-  const nearRec = minTagDist < tagNearM || minRecDist < pillNearM;
-  const nearMark = minTagDist < tagNearM || minMarkDist < pillNearM;
+  const nearZone = minZoneDist < zoneNearM || minTagDist < tagNearM;
+  const nearRec = nearZone || minRecDist < pillNearM;
+  const nearMark = nearZone || minMarkDist < pillNearM;
   return {
     showRec: nearRec,
     showMark: !recording && nearMark,

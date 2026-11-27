@@ -22,6 +22,6 @@ The static XR head-speed gate starts reducing confidence at 10°/s and reaches i
 
 ## Implementation
 
-Local tracking revision `c6cb24a` · 2026-11-27. `src/rig.mjs` · `src/motion-guard.mjs` · `examples/quest.mjs`
+v1.4.0 · 2026-11-27 · [src/rig.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/rig.mjs) · [src/motion-guard.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/motion-guard.mjs) · [examples/quest.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/examples/quest.mjs)
 
 Run from the repository root · `node --test tests/rig-runtime.test.mjs tests/motion-guard.test.mjs`

@@ -26,6 +26,11 @@ project:
 lang: en
 format:
   html:
+    theme:
+      dark: [darkly, _theme-fonts.scss]
+      light: [default, _theme-fonts.scss]
+    respect-user-color-scheme: false
+    include-after-body: _local-theme.html
     toc: true
     toc-location: left
     toc-depth: 2
@@ -37,11 +42,22 @@ format:
     include-in-header:
       text: |
         <style>
-        :root { --paper-ink: #183449; --paper-teal: #006d70; --paper-crop: #944c12; }
+        body {
+          --paper-ink: #183449; --paper-panel: #fff; --paper-border: #b9cace;
+          --paper-muted: #455c67; --paper-teal: #006d70; --paper-crop: #944c12;
+          --paper-next: #423780; --paper-plot: #edf3f4; --paper-grid: #d1dfe1;
+          --paper-shade: #dfaa68; color-scheme: light;
+        }
+        body.quarto-dark {
+          --paper-ink: #e3eef3; --paper-panel: #202a30; --paper-border: #546770;
+          --paper-muted: #b0c6d0; --paper-teal: #74ddd2; --paper-crop: #ffbc79;
+          --paper-next: #c0afff; --paper-plot: #172229; --paper-grid: #35464e;
+          --paper-shade: #ae773e; color-scheme: dark;
+        }
         main h1.title, main h2 { color: var(--paper-ink); }
         main h1.title { line-height: 1.12; text-wrap: balance; }
         main p, main li { overflow-wrap: break-word; }
-        .roi-demo { color: var(--paper-ink); background: #fff; border: 1px solid #b9cace;
+        .roi-demo { color: var(--paper-ink); background: var(--paper-panel); border: 1px solid var(--paper-border);
           border-radius: .55rem; padding: clamp(.7rem, 2.2vw, 1.3rem); margin-block: .55rem 1rem;
           font-family: system-ui, sans-serif; font-size: 1rem; }
         .roi-demo label { display: flex; align-items: baseline; justify-content: space-between;
@@ -58,9 +74,9 @@ format:
         .roi-legend i { width: .9rem; height: .9rem; flex: 0 0 .9rem; display: inline-grid;
           place-items: center; font-style: normal; line-height: 1; }
         .roi-demo dl { margin: 0; }
-        .roi-demo dt { font-size: .78rem; font-weight: 500; color: #455c67; }
+        .roi-demo dt { font-size: .78rem; font-weight: 500; color: var(--paper-muted); }
         .roi-demo dd { font-size: 1rem; font-weight: 650; line-height: 1.25; margin: 0 0 .5rem; }
-        .roi-status { margin: .85rem 0 0; padding-top: .65rem; border-top: 1px solid #d8e1e2;
+        .roi-status { margin: .85rem 0 0; padding-top: .65rem; border-top: 1px solid var(--paper-border);
           font-size: .92rem; font-weight: 600; }
         @media (max-width: 650px) {
           .roi-body { grid-template-columns: 1fr; }

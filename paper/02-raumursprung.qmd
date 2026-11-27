@@ -24,6 +24,6 @@ Aus der akzeptierten Pose entsteht ein nativer XR-Anker. Jeder weitere XR-Frame 
 
 ## Implementierung
 
-Lokaler Tracking-Stand `c6cb24a` · 2026-11-27. `src/anchor.mjs` · `src/anchor-audit.mjs` · `examples/quest.mjs`
+v1.4.0 · 2026-11-27 · [src/anchor.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/anchor.mjs) · [src/anchor-audit.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/anchor-audit.mjs) · [examples/quest.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/examples/quest.mjs)
 
 Prüflauf im Repository · `node --test tests/anchor.test.mjs tests/anchor-audit.test.mjs`

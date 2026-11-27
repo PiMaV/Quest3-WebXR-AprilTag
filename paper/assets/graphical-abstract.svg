@@ -19,6 +19,17 @@
       .heading { font-size: 21px; font-weight: 650; }
       .detail { font-size: 16px; }
       .arrow { fill: none; stroke: #496371; stroke-width: 2; marker-end: url(#arrow); }
+      @media (prefers-color-scheme: dark) {
+        svg > rect { fill: #202a30; }
+        text { fill: #e3eef3; }
+        g[fill="#f1f5f6"] { fill: #283940; stroke: #6b818c; }
+        g[fill="#e9f4f2"] { fill: #23433f; stroke: #78afa5; }
+        .arrow { stroke: #a3bdc9; }
+        #arrow path, circle { fill: #a3bdc9; }
+        #return-arrow path { fill: #ffbc79; }
+        path[stroke-dasharray] { stroke: #ffbc79; }
+        text[transform] { fill: #ffbc79 !important; }
+      }
     </style>
   </defs>
   <rect width="560" height="388" rx="12" fill="#fff"/>

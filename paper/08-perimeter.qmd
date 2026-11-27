@@ -12,6 +12,8 @@ $$q=c+\lambda(p-c),\qquad\lambda=\frac{c_z}{c_z-p_z}.$$
 
 The implementation bounds the height, ray slope and horizontal correction. If projection is unreliable it uses $(p_x,p_y,0)$. Known marker order determines the polygon edges. Position and yaw updates are smoothed. A jump above 15 cm within 500 ms requires a confirming observation within 6 cm of the proposed new position.
 
+**When the boundary alert changes.** The demo projects the moving tag centre into the table’s XY plane. It computes the shortest distance to a polygon edge, with positive sign outside and negative sign inside. The alert turns on above 8 mm outside and clears at 2 mm or less. At 5 mm outside, it therefore keeps its previous state. The 20 cm fence height affects the drawing only.
+
 ## Was the missing marker actually observable?
 
 A full-frame search can miss an oblique tag after the image is decimated. The revised check estimates the **short projected edge in detector pixels**
@@ -26,6 +28,6 @@ The visibility check also requires a suitable camera distance and angle, an imag
 
 ## Implementation
 
-Local working tree, including perimeter changes after `c6cb24a` · 2026-11-27. `src/perimeter-fence.mjs` · `examples/quest.mjs`
+v1.4.0 · 2026-11-27 · [src/perimeter-fence.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/perimeter-fence.mjs) · [examples/quest.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/examples/quest.mjs)
 
 Run from the repository root · `node --test tests/perimeter-fence.test.mjs`

@@ -310,3 +310,332 @@ export function smoothAxisTail(rawAxes, outAxes, count) {
     writeNormalizedVec3(outAxes, o, cx, cy, cz);
   }
 }
+
+export const MOTION_WAKE_DEFAULTS = Object.freeze({
+  durationMs: 1600,
+  maxPoints: 72,
+  minStepM: 0.005,
+  minIntervalMs: 20,
+  maxJumpM: 0.18,
+  headFilterTauSec: 0.035,
+  smoothPasses: 2,
+  maxSmoothDeviationM: 0.014,
+  minVisibleArcM: 0.014,
+  minRadiusM: 0.00035,
+  maxRadiusM: 0.00130,
+  radiusExponent: 0.65,
+  fadeExponent: 1.40,
+  maxOpacity: 0.74,
+});
+
+function isValidVec3(p) {
+  return Boolean(
+    p &&
+    p.length >= 3 &&
+    Number.isFinite(p[0]) &&
+    Number.isFinite(p[1]) &&
+    Number.isFinite(p[2]),
+  );
+}
+
+/**
+ * Pre-allocated, zero-GC ephemeral motion-wake ring buffer for moving tags in default
+ * non-recording mode. Combines exponential head low-pass filtering, multi-pass zero-phase
+ * binomial smoothing, continuous cutoff interpolation, and life-tapered radius/fade.
+ */
+export function createMotionWakeBuffer(options = {}) {
+  const cfg = { ...MOTION_WAKE_DEFAULTS, ...options };
+  const cap = Math.max(4, Math.floor(cfg.maxPoints));
+  const outCap = cap + 2;
+
+  const rawX = new Float32Array(cap);
+  const rawY = new Float32Array(cap);
+  const rawZ = new Float32Array(cap);
+  const rawSpd = new Float32Array(cap);
+  const rawT = new Float64Array(cap);
+
+  const outPositions = new Float32Array(outCap * 3);
+  const basePositions = new Float32Array(outCap * 3);
+  const workPositions = new Float32Array(outCap * 3);
+  const outTimes = new Float64Array(outCap);
+  const outRadii = new Float32Array(outCap);
+  const outFades = new Float32Array(outCap);
+  const outSpeeds = new Float32Array(outCap);
+
+  let activeLength = 0;
+  let hasHead = false;
+  let fx = 0;
+  let fy = 0;
+  let fz = 0;
+  let fTimeMs = 0;
+  let fSpeed = 0;
+  let hasShownStroke = false;
+  let peakArcM = 0;
+
+  function emptySample() {
+    return {
+      count: 0,
+      positions: outPositions,
+      radii: outRadii,
+      fades: outFades,
+      speeds: outSpeeds,
+      arcLengthM: 0,
+    };
+  }
+
+  function clear() {
+    activeLength = 0;
+    hasHead = false;
+    fx = 0;
+    fy = 0;
+    fz = 0;
+    fTimeMs = 0;
+    fSpeed = 0;
+    hasShownStroke = false;
+    peakArcM = 0;
+  }
+
+  function seed(pos3, nowMs) {
+    if (!isValidVec3(pos3) || !Number.isFinite(nowMs)) return false;
+    fx = pos3[0];
+    fy = pos3[1];
+    fz = pos3[2];
+    fTimeMs = nowMs;
+    fSpeed = 0;
+    hasHead = true;
+    rawX[0] = fx;
+    rawY[0] = fy;
+    rawZ[0] = fz;
+    rawT[0] = nowMs;
+    rawSpd[0] = 0;
+    activeLength = 1;
+    hasShownStroke = false;
+    peakArcM = 0;
+    return true;
+  }
+
+  function push(pos3, nowMs, { speedMps = null } = {}) {
+    if (!isValidVec3(pos3) || !Number.isFinite(nowMs)) return false;
+    if (!hasHead || activeLength === 0 || nowMs < fTimeMs - 500) {
+      return seed(pos3, nowMs);
+    }
+
+    const px = pos3[0];
+    const py = pos3[1];
+    const pz = pos3[2];
+    const dHead = Math.hypot(px - fx, py - fy, pz - fz);
+    if (dHead > cfg.maxJumpM) {
+      return seed(pos3, nowMs);
+    }
+
+    const dtMs = Math.max(0, nowMs - fTimeMs);
+    const dtSec = dtMs * 0.001;
+    if (dtSec > 0) {
+      const alpha = cfg.headFilterTauSec > 0 ? 1 - Math.exp(-dtSec / cfg.headFilterTauSec) : 1;
+      const prevFx = fx;
+      const prevFy = fy;
+      const prevFz = fz;
+      fx += (px - fx) * alpha;
+      fy += (py - fy) * alpha;
+      fz += (pz - fz) * alpha;
+      const instSpd = Math.min(2.5, Math.hypot(fx - prevFx, fy - prevFy, fz - prevFz) / Math.max(0.004, dtSec));
+      const targetSpd = Number.isFinite(speedMps) && speedMps >= 0 ? speedMps : instSpd;
+      fSpeed = fSpeed * 0.65 + targetSpd * 0.35;
+      fTimeMs = nowMs;
+    } else if (Number.isFinite(speedMps) && speedMps >= 0) {
+      fSpeed = fSpeed * 0.65 + speedMps * 0.35;
+    }
+
+    const last = activeLength - 1;
+    const dKnot = Math.hypot(fx - rawX[last], fy - rawY[last], fz - rawZ[last]);
+    const dtKnotMs = nowMs - rawT[last];
+    if ((dKnot >= cfg.minStepM && dtKnotMs >= cfg.minIntervalMs) || dKnot >= cfg.minStepM * 2) {
+      if (activeLength >= cap) {
+        rawX.copyWithin(0, 1, cap);
+        rawY.copyWithin(0, 1, cap);
+        rawZ.copyWithin(0, 1, cap);
+        rawT.copyWithin(0, 1, cap);
+        rawSpd.copyWithin(0, 1, cap);
+        activeLength = cap - 1;
+      }
+      const idx = activeLength++;
+      rawX[idx] = fx;
+      rawY[idx] = fy;
+      rawZ[idx] = fz;
+      rawT[idx] = nowMs;
+      rawSpd[idx] = fSpeed;
+    }
+    return true;
+  }
+
+  function sample(nowMs, { includeLiveHead = true } = {}) {
+    if (!Number.isFinite(nowMs) || activeLength === 0) {
+      return emptySample();
+    }
+
+    const cutoffMs = nowMs - cfg.durationMs;
+    let drop = 0;
+    while (drop + 1 < activeLength && rawT[drop + 1] <= cutoffMs) {
+      drop++;
+    }
+    if (drop > 0) {
+      rawX.copyWithin(0, drop, activeLength);
+      rawY.copyWithin(0, drop, activeLength);
+      rawZ.copyWithin(0, drop, activeLength);
+      rawT.copyWithin(0, drop, activeLength);
+      rawSpd.copyWithin(0, drop, activeLength);
+      activeLength -= drop;
+    }
+
+    if (activeLength === 0 || rawT[activeLength - 1] <= cutoffMs) {
+      activeLength = 0;
+      hasShownStroke = false;
+      peakArcM = 0;
+      return emptySample();
+    }
+
+    let count = 0;
+    let startIdx = 0;
+    if (rawT[0] < cutoffMs && activeLength >= 2) {
+      const spanT = rawT[1] - rawT[0];
+      const frac = spanT > 1e-6 ? Math.max(0, Math.min(1, (cutoffMs - rawT[0]) / spanT)) : 1;
+      outPositions[0] = rawX[0] + (rawX[1] - rawX[0]) * frac;
+      outPositions[1] = rawY[0] + (rawY[1] - rawY[0]) * frac;
+      outPositions[2] = rawZ[0] + (rawZ[1] - rawZ[0]) * frac;
+      outTimes[0] = cutoffMs;
+      outSpeeds[0] = rawSpd[0] + (rawSpd[1] - rawSpd[0]) * frac;
+      count = 1;
+      startIdx = 1;
+    }
+
+    for (let k = startIdx; k < activeLength; k++) {
+      const o = count * 3;
+      outPositions[o] = rawX[k];
+      outPositions[o + 1] = rawY[k];
+      outPositions[o + 2] = rawZ[k];
+      outTimes[count] = rawT[k];
+      outSpeeds[count] = rawSpd[k];
+      count++;
+    }
+
+    if (includeLiveHead && hasHead && count < outCap) {
+      const lastO = (count - 1) * 3;
+      const dHeadEnd = Math.hypot(
+        fx - outPositions[lastO],
+        fy - outPositions[lastO + 1],
+        fz - outPositions[lastO + 2],
+      );
+      if (dHeadEnd >= 0.0005) {
+        const o = count * 3;
+        outPositions[o] = fx;
+        outPositions[o + 1] = fy;
+        outPositions[o + 2] = fz;
+        outTimes[count] = Math.min(nowMs, Math.max(outTimes[count - 1], fTimeMs));
+        outSpeeds[count] = fSpeed;
+        count++;
+      }
+    }
+
+    let arcLengthM = 0;
+    for (let i = 1; i < count; i++) {
+      const o = i * 3;
+      arcLengthM += Math.hypot(
+        outPositions[o] - outPositions[o - 3],
+        outPositions[o + 1] - outPositions[o - 2],
+        outPositions[o + 2] - outPositions[o - 1],
+      );
+    }
+
+    if (arcLengthM > peakArcM) peakArcM = arcLengthM;
+    if (!hasShownStroke) {
+      if (count < 2 || arcLengthM < cfg.minVisibleArcM) {
+        return emptySample();
+      }
+      hasShownStroke = true;
+    }
+    if (count < 2) {
+      hasShownStroke = false;
+      peakArcM = 0;
+      return emptySample();
+    }
+
+    const len3 = count * 3;
+    basePositions.set(outPositions.subarray(0, len3));
+    const passes = Math.max(0, cfg.smoothPasses | 0);
+    if (passes > 0 && count >= 3) {
+      let src = outPositions;
+      let dst = workPositions;
+      for (let p = 0; p < passes; p++) {
+        dst[0] = src[0];
+        dst[1] = src[1];
+        dst[2] = src[2];
+        const lastO = (count - 1) * 3;
+        dst[lastO] = src[lastO];
+        dst[lastO + 1] = src[lastO + 1];
+        dst[lastO + 2] = src[lastO + 2];
+        for (let i = 1; i < count - 1; i++) {
+          const o = i * 3;
+          if (i >= 2 && i <= count - 3) {
+            const m2 = o - 6, m1 = o - 3, p1 = o + 3, p2 = o + 6;
+            dst[o] = (src[m2] + 4 * src[m1] + 6 * src[o] + 4 * src[p1] + src[p2]) * 0.0625;
+            dst[o + 1] = (src[m2 + 1] + 4 * src[m1 + 1] + 6 * src[o + 1] + 4 * src[p1 + 1] + src[p2 + 1]) * 0.0625;
+            dst[o + 2] = (src[m2 + 2] + 4 * src[m1 + 2] + 6 * src[o + 2] + 4 * src[p1 + 2] + src[p2 + 2]) * 0.0625;
+          } else {
+            const m1 = o - 3, p1 = o + 3;
+            dst[o] = (src[m1] + 2 * src[o] + src[p1]) * 0.25;
+            dst[o + 1] = (src[m1 + 1] + 2 * src[o + 1] + src[p1 + 1]) * 0.25;
+            dst[o + 2] = (src[m1 + 2] + 2 * src[o + 2] + src[p1 + 2]) * 0.25;
+          }
+        }
+        const tmp = src;
+        src = dst;
+        dst = tmp;
+      }
+      if (src !== outPositions) {
+        outPositions.set(src.subarray(0, len3));
+      }
+      const maxDev = Number.isFinite(cfg.maxSmoothDeviationM) && cfg.maxSmoothDeviationM > 0
+        ? cfg.maxSmoothDeviationM
+        : Infinity;
+      if (Number.isFinite(maxDev)) {
+        for (let i = 1; i < count - 1; i++) {
+          const o = i * 3;
+          const dx = outPositions[o] - basePositions[o];
+          const dy = outPositions[o + 1] - basePositions[o + 1];
+          const dz = outPositions[o + 2] - basePositions[o + 2];
+          const dev = Math.hypot(dx, dy, dz);
+          if (dev > maxDev) {
+            const sc = maxDev / dev;
+            outPositions[o] = basePositions[o] + dx * sc;
+            outPositions[o + 1] = basePositions[o + 1] + dy * sc;
+            outPositions[o + 2] = basePositions[o + 2] + dz * sc;
+          }
+        }
+      }
+    }
+
+    const strokeGain = Math.min(1, peakArcM / 0.035);
+    for (let i = 0; i < count; i++) {
+      const life = Math.max(0, Math.min(1, 1 - (nowMs - outTimes[i]) / cfg.durationMs));
+      outRadii[i] = cfg.minRadiusM + (cfg.maxRadiusM - cfg.minRadiusM) * Math.pow(life, cfg.radiusExponent);
+      outFades[i] = Math.pow(life, cfg.fadeExponent) * strokeGain;
+    }
+
+    return {
+      count,
+      positions: outPositions,
+      radii: outRadii,
+      fades: outFades,
+      speeds: outSpeeds,
+      arcLengthM,
+    };
+  }
+
+  return {
+    clear,
+    seed,
+    push,
+    sample,
+    hasPoints: () => activeLength > 0,
+  };
+}

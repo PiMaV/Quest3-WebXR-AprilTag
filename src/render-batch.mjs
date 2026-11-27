@@ -428,6 +428,7 @@ export function createPathTubeMesh(maxPoints, material, {
   sides = 5,
   vertexColors = false,
   dashAttribute = false,
+  fadeAttribute = false,
   renderOrder = 0,
   name = '',
 } = {}) {
@@ -436,6 +437,7 @@ export function createPathTubeMesh(maxPoints, material, {
   const defaultRadius = Number.isFinite(radius) && radius > 1e-5 ? radius : 0.0014;
   const useVertexColors = Boolean(vertexColors || material?.vertexColors);
   const useDash = Boolean(dashAttribute);
+  const useFade = Boolean(fadeAttribute);
 
   const positions = new Float32Array(cap * segSides * 3);
   const ringNormals = new Float32Array(cap * 3);
@@ -497,6 +499,16 @@ export function createPathTubeMesh(maxPoints, material, {
     geometry.setAttribute('aDash', dashAttr);
   }
 
+  let fadeData = null;
+  let fadeAttr = null;
+  if (useFade) {
+    fadeData = new Float32Array(cap * segSides);
+    fadeData.fill(1);
+    fadeAttr = new THREE.BufferAttribute(fadeData, 1);
+    fadeAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('aFade', fadeAttr);
+  }
+
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   geometry.setDrawRange(0, 0);
 
@@ -511,6 +523,7 @@ export function createPathTubeMesh(maxPoints, material, {
     radii = null,
     colors: sampleColors = null,
     outsideFlags = null,
+    fades = null,
     fromIndex = 0,
   } = {}) {
     const n = Math.max(0, Math.min(cap, count | 0));
@@ -671,12 +684,22 @@ export function createPathTubeMesh(maxPoints, material, {
           dashData[dOff + 1] = outFlag;
         }
       }
+
+      if (fadeAttr) {
+        const rawFade = fades ? fades[i] : 1;
+        const fVal = Number.isFinite(rawFade) ? Math.max(0, Math.min(1, rawFade)) : 1;
+        const fBase = i * segSides;
+        for (let s = 0; s < segSides; s++) {
+          fadeData[fBase + s] = fVal;
+        }
+      }
     }
 
     geometry.setDrawRange(0, (n - 1) * segSides * 6);
     posAttr.needsUpdate = true;
     if (colAttr && sampleColors) colAttr.needsUpdate = true;
     if (dashAttr) dashAttr.needsUpdate = true;
+    if (fadeAttr) fadeAttr.needsUpdate = true;
     return n - 1;
   }
 

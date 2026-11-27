@@ -1,0 +1,26 @@
+<script>
+// Quarto stores the preference on HTTP(S). Local files carry it in paper links.
+if (location.protocol === "file:") {
+  document.addEventListener("DOMContentLoaded", () => {
+    const requested = new URL(location.href).searchParams.get("theme");
+    const current = () => document.body.classList.contains("quarto-dark") ? "dark" : "light";
+    if (["light", "dark"].includes(requested) && requested !== current()) {
+      window.quartoToggleColorScheme();
+    }
+    function updateLinks() {
+      const theme = current();
+      for (const link of document.querySelectorAll("main a[href]")) {
+        const href = link.getAttribute("href");
+        if (!/^[\w-]+\.html(?:[?#]|$)/.test(href)) continue;
+        const url = new URL(href, location.href);
+        url.searchParams.set("theme", theme);
+        link.setAttribute("href", url.pathname.split("/").pop() + url.search + url.hash);
+      }
+    }
+    updateLinks();
+    new MutationObserver(updateLinks).observe(document.body, {
+      attributes: true, attributeFilter: ["class"]
+    });
+  });
+}
+</script>

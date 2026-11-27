@@ -6,7 +6,7 @@ export {extractCalibrationProfile,assertProfileDevice,importCalibrationProfile} 
 export {createLAnchorController,createStableLCollector,isRigidPose,ANCHOR_QUALITY} from './anchor.mjs';
 export {product,inverse,det4,cvToGL,poseAt,meanRigid,rigidVector,vectorRigid,identity,quatNormalize,quatDot,quatAngle,quatSlerp,matToQuat,composeRigid,anchorFeatureState,poseToRigidParts,intrinsics,observationIsFresh} from './runtime.mjs';
 export {xrExitPressed,nextExitHold,XR_EXIT_HOLD_MS,XR_EXIT_STICK_BUTTON,XR_EXIT_SECONDARY_BUTTON} from './xr-exit.mjs';
-export {pointInTagFrame,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos,TAG_ACTION_PILL_DEFAULTS,createTagRestState,resetTagRestState,updateTagRestState,evaluateTagActionPills} from './tag-tap.mjs';
+export {pointInTagFrame,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos,TAG_ACTION_PILL_DEFAULTS,createTagRestState,resetTagRestState,updateTagRestState,computeTagActionPillLayout,evaluateTagActionPills} from './tag-tap.mjs';
 export {viewBasisAtPointL,computeHoverCardLayout,computePinPillPositions,HOVER_CALLOUT_DEFAULTS} from './tag-callout.mjs';
 export {viewerVelocityAt,resolveCameraInL,evaluateMotionGate,evaluateCarriedJumpGuard,MOTION_GATE_DEFAULTS,OPTICAL_BRIDGE_DEFAULTS,CARRIED_MOTION_GATE_DEFAULTS} from './motion-guard.mjs';
 export {buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,HAND_COUPLING_DEFAULTS} from './hand-coupling.mjs';
@@ -15,7 +15,7 @@ export {createPerfTracker} from './perf-stats.mjs';
 export {ADAPTIVE_QUALITY_MODES,ADAPTIVE_QUALITY_DEFAULTS,createAdaptiveQualityController} from './adaptive-quality.mjs';
 export {projectPriorRois,prioritizeFocusCandidates,createAprilTagDetector} from './detector.mjs';
 export {FOCUS_SCHEDULER_DEFAULTS,projectTagGazeMetrics,createFocusScheduler} from './focus-scheduler.mjs';
-export {fuseCommittedTrailSegment,smoothLineTail,smoothAxisTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius,RIBBON_SPEED_DEFAULTS,speedToRibbonHalfWidth,speedToHeatColor,TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor} from './path-smoother.mjs';
+export {fuseCommittedTrailSegment,smoothLineTail,smoothAxisTail,SPEED_RADIUS_DEFAULTS,speedToTubeRadius,RIBBON_SPEED_DEFAULTS,speedToRibbonHalfWidth,speedToHeatColor,TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor,MOTION_WAKE_DEFAULTS,createMotionWakeBuffer} from './path-smoother.mjs';
 export {TAG_PREDICTOR_DEFAULTS,createTagMotionPredictor} from './tag-predictor.mjs';
 export {associateAnchorCapture,auditAnchorObservation,createAnchorAudit} from './anchor-audit.mjs';
 export {FENCE_HEIGHT_M,PERIMETER_TRIGGER_TAG_ID,PERIMETER_MARKERS,PERIMETER_OUTSIDE_HYSTERESIS_M,isPerimeterTag,perimeterRole,extractRigAnchors,projectPointToTablePlane,polygonMetricsXY,signedDistanceToPolygonXY,evaluatePerimeterOutside,locatePerimeterCrossing,isTablePointObservableInCamera,createPerimeterFence} from './perimeter-fence.mjs';

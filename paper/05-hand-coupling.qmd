@@ -23,6 +23,6 @@ The local action controls use a separate rest test. Finger-proximity checks for 
 
 ## Implementation
 
-Local working tree, including interaction changes after `c6cb24a` · 2026-11-27. `src/tag-tap.mjs` · `src/hand-coupling.mjs` · `src/tag-predictor.mjs` · `examples/quest.mjs`
+v1.4.0 · 2026-11-27 · [src/tag-tap.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/tag-tap.mjs) · [src/hand-coupling.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/hand-coupling.mjs) · [src/tag-predictor.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/src/tag-predictor.mjs) · [examples/quest.mjs](https://github.com/PiMaV/Quest3-WebXR-AprilTag/blob/v1.4.0/examples/quest.mjs)
 
 Run from the repository root · `node --test tests/hand-coupling.test.mjs tests/tag-predictor.test.mjs tests/tag-tap.test.mjs`
