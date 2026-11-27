@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   fuseCommittedTrailSegment,
+  TRAIL_GAP_DEFAULTS,
+  shouldStartNewTrailSegment,
   smoothLineTail,
   smoothAxisTail,
   SPEED_RADIUS_DEFAULTS,
@@ -262,4 +264,102 @@ test('createMotionWakeBuffer suppresses micro-bumps, smooths jitter, interpolate
   wakeSmooth.push([0.50,0,0],240);
   const afterJump=wakeSmooth.sample(240);
   assert.equal(afterJump.count,0,'jump > maxJumpM must reset wake cleanly without drawing a spike');
+});
+
+test('shouldStartNewTrailSegment separates true occlusion/pause relocations from brief drops and stationary occlusions',()=>{
+  const pOrigin=vectorRigid([0,0,0,0.10,0.20,0.05]);
+  const pMove10=vectorRigid([0,0,0,0.11,0.20,0.05]);
+  const pMove60=vectorRigid([0,0,0,0.16,0.20,0.05]);
+  const pMove80=vectorRigid([0,0,0,0.18,0.20,0.05]);
+  const pMove200=vectorRigid([0,0,0,0.30,0.20,0.05]);
+
+  assert.equal(TRAIL_GAP_DEFAULTS.minGapMs,550);
+  assert.equal(TRAIL_GAP_DEFAULTS.minGapDistM,0.030);
+
+  // Brief optical blur drop (200 ms, 80 mm) stays continuous
+  const briefDrop=shouldStartNewTrailSegment({prevPose:pOrigin,nextPose:pMove80,dtMs:200});
+  assert.equal(briefDrop.isBreak,false);
+  assert.equal(briefDrop.reason,null);
+
+  // Stationary occlusion (900 ms, 10 mm) stays continuous
+  const statOccl=shouldStartNewTrailSegment({prevPose:pOrigin,nextPose:pMove10,dtMs:900});
+  assert.equal(statOccl.isBreak,false);
+
+  // Occlusion + relocation (650 ms, 60 mm) triggers occlusion-gap
+  const occlGap=shouldStartNewTrailSegment({prevPose:pOrigin,nextPose:pMove60,dtMs:650});
+  assert.equal(occlGap.isBreak,true);
+  assert.equal(occlGap.reason,'occlusion-gap');
+  assert.ok(Math.abs(occlGap.distM-0.06)<1e-6);
+
+  // Fast occluded jump (350 ms, 200 mm) triggers occluded-jump
+  const jumpGap=shouldStartNewTrailSegment({prevPose:pOrigin,nextPose:pMove200,dtMs:350});
+  assert.equal(jumpGap.isBreak,true);
+  assert.equal(jumpGap.reason,'occluded-jump');
+
+  // Explicit break (e.g., manual stop/restart or live timeout) breaks >=30 mm and stays continuous <30 mm
+  const expBreak=shouldStartNewTrailSegment({prevPose:pOrigin,nextPose:pMove60,dtMs:0,explicitBreak:true});
+  assert.equal(expBreak.isBreak,true);
+  assert.equal(expBreak.reason,'explicit-break');
+
+  const expSameSpot=shouldStartNewTrailSegment({prevPose:pOrigin,nextPose:pMove10,dtMs:1200,explicitBreak:true});
+  assert.equal(expSameSpot.isBreak,false);
+
+  // Invalid / missing poses never break
+  const bad1=shouldStartNewTrailSegment({prevPose:null,nextPose:pMove60,dtMs:800});
+  assert.deepEqual(bad1,{isBreak:false,distM:0,dtMs:0,reason:null});
+  const badPose=pOrigin.slice();
+  badPose[12]=NaN;
+  const bad2=shouldStartNewTrailSegment({prevPose:badPose,nextPose:pMove60,dtMs:800});
+  assert.deepEqual(bad2,{isBreak:false,distM:0,dtMs:0,reason:null});
+});
+
+test('smoothLineTail respects breakFlags: pins segment endpoints, prevents cross-gap bleed, handles 1- and 2-pt segments, and smooths interiors',()=>{
+  // Segment 1: indices 0..6 (sawtooth in Z), Segment 2: indices 7..13 (sawtooth shifted far away in X/Y/Z)
+  const saw=[+0.015,-0.015,+0.015,-0.015,+0.015,-0.015,+0.015];
+  const n=14;
+  const raw=new Float32Array(n*3);
+  const out=new Float32Array(n*3);
+  const breaks=new Uint8Array(n);
+  breaks[7]=1;
+
+  for(let i=0;i<7;i++){
+    raw[i*3]=i*0.02;
+    raw[i*3+1]=0.1;
+    raw[i*3+2]=0.2+saw[i];
+    smoothLineTail(raw,out,i+1,{maxDeviationM:0.020,breakFlags:breaks});
+  }
+  for(let j=0;j<7;j++){
+    const idx=7+j;
+    raw[idx*3]=0.80+j*0.02;
+    raw[idx*3+1]=0.60;
+    raw[idx*3+2]=0.50+saw[j];
+    smoothLineTail(raw,out,idx+1,{maxDeviationM:0.020,breakFlags:breaks});
+  }
+
+  // Segment 1 endpoints (0 and 6) and Segment 2 endpoints (7 and 13) stay pinned exactly
+  for(const endIdx of [0,6,7,13]){
+    assert.ok(Math.abs(out[endIdx*3]-raw[endIdx*3])<1e-6,`x at ${endIdx} drifted across break`);
+    assert.ok(Math.abs(out[endIdx*3+1]-raw[endIdx*3+1])<1e-6,`y at ${endIdx} drifted across break`);
+    assert.ok(Math.abs(out[endIdx*3+2]-raw[endIdx*3+2])<1e-6,`z at ${endIdx} drifted across break`);
+  }
+  // Interiors of both segments still cancel Nyquist sawtooth cleanly
+  for(const midIdx of [2,3,4,9,10,11]){
+    const expectedZ=midIdx<7?0.2:0.5;
+    assert.ok(Math.abs(out[midIdx*3+2]-expectedZ)<1e-6,`midIdx=${midIdx} expected ${expectedZ}, got ${out[midIdx*3+2]}`);
+  }
+
+  // 1-point and 2-point segments stay exact without blending neighbors across breaks
+  const rawShort=new Float32Array([
+    0,0,0,  0.05,0,0,          // seg 1 (2 pts: 0,1)
+    0.40,0.40,0.40,            // seg 2 (1 pt: 2)
+    0.80,0.80,0.80, 0.85,0.80,0.80, // seg 3 (2 pts: 3,4)
+  ]);
+  const outShort=new Float32Array(rawShort.length);
+  const brkShort=new Uint8Array([0,0,1,1,0]);
+  for(let k=1;k<=5;k++){
+    smoothLineTail(rawShort,outShort,k,{maxDeviationM:0.02,breakFlags:brkShort});
+  }
+  for(let k=0;k<rawShort.length;k++){
+    assert.ok(Math.abs(outShort[k]-rawShort[k])<1e-6,`short segment coord ${k} must remain exact`);
+  }
 });

@@ -585,3 +585,88 @@ test('createPathTubeMesh supports optional per-vertex aFade attribute with clamp
   fadeTube.dispose();
   mat.dispose();
 });
+
+test('createPathTubeMesh supports breakFlags: skips gap bridges, resets aDash arc length, handles isolated points, and restores contiguous indices', () => {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
+  const tube = createPathTubeMesh(16, mat, {
+    radius: 0.0015,
+    sides: 4,
+    vertexColors: true,
+    dashAttribute: true,
+    name: 'break-tube',
+  });
+
+  // Two segments: 0->1->2 (along +X, 0.03 m each) and 3->4 (shifted to y=0.5, 0.04 m along +X)
+  const pts = new Float32Array(16 * 3);
+  const cols = new Float32Array(16 * 3);
+  const breaks = new Uint8Array(16);
+  const coords = [
+    [0.00, 0.0, 0.0],
+    [0.03, 0.0, 0.0],
+    [0.06, 0.0, 0.0],
+    [0.50, 0.5, 0.2],
+    [0.54, 0.5, 0.2],
+  ];
+  for (let i = 0; i < coords.length; i++) {
+    pts[i * 3] = coords[i][0];
+    pts[i * 3 + 1] = coords[i][1];
+    pts[i * 3 + 2] = coords[i][2];
+    cols[i * 3] = 1; cols[i * 3 + 1] = 1; cols[i * 3 + 2] = 1;
+  }
+  breaks[3] = 1;
+
+  const segs = tube.syncFromPositions(pts, 5, { colors: cols, breakFlags: breaks, fromIndex: 0 });
+  assert.equal(segs, 3, '5 points with 1 break must yield 3 tube segments (0->1, 1->2, 3->4)');
+  assert.equal(tube.activeSegments(), 3);
+  assert.equal(tube.mesh.geometry.drawRange.count, 3 * 4 * 6);
+
+  // Verify no triangle connects ring 2 (verts 8..11) to ring 3 (verts 12..15)
+  const idxArr = tube.mesh.geometry.getIndex().array;
+  const drawCount = tube.mesh.geometry.drawRange.count;
+  for (let k = 0; k < drawCount; k += 3) {
+    const a = idxArr[k], b = idxArr[k + 1], c = idxArr[k + 2];
+    const minRing = Math.floor(Math.min(a, b, c) / 4);
+    const maxRing = Math.floor(Math.max(a, b, c) / 4);
+    assert.ok(!(minRing <= 2 && maxRing >= 3), `bridge triangle across break found: rings ${minRing}..${maxRing}`);
+  }
+
+  // Verify aDash.x resets to 0 at segment start index 3, and advances to 0.04 at index 4
+  const dashArr = tube.mesh.geometry.getAttribute('aDash').array;
+  assert.ok(Math.abs(dashArr[2 * 4 * 2] - 0.06) < 1e-5);
+  assert.equal(dashArr[3 * 4 * 2], 0, 'arc length must reset to 0 at break start');
+  assert.ok(Math.abs(dashArr[4 * 4 * 2] - 0.04) < 1e-5);
+
+  // Isolated single points: [0, 1] (two 1-pt segments) and [0, 1, 1] (three 1-pt segments) -> 0 active segments & finite vertices
+  const isoPts = new Float32Array([0, 0, 0, 0.2, 0.2, 0.2, 0.4, 0.4, 0.4]);
+  const isoBreaks2 = new Uint8Array([0, 1]);
+  assert.equal(tube.syncFromPositions(isoPts, 2, { breakFlags: isoBreaks2, fromIndex: 0 }), 0);
+  assert.equal(tube.activeSegments(), 0);
+  assert.equal(tube.mesh.geometry.drawRange.count, 0);
+
+  const isoBreaks3 = new Uint8Array([0, 1, 1]);
+  assert.equal(tube.syncFromPositions(isoPts, 3, { breakFlags: isoBreaks3, fromIndex: 0 }), 0);
+  const posArr = tube.mesh.geometry.getAttribute('position').array;
+  for (let i = 0; i < 3 * 4 * 3; i++) {
+    assert.ok(Number.isFinite(posArr[i]), `isolated ring float ${i} must be finite`);
+  }
+
+  // Rebuilding longer unbroken polyline after clear() must restore contiguous indices cleanly (no stale packed indices)
+  tube.clear();
+  assert.equal(tube.activeSegments(), 0);
+  const unbroken = new Float32Array(7 * 3);
+  const unbrokenCols = new Float32Array(7 * 3);
+  for (let i = 0; i < 7; i++) {
+    unbroken[i * 3] = i * 0.03;
+    unbrokenCols[i * 3] = 1; unbrokenCols[i * 3 + 1] = 1; unbrokenCols[i * 3 + 2] = 1;
+  }
+  assert.equal(tube.syncFromPositions(unbroken, 7, { colors: unbrokenCols, fromIndex: 0 }), 6);
+  assert.equal(tube.activeSegments(), 6);
+  assert.equal(tube.mesh.geometry.drawRange.count, 6 * 4 * 6);
+  // Segment 5 connects ring 5 (20..23) -> ring 6 (24..27)
+  const seg5Start = 5 * 4 * 6;
+  const maxIdxInSeg5 = Math.max(...idxArr.slice(seg5Start, seg5Start + 4 * 6));
+  assert.equal(maxIdxInSeg5, 27);
+
+  tube.dispose();
+  mat.dispose();
+});

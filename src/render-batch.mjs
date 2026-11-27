@@ -509,7 +509,9 @@ export function createPathTubeMesh(maxPoints, material, {
     geometry.setAttribute('aFade', fadeAttr);
   }
 
-  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  const indexAttr = new THREE.BufferAttribute(indices, 1);
+  indexAttr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setIndex(indexAttr);
   geometry.setDrawRange(0, 0);
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -518,26 +520,31 @@ export function createPathTubeMesh(maxPoints, material, {
   if (name) mesh.name = name;
 
   let activePoints = 0;
+  let activeSegCount = 0;
+  let contiguousUpTo = cap - 1;
 
   function syncFromPositions(linePositions, count, {
     radii = null,
     colors: sampleColors = null,
     outsideFlags = null,
     fades = null,
+    breakFlags = null,
     fromIndex = 0,
   } = {}) {
     const n = Math.max(0, Math.min(cap, count | 0));
     activePoints = n;
     if (n < 2 || !linePositions) {
+      activeSegCount = 0;
       geometry.setDrawRange(0, 0);
       return 0;
     }
 
     const start = Math.max(0, Math.min(n - 1, fromIndex | 0));
     let prevTx = 1, prevTy = 0, prevTz = 0;
-    if (start > 0) {
+    if (start > 0 && !(breakFlags && breakFlags[start])) {
       const pPrev = (start - 1) * 3;
-      const pNext = Math.min(n - 1, start + 1) * 3;
+      const startIsSegEnd = start === n - 1 || Boolean(breakFlags && breakFlags[start + 1]);
+      const pNext = (startIsSegEnd ? start : start + 1) * 3;
       const dtx = linePositions[pNext] - linePositions[pPrev];
       const dty = linePositions[pNext + 1] - linePositions[pPrev + 1];
       const dtz = linePositions[pNext + 2] - linePositions[pPrev + 2];
@@ -554,13 +561,19 @@ export function createPathTubeMesh(maxPoints, material, {
       const px = linePositions[pOff];
       const py = linePositions[pOff + 1];
       const pz = linePositions[pOff + 2];
+      const isSegStart = i === 0 || Boolean(breakFlags && breakFlags[i]);
+      const isSegEnd = i === n - 1 || Boolean(breakFlags && breakFlags[i + 1]);
 
       let tx, ty, tz;
-      if (i === 0) {
-        tx = linePositions[3] - px;
-        ty = linePositions[4] - py;
-        tz = linePositions[5] - pz;
-      } else if (i === n - 1) {
+      if (isSegStart && isSegEnd) {
+        tx = 1;
+        ty = 0;
+        tz = 0;
+      } else if (isSegStart) {
+        tx = linePositions[pOff + 3] - px;
+        ty = linePositions[pOff + 4] - py;
+        tz = linePositions[pOff + 5] - pz;
+      } else if (isSegEnd) {
         tx = px - linePositions[pOff - 3];
         ty = py - linePositions[pOff - 2];
         tz = pz - linePositions[pOff - 1];
@@ -570,7 +583,7 @@ export function createPathTubeMesh(maxPoints, material, {
         tz = linePositions[pOff + 5] - linePositions[pOff - 1];
       }
       let tLen = Math.hypot(tx, ty, tz);
-      if (tLen < 1e-6 && i > 0) {
+      if (tLen < 1e-6 && !isSegStart) {
         tx = px - linePositions[pOff - 3];
         ty = py - linePositions[pOff - 2];
         tz = pz - linePositions[pOff - 1];
@@ -580,6 +593,10 @@ export function createPathTubeMesh(maxPoints, material, {
         tx /= tLen;
         ty /= tLen;
         tz /= tLen;
+      } else if (isSegStart) {
+        tx = 1;
+        ty = 0;
+        tz = 0;
       } else {
         tx = prevTx;
         ty = prevTy;
@@ -587,7 +604,7 @@ export function createPathTubeMesh(maxPoints, material, {
       }
 
       let nx, ny, nz;
-      if (i > 0) {
+      if (!isSegStart) {
         const prevNOff = (i - 1) * 3;
         const pnx = ringNormals[prevNOff];
         const pny = ringNormals[prevNOff + 1];
@@ -668,7 +685,7 @@ export function createPathTubeMesh(maxPoints, material, {
       }
 
       if (dashAttr) {
-        const arc = i === 0
+        const arc = isSegStart
           ? 0
           : arcLengths[i - 1] + Math.hypot(
             px - linePositions[pOff - 3],
@@ -695,12 +712,50 @@ export function createPathTubeMesh(maxPoints, material, {
       }
     }
 
-    geometry.setDrawRange(0, (n - 1) * segSides * 6);
+    let anyBreak = false;
+    if (breakFlags) {
+      for (let i = 1; i < n; i++) {
+        if (breakFlags[i]) {
+          anyBreak = true;
+          break;
+        }
+      }
+    }
+    if (anyBreak || contiguousUpTo < n - 1) {
+      let writeOff = 0;
+      let segCount = 0;
+      for (let i = 0; i < n - 1; i++) {
+        if (breakFlags && breakFlags[i + 1]) continue;
+        const r0 = i * segSides;
+        const r1 = (i + 1) * segSides;
+        for (let s = 0; s < segSides; s++) {
+          const sn = (s + 1) % segSides;
+          const a = r0 + s;
+          const b = r0 + sn;
+          const c = r1 + sn;
+          const d = r1 + s;
+          indices[writeOff++] = a;
+          indices[writeOff++] = b;
+          indices[writeOff++] = c;
+          indices[writeOff++] = a;
+          indices[writeOff++] = c;
+          indices[writeOff++] = d;
+        }
+        segCount++;
+      }
+      activeSegCount = segCount;
+      contiguousUpTo = anyBreak ? 0 : (n - 1);
+      indexAttr.needsUpdate = true;
+    } else {
+      activeSegCount = n - 1;
+    }
+
+    geometry.setDrawRange(0, activeSegCount * segSides * 6);
     posAttr.needsUpdate = true;
     if (colAttr && sampleColors) colAttr.needsUpdate = true;
     if (dashAttr) dashAttr.needsUpdate = true;
     if (fadeAttr) fadeAttr.needsUpdate = true;
-    return n - 1;
+    return activeSegCount;
   }
 
   function syncColors(sampleColors, count, { fromIndex = 0 } = {}) {
@@ -746,6 +801,7 @@ export function createPathTubeMesh(maxPoints, material, {
 
   function clear() {
     activePoints = 0;
+    activeSegCount = 0;
     geometry.setDrawRange(0, 0);
   }
 
@@ -761,7 +817,7 @@ export function createPathTubeMesh(maxPoints, material, {
     syncColors,
     syncOutsideFlags,
     clear,
-    activeSegments: () => Math.max(0, activePoints - 1),
+    activeSegments: () => activeSegCount,
     dispose,
   };
 }

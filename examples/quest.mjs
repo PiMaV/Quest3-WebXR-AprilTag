@@ -7,7 +7,7 @@ import {
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
   createPerfTracker,ADAPTIVE_QUALITY_MODES,createAdaptiveQualityController,
-  projectPriorRois,fuseCommittedTrailSegment,smoothLineTail,
+  projectPriorRois,fuseCommittedTrailSegment,TRAIL_GAP_DEFAULTS,shouldStartNewTrailSegment,smoothLineTail,
   TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor,
   MOTION_WAKE_DEFAULTS,createMotionWakeBuffer,
   createTagMotionPredictor,createFocusScheduler,APP_VERSION_LABEL,
@@ -1273,6 +1273,12 @@ const PATHLINE_DEFAULTS=Object.freeze({
   turboRefSpeedMps:TURBO_SPEED_DEFAULTS.refSpeedMps, // 0.60 m/s = 600 mm/s
   waypointDotRadiusM:0.0030,
   timeCopyDotRadiusM:0.0046,
+  gapBridgeRadiusM:0.00045, // 0.9 mm thin neutral-grey transfer bridge
+  gapBridgeColorHex:0x94a3b8,
+  gapBridgeOpacity:0.40,
+  gapCapRadiusM:0.0036,
+  gapEndCapColorHex:0xcbd5e1,
+  gapStartCapColorHex:0xf8fafc,
 });
 const trailLineMat=new THREE.MeshBasicMaterial({
   color:0xffffff,
@@ -1407,6 +1413,20 @@ const nodeBatch=createInstancedPool(
   48,
   {name:'nodeBatch'},
 );
+const MAX_TRAIL_GAPS=192;
+const _gapCapGeo=new THREE.OctahedronGeometry(1,0);
+const trailGapBridgeBatch=createInstancedPool(
+  _rodGeo,
+  new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:PATHLINE_DEFAULTS.gapBridgeOpacity,depthWrite:false}),
+  MAX_TRAIL_GAPS,
+  {renderOrder:1,name:'trailGapBridgeBatch'},
+);
+const trailGapCapBatch=createInstancedPool(
+  _gapCapGeo,
+  new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.92}),
+  MAX_TRAIL_GAPS*2,
+  {renderOrder:3,name:'trailGapCapBatch'},
+);
 const zRingBatch=createInstancedPool(
   new THREE.RingGeometry(0.003,0.0065,16),
   new THREE.MeshBasicMaterial({color:0x38bdf8,side:THREE.DoubleSide,transparent:true,opacity:0.80,depthWrite:false}),
@@ -1432,7 +1452,7 @@ const tagFaceAtlas=createBadgeAtlas({width:512,height:1024,cellW:128,cellH:128})
 const tagFaceMesh=createOrientedAtlasMesh(tagFaceAtlas,32,{renderOrder:6,depthTest:true,depthWrite:false});
 root.add(
   frameBatch.mesh,alertGlowBatch.mesh,overlayFrameBatch.mesh,rodBatch.mesh,overlayRodBatch.mesh,
-  nodeBatch.mesh,zRingBatch.mesh,recOrbBatch.mesh,closeOrbBatch.mesh,
+  nodeBatch.mesh,trailGapBridgeBatch.mesh,trailGapCapBatch.mesh,zRingBatch.mesh,recOrbBatch.mesh,closeOrbBatch.mesh,
   axesBatch.lines,badgeMesh.mesh,tagFaceMesh.mesh,
 );
 
@@ -5023,8 +5043,11 @@ function recolorMovableTrail(entry){
   if(entry.trailTube&&entry.lineCount>0&&entry.lineColors&&entry.lineSpeeds){
     const n=entry.lineCount;
     const s=entry.lineSpeeds;
+    const b=entry.lineBreaks;
     for(let i=0;i<n;i++){
-      const spd=(i>0&&i<n-1)?(s[i-1]*0.25+s[i]*0.50+s[i+1]*0.25):s[i];
+      const isStart=i===0||Boolean(b&&b[i]);
+      const isEnd=i===n-1||Boolean(b&&b[i+1]);
+      const spd=(!isStart&&!isEnd)?(s[i-1]*0.25+s[i]*0.50+s[i+1]*0.25):s[i];
       writeSampleLinearColor(entry,spd,entry.lineColors,i*3);
     }
     entry.trailTube.syncColors(entry.lineColors,n);
@@ -5044,6 +5067,7 @@ function syncMovableTrailOutsideFlags(entry){
   let changed=false;
   let prevOut=false;
   for(let i=0;i<n;i++){
+    if(entry.lineBreaks?.[i])prevOut=false;
     let next=0;
     if(fenceActive){
       const o=i*3;
@@ -5061,6 +5085,44 @@ function syncMovableTrailOutsideFlags(entry){
   if(changed){
     entry.trailTube.syncOutsideFlags(entry.lineOutside,n);
   }
+}
+
+function freeTrailGapSlot(gap){
+  if(!gap)return;
+  if(gap.bridgeSlot>=0)trailGapBridgeBatch.free(gap.bridgeSlot);
+  if(gap.endCapSlot>=0)trailGapCapBatch.free(gap.endCapSlot);
+  if(gap.startCapSlot>=0)trailGapCapBatch.free(gap.startCapSlot);
+}
+
+function freeEntryGapVisuals(entry){
+  if(!entry?.trailGaps?.length)return;
+  for(const g of entry.trailGaps)freeTrailGapSlot(g);
+  entry.trailGaps.length=0;
+}
+
+function addTrailGapVisual(entry,startIndex){
+  if(!entry?.linePositions||startIndex<1||startIndex>=entry.lineCount)return;
+  const p0=(startIndex-1)*3;
+  const p1=startIndex*3;
+  const ax=entry.linePositions[p0],ay=entry.linePositions[p0+1],az=entry.linePositions[p0+2];
+  const bx=entry.linePositions[p1],by=entry.linePositions[p1+1],bz=entry.linePositions[p1+2];
+  const bridgeSlot=trailGapBridgeBatch.alloc();
+  if(bridgeSlot>=0){
+    trailGapBridgeBatch.setRod(bridgeSlot,ax,ay,az,bx,by,bz,PATHLINE_DEFAULTS.gapBridgeRadiusM);
+    trailGapBridgeBatch.setColor(bridgeSlot,PATHLINE_DEFAULTS.gapBridgeColorHex);
+  }
+  const capR=PATHLINE_DEFAULTS.gapCapRadiusM;
+  const endCapSlot=trailGapCapBatch.alloc();
+  if(endCapSlot>=0){
+    trailGapCapBatch.setPoint(endCapSlot,ax,ay,az,capR);
+    trailGapCapBatch.setColor(endCapSlot,PATHLINE_DEFAULTS.gapEndCapColorHex);
+  }
+  const startCapSlot=trailGapCapBatch.alloc();
+  if(startCapSlot>=0){
+    trailGapCapBatch.setPoint(startCapSlot,bx,by,bz,capR);
+    trailGapCapBatch.setColor(startCapSlot,PATHLINE_DEFAULTS.gapStartCapColorHex);
+  }
+  entry.trailGaps.push({startIndex,bridgeSlot,endCapSlot,startCapSlot});
 }
 
 function setTrailColorMode(nextMode,{silent=false}={}){
@@ -5103,6 +5165,7 @@ function ensureMovableTrailVisuals(entry){
     const lineSpeeds=new Float32Array(MAX_LINE_PTS);
     const lineColors=new Float32Array(MAX_LINE_PTS*3);
     const lineOutside=new Uint8Array(MAX_LINE_PTS);
+    const lineBreaks=new Uint8Array(MAX_LINE_PTS);
     const trailTube=createPathTubeMesh(MAX_LINE_PTS,trailLineMat,{
       radius:PATHLINE_DEFAULTS.lineRadiusM,
       sides:PATHLINE_DEFAULTS.lineSides,
@@ -5118,6 +5181,7 @@ function ensureMovableTrailVisuals(entry){
     entry.lineSpeeds=lineSpeeds;
     entry.lineColors=lineColors;
     entry.lineOutside=lineOutside;
+    entry.lineBreaks=lineBreaks;
     entry.lastTrailFenceVer=perimeterFence?.version?.()??-1;
   }
   if(!entry.dotsMesh){
@@ -5262,16 +5326,16 @@ function createMovableTool(tagId,edgeMm){
     markOrbSlot,markPillSlot,markPillKey:'',
     visible:false,faceVisible:false,recOrbVisible:false,markOrbVisible:false,outsidePerimeter:false,lastAlertFenceVer:-1,
     frameColorHex:theme.hex,recOrbColorHex:0x0ea5e9,markOrbColorHex:0x22d3ee,recOrbScale:1,
-    trailTube:null,uniqueLinearRgb:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineColors:null,lineOutside:null,lastTrailFenceVer:-1,lineCount:0,
+    trailTube:null,uniqueLinearRgb:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineColors:null,lineOutside:null,lineBreaks:null,trailGaps:[],trailSegmentCount:0,pendingTrailBreak:false,lastTrailFenceVer:-1,lineCount:0,
     wakeBuffer:null,wakeTube:null,wakeColors:null,wakeLinearRgb:null,
     dotsMesh:null,dotMat:null,dotColor:null,timeCopyDotColor:null,
     waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,smoothedSpeedMps:0,hasEverAnnouncedLock:false,
     lockState:'settling',settleSamples:[],lockedMatrix:null,lockedSinceMs:0,lockQuality:null,refineSamples:[],relocPending:null,
     stillAnchor:null,stillSinceMs:null,stillSamples:[],lockFlashUntilMs:0,currentPose:null,
-    lastMatrix:null,lastOpticalMatrix:null,targetMatrix:null,displayMatrix:null,targetConfidence:1,lastAt:0,lastOpticalAtMs:0,lastOpticalXrTimeMs:0,lastSpeedMps:0,lastApparentEdgePx:0,lastOpticalRmsPx:null,pendingJump:null,skipNextJumpGuardUntilMs:0,
+    lastMatrix:null,lastOpticalMatrix:null,targetMatrix:null,displayMatrix:null,targetConfidence:1,lastAt:0,lastOpticalAtMs:0,lastAcceptedOpticalAtMs:0,lastOpticalXrTimeMs:0,lastSpeedMps:0,lastApparentEdgePx:0,lastOpticalRmsPx:null,pendingJump:null,skipNextJumpGuardUntilMs:0,
     errOffsetPos:[0,0,0],errOffsetRot:[0,0,0,1],errDecayTauSec:0.055,
     handCoupled:false,coupledHand:null,coupledStepCount:0,measureModeApplied:false,measureSyncedPose:null,lastCoupledStepAtMs:0,postReleaseBoostUntilMs:0,releaseSpeedMps:0,pendingTrail:createCoupledTrailBuffer(),
-    recentPoses:[],recording:false,autoRecording:false,lastRecLineMatrix:null,lastRecFrameMatrix:null,lastRecAtMs:0,
+    recentPoses:[],recording:false,autoRecording:false,lastRecLineMatrix:null,lastRecFrameMatrix:null,lastRecAtMs:0,lastCommittedPose:null,lastCommittedAtMs:0,
     markHoldSince:null,markHoldConsumed:false,recHoldSince:null,recHoldConsumed:false,recOrbPosL:[0,0,0],markOrbPosL:[0,0,0],
     hasFenceSample:false,lastFencePosL:[0,0,0],lastInsidePosL:null,lastBreachAtMs:0,
     pillRestState:createTagRestState(),
@@ -5300,7 +5364,7 @@ function syncCurrentPose(entry,matrix,atMs){
   return wp;
 }
 
-function appendLinePoint(entry,pose,speedMps=0){
+function appendLinePoint(entry,pose,speedMps=0,{isBreak=false,atMs=null}={}){
   if(!pose||pose.length<16)return;
   ensureMovableTrailVisuals(entry);
   const cx=pose[12],cy=pose[13],cz=pose[14];
@@ -5312,24 +5376,40 @@ function appendLinePoint(entry,pose,speedMps=0){
     entry.lineSpeeds.copyWithin(0,1,MAX_LINE_PTS);
     entry.lineColors.copyWithin(0,3,MAX_LINE_PTS*3);
     entry.lineOutside.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineBreaks.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineBreaks[0]=0;
+    for(let gi=entry.trailGaps.length-1;gi>=0;gi--){
+      const g=entry.trailGaps[gi];
+      g.startIndex--;
+      if(g.startIndex<=0){
+        freeTrailGapSlot(g);
+        entry.trailGaps.splice(gi,1);
+      }
+    }
     idx=MAX_LINE_PTS-1;
   }else{
     idx=entry.lineCount++;
   }
+  const resolvedBreak=Boolean(isBreak&&idx>0);
+  entry.lineBreaks[idx]=resolvedBreak?1:0;
+  if(idx===0)entry.trailSegmentCount=1;
+  else if(resolvedBreak)entry.trailSegmentCount=Math.max(1,entry.trailSegmentCount)+1;
+  const ptSpeed=resolvedBreak?0:speedMps;
   const i=idx*3;
   entry.rawLinePositions[i]=cx;entry.rawLinePositions[i+1]=cy;entry.rawLinePositions[i+2]=cz;
   entry.linePositions[i]=cx;entry.linePositions[i+1]=cy;entry.linePositions[i+2]=cz;
-  entry.lineSpeeds[idx]=speedMps;
-  writeSampleLinearColor(entry,speedMps,entry.lineColors,i);
-  if(idx>=2){
-    const avgSpd=entry.lineSpeeds[idx-2]*0.25+entry.lineSpeeds[idx-1]*0.50+speedMps*0.25;
+  entry.lineSpeeds[idx]=ptSpeed;
+  writeSampleLinearColor(entry,ptSpeed,entry.lineColors,i);
+  if(!resolvedBreak&&idx>=2&&!entry.lineBreaks[idx-1]){
+    const avgSpd=entry.lineSpeeds[idx-2]*0.25+entry.lineSpeeds[idx-1]*0.50+ptSpeed*0.25;
     writeSampleLinearColor(entry,avgSpd,entry.lineColors,(idx-1)*3);
   }
-  smoothLineTail(entry.rawLinePositions,entry.linePositions,entry.lineCount,{maxDeviationM:0.012});
+  smoothLineTail(entry.rawLinePositions,entry.linePositions,entry.lineCount,{maxDeviationM:0.012,breakFlags:entry.lineBreaks});
   const fenceActive=Boolean(perimeterFence?.isActive?.());
   const outStart=fullRebuild?0:Math.max(0,entry.lineCount-4);
-  let prevOut=outStart>0?entry.lineOutside[outStart-1]===1:false;
+  let prevOut=(outStart>0&&!entry.lineBreaks[outStart])?entry.lineOutside[outStart-1]===1:false;
   for(let k=outStart;k<entry.lineCount;k++){
+    if(entry.lineBreaks[k])prevOut=false;
     if(!fenceActive){
       entry.lineOutside[k]=0;
       continue;
@@ -5346,12 +5426,46 @@ function appendLinePoint(entry,pose,speedMps=0){
   entry.trailTube.syncFromPositions(entry.linePositions,entry.lineCount,{
     colors:entry.lineColors,
     outsideFlags:entry.lineOutside,
+    breakFlags:entry.lineBreaks,
     fromIndex:fullRebuild?0:Math.max(0,entry.lineCount-6),
   });
+  if(resolvedBreak)addTrailGapVisual(entry,idx);
+  entry.lastCommittedPose=pose.slice();
+  if(Number.isFinite(atMs))entry.lastCommittedAtMs=atMs;
 }
 
-function recordMovablePathPoint(entry,pose,atMs){
+function recordMovablePathPoint(entry,pose,atMs,{opticalGapMs=null}={}){
   if(!isEntryRecording(entry)||!pose)return;
+  if(entry.lineCount>0&&entry.lastCommittedPose){
+    const gap=shouldStartNewTrailSegment({
+      prevPose:entry.lastCommittedPose,
+      nextPose:pose,
+      dtMs:opticalGapMs,
+      explicitBreak:entry.pendingTrailBreak,
+    });
+    if(gap.isBreak){
+      entry.pendingTrailBreak=false;
+      entry.smoothedSpeedMps=0;
+      entry.lastRecLineMatrix=pose.slice();
+      entry.lastRecFrameMatrix=pose.slice();
+      entry.lastRecAtMs=atMs;
+      appendLinePoint(entry,pose,0,{isBreak:true,atMs});
+      stampMovableWaypoint(entry.tagId,entry.edgeMm,pose,atMs,{silent:true,skipLine:true,speedMps:0,isSegmentStart:true});
+      pushDiagEvent({
+        type:'trail-gap',tagId:entry.tagId,reason:gap.reason,
+        distMm:Math.round(gap.distM*1000),gapMs:Math.round(gap.dtMs||0),
+        segment:entry.trailSegmentCount,atPerformanceMs:performance.now(),
+      });
+      return;
+    }
+    if(entry.pendingTrailBreak){
+      entry.pendingTrailBreak=false;
+      if(!entry.lastRecLineMatrix){
+        entry.lastRecLineMatrix=entry.lastCommittedPose.slice();
+        entry.lastRecAtMs=atMs;
+      }
+    }
+  }
   let linePosMm=Infinity;
   if(entry.lastRecLineMatrix){
     const dl=rigidVector(product(inverse(entry.lastRecLineMatrix),pose));
@@ -5380,7 +5494,7 @@ function recordMovablePathPoint(entry,pose,atMs){
     }
     entry.lastRecLineMatrix=pose.slice();
     entry.lastRecAtMs=atMs;
-    appendLinePoint(entry,pose,speedMps);
+    appendLinePoint(entry,pose,speedMps,{atMs});
     let framePosMm=Infinity,frameAngDeg=Infinity;
     if(entry.lastRecFrameMatrix){
       const df=rigidVector(product(inverse(entry.lastRecFrameMatrix),pose));
@@ -5439,7 +5553,9 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     movableTools.set(tagId,entry);
   }
   const prevOpticalAt=entry.lastOpticalAtMs??0;
+  const prevAcceptedOpticalAt=entry.lastAcceptedOpticalAtMs??0;
   const dtSinceLastMs=prevOpticalAt>0?Math.max(0,atMs-prevOpticalAt):Infinity;
+  const opticalGapMs=prevAcceptedOpticalAt>0?Math.max(0,atMs-prevAcceptedOpticalAt):0;
   entry.lastAt=atMs;
   entry.lastOpticalAtMs=atMs;
   if(Number.isFinite(targetXrTimeMs))entry.lastOpticalXrTimeMs=targetXrTimeMs;
@@ -5495,6 +5611,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
 
   // While hand-coupled, 90 Hz hand prediction drives displayMatrix directly; keep tagPredictor warm in the shadow for seamless release.
   if(coupRes.mode==='coupled'){
+    entry.lastAcceptedOpticalAtMs=atMs;
     if(Number.isFinite(targetXrTimeMs)){
       const vel=tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
       if(vel&&vel.speedMps>0.01)entry.lastSpeedMps=vel.speedMps;
@@ -5513,21 +5630,28 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     entry.lastOpticalMatrix=lFromTag.slice();
     if(!entry.displayMatrix)entry.displayMatrix=lFromTag.slice();
     if(recordAllActive&&!entry.recording&&!entry.autoRecording){
-      activateAutoRecording(entry,entry.lockedMatrix||entry.displayMatrix||lFromTag,atMs);
+      const occludedCouple=Boolean(
+        entry.lockedMatrix&&
+        opticalGapMs>=TRAIL_GAP_DEFAULTS.minGapMs&&
+        Math.hypot(lFromTag[12]-entry.lockedMatrix[12],lFromTag[13]-entry.lockedMatrix[13],lFromTag[14]-entry.lockedMatrix[14])>=TRAIL_GAP_DEFAULTS.minGapDistM
+      );
+      const startBase=occludedCouple?lFromTag:(entry.lockedMatrix||entry.displayMatrix||lFromTag);
+      activateAutoRecording(entry,startBase,atMs,{opticalGapMs});
     }
     if(isEntryRecording(entry)){
       if(coupRes.event==='adapted'){
         const confirmed=entry.pendingTrail.commitUpTo(targetXrTimeMs);
         if(confirmed.length){
           const fused=fuseCommittedTrailSegment(confirmed,lFromTag,{blendWeight:0.45,maxStepCorrectionM:0.035});
-          for(const pt of fused){
-            recordMovablePathPoint(entry,pt.pose,Math.max(entry.lastRecAtMs||0,pt.atMs));
+          for(let i=0;i<fused.length;i++){
+            const pt=fused[i];
+            recordMovablePathPoint(entry,pt.pose,Math.max(entry.lastRecAtMs||0,pt.atMs),{opticalGapMs:i===0?opticalGapMs:0});
           }
         }else{
           const blended=(entry.lastRecLineMatrix&&Math.hypot(lFromTag[12]-entry.lastRecLineMatrix[12],lFromTag[13]-entry.lastRecLineMatrix[13],lFromTag[14]-entry.lastRecLineMatrix[14])<=0.045)
             ?blendRigid(entry.lastRecLineMatrix,lFromTag,0.55)
             :lFromTag;
-          recordMovablePathPoint(entry,blended,Math.max(entry.lastRecAtMs||0,atMs));
+          recordMovablePathPoint(entry,blended,Math.max(entry.lastRecAtMs||0,atMs),{opticalGapMs});
         }
       }else if(coupRes.event==='coupled'){
         entry.pendingTrail.discard();
@@ -5535,7 +5659,9 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
           ?Math.hypot(lFromTag[12]-entry.lastRecLineMatrix[12],lFromTag[13]-entry.lastRecLineMatrix[13],lFromTag[14]-entry.lastRecLineMatrix[14])
           :Infinity;
         if(distM>=0.018){
-          recordMovablePathPoint(entry,lFromTag,Math.max(entry.lastRecAtMs||0,atMs));
+          recordMovablePathPoint(entry,lFromTag,Math.max(entry.lastRecAtMs||0,atMs),{opticalGapMs});
+        }else if(entry.pendingTrailBreak){
+          entry.pendingTrailBreak=false;
         }
       }
     }else{
@@ -5577,6 +5703,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         const maxPos=Math.max(...entry.settleSamples.map(s=>Math.hypot(...rigidVector(product(invM,s.matrix)).slice(3))*1000));
         const maxAng=Math.max(...entry.settleSamples.map(s=>Math.hypot(...rigidVector(product(invM,s.matrix)).slice(0,3))*180/Math.PI));
         if(maxPos<=18&&maxAng<=10){
+          entry.lastAcceptedOpticalAtMs=atMs;
           const wasNeverLocked=!entry.hasEverAnnouncedLock;
           entry.hasEverAnnouncedLock=true;
           entry.lockState='locked';
@@ -5612,8 +5739,8 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
           entry.stillSamples=[lFromTag.slice()];
           resetDisplayErrorOffset(entry);
           if(recordAllActive&&!entry.recording){
-            activateAutoRecording(entry,startPose,atMs);
-            recordMovablePathPoint(entry,lFromTag,atMs);
+            activateAutoRecording(entry,startPose,atMs,{opticalGapMs});
+            recordMovablePathPoint(entry,lFromTag,atMs,{opticalGapMs:0});
           }else{
             seedMovableWake(entry,startPose,atMs);
             drawLiveBadge(entry,entry.recording?'rec':'moving',entry.handCoupled);
@@ -5647,6 +5774,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
       entry.targetMatrix=lFromTag.slice();
       entry.stillAnchor=null;entry.stillSinceMs=null;entry.stillSamples=[];
     }else if(posMm<stillPosMm&&angDeg<stillAngDeg){
+      entry.lastAcceptedOpticalAtMs=atMs;
       entry.relocPending=null;
       // Iterative stillness precision refinement when cleaner/closer view confirms a 2..stillPosMm offset.
       const prevQual=entry.lockQuality;
@@ -5689,6 +5817,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         (staleLocked&&!softFallback&&Number.isFinite(rmsPx)&&rmsPx<=1.10&&apparentEdgePx>=14&&conf>=0.65);
       const mirrorFlipLikely=posMm<24&&angDeg>20;
       if(cleanFastUnlock&&!mirrorFlipLikely){
+        entry.lastAcceptedOpticalAtMs=atMs;
         entry.lockState='moving';
         entry.lockedSinceMs=0;
         entry.relocPending=null;
@@ -5706,11 +5835,16 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
         const predTarget=(Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||lFromTag;
         if(entry.displayMatrix)captureDisplayErrorOffset(entry,predTarget,0.055);
+        const occludedReloc=opticalGapMs>=TRAIL_GAP_DEFAULTS.minGapMs&&posMm>=TRAIL_GAP_DEFAULTS.minGapDistM*1000;
         if(recordAllActive&&!entry.recording){
-          activateAutoRecording(entry,ref,atMs);
-          recordMovablePathPoint(entry,lFromTag,atMs);
+          if(occludedReloc){
+            activateAutoRecording(entry,lFromTag,atMs,{opticalGapMs});
+          }else{
+            activateAutoRecording(entry,ref,atMs,{opticalGapMs:0});
+            recordMovablePathPoint(entry,lFromTag,atMs,{opticalGapMs:0});
+          }
         }else{
-          seedMovableWake(entry,ref,atMs);
+          if(!occludedReloc)seedMovableWake(entry,ref,atMs);
           if(!entry.recording)drawLiveBadge(entry,'moving',entry.handCoupled);
         }
         return;
@@ -5722,6 +5856,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         const pAngDeg=Math.hypot(...dp.slice(0,3))*180/Math.PI;
         const relocDtSec=Math.min(0.65,Math.max(0.05,(atMs-entry.relocPending.atMs)/1000));
         if(pPosMm<=Math.max(28,relocDtSec*1400)&&pAngDeg<=Math.max(15,relocDtSec*160)){
+          entry.lastAcceptedOpticalAtMs=atMs;
           entry.lockState='moving';
           entry.lockedSinceMs=0;
           entry.relocPending=null;
@@ -5735,11 +5870,16 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
           if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
           const predTarget=(Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||lFromTag;
           if(entry.displayMatrix)captureDisplayErrorOffset(entry,predTarget,0.055);
+          const occludedReloc=opticalGapMs>=TRAIL_GAP_DEFAULTS.minGapMs&&posMm>=TRAIL_GAP_DEFAULTS.minGapDistM*1000;
           if(recordAllActive&&!entry.recording){
-            activateAutoRecording(entry,ref,atMs);
-            recordMovablePathPoint(entry,lFromTag,atMs);
+            if(occludedReloc){
+              activateAutoRecording(entry,lFromTag,atMs,{opticalGapMs});
+            }else{
+              activateAutoRecording(entry,ref,atMs,{opticalGapMs:0});
+              recordMovablePathPoint(entry,lFromTag,atMs,{opticalGapMs:0});
+            }
           }else{
-            seedMovableWake(entry,ref,atMs);
+            if(!occludedReloc)seedMovableWake(entry,ref,atMs);
             if(!entry.recording)drawLiveBadge(entry,'moving',entry.handCoupled);
           }
         }else{
@@ -5771,6 +5911,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     entry.pendingJump=null;
   }
   entry.skipNextJumpGuardUntilMs=0;
+  entry.lastAcceptedOpticalAtMs=atMs;
 
   const nextPose=(conf>=0.35||!entry.targetMatrix)?lFromTag.slice():blendRigid(entry.targetMatrix,lFromTag,conf);
   entry.lastMatrix=nextPose.slice();
@@ -5792,7 +5933,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
     while(entry.recentPoses.length>5||(entry.recentPoses.length>1&&atMs-entry.recentPoses[0].atMs>1200)){
       entry.recentPoses.shift();
     }
-    recordMovablePathPoint(entry,nextPose,atMs);
+    recordMovablePathPoint(entry,nextPose,atMs,{opticalGapMs});
   }
 
   // Stillness check: once tag rests within < 10 mm / < 6 deg for >= 450 ms (2+ frames), re-lock cleanly into LOCKED (never auto-lock while recording).
@@ -5854,6 +5995,63 @@ function getPreTouchPose(entry,now){
   return consistent.length>=2?meanRigid(consistent.map(p=>p.matrix)):ref.slice();
 }
 
+function seedTrailRecordingStart(entry,startPose,now,{explicitBreak=false,opticalGapMs=null}={}){
+  if(!startPose)return;
+  if(entry.lineCount>0&&entry.lastCommittedPose){
+    const gap=shouldStartNewTrailSegment({
+      prevPose:entry.lastCommittedPose,
+      nextPose:startPose,
+      dtMs:opticalGapMs,
+      explicitBreak:explicitBreak||entry.pendingTrailBreak,
+    });
+    entry.pendingTrailBreak=false;
+    if(gap.isBreak){
+      entry.lastRecLineMatrix=startPose.slice();
+      entry.lastRecFrameMatrix=startPose.slice();
+      entry.lastRecAtMs=now;
+      stampMovableWaypoint(entry.tagId,entry.edgeMm,startPose,now,{silent:true,isBreak:true,isSegmentStart:true,speedMps:0});
+      pushDiagEvent({
+        type:'trail-gap',tagId:entry.tagId,reason:gap.reason,
+        distMm:Math.round(gap.distM*1000),gapMs:Math.round(gap.dtMs||0),
+        segment:entry.trailSegmentCount,atPerformanceMs:performance.now(),
+      });
+      return;
+    }
+    if(gap.distM>=0.014){
+      entry.lastRecLineMatrix=startPose.slice();
+      entry.lastRecFrameMatrix=startPose.slice();
+      entry.lastRecAtMs=now;
+      const lastWp=entry.waypoints.at(-1);
+      if(!lastWp||now-lastWp.atMs>750){
+        stampMovableWaypoint(entry.tagId,entry.edgeMm,startPose,now,{silent:true});
+      }else{
+        appendLinePoint(entry,startPose,0,{atMs:now});
+      }
+    }else{
+      entry.lastRecLineMatrix=entry.lastCommittedPose.slice();
+      entry.lastRecAtMs=now;
+    }
+    return;
+  }
+  entry.pendingTrailBreak=false;
+  const prevDist=entry.lastRecLineMatrix
+    ?Math.hypot(startPose[12]-entry.lastRecLineMatrix[12],startPose[13]-entry.lastRecLineMatrix[13],startPose[14]-entry.lastRecLineMatrix[14])
+    :Infinity;
+  if(!entry.lastRecLineMatrix||prevDist>=0.014){
+    entry.lastRecLineMatrix=startPose.slice();
+    entry.lastRecFrameMatrix=startPose.slice();
+    entry.lastRecAtMs=now;
+    const lastWp=entry.waypoints.at(-1);
+    if(!lastWp||now-lastWp.atMs>750){
+      stampMovableWaypoint(entry.tagId,entry.edgeMm,startPose,now,{silent:true});
+    }else{
+      appendLinePoint(entry,startPose,0,{atMs:now});
+    }
+  }else{
+    entry.lastRecAtMs=now;
+  }
+}
+
 function setTagRecording(entry,active,now){
   if(entry.recording===active)return;
   entry.recording=active;
@@ -5872,13 +6070,7 @@ function setTagRecording(entry,active,now){
     entry.smoothedSpeedMps=0;
     const startPose=(entry.handCoupled&&entry.lastOpticalMatrix)?entry.lastOpticalMatrix.slice():getPreTouchPose(entry,now);
     if(startPose){
-      entry.lastRecLineMatrix=startPose.slice();
-      entry.lastRecFrameMatrix=startPose.slice();
-      entry.lastRecAtMs=now;
-      const lastWp=entry.waypoints.at(-1);
-      if(!lastWp||now-lastWp.atMs>750){
-        stampMovableWaypoint(entry.tagId,entry.edgeMm,startPose,now,{silent:true});
-      }
+      seedTrailRecordingStart(entry,startPose,now,{explicitBreak:true});
       const flashPos=root.visible?lPointToWorld(root.matrix.elements,startPose[12],startPose[13],startPose[14]):null;
       if(flashPos)triggerPinFlash(flashPos,'#ef4444','●');
     }
@@ -5889,6 +6081,7 @@ function setTagRecording(entry,active,now){
     entry.lastRecLineMatrix=null;
     entry.lastRecFrameMatrix=null;
     entry.lastRecAtMs=0;
+    if(entry.lineCount>0)entry.pendingTrailBreak=true;
     if(entry.displayMatrix){
       const flashPos=root.visible?lPointToWorld(root.matrix.elements,entry.displayMatrix[12],entry.displayMatrix[13],entry.displayMatrix[14]):null;
       if(flashPos)triggerPinFlash(flashPos,'#22c55e','■');
@@ -5898,7 +6091,7 @@ function setTagRecording(entry,active,now){
   }
 }
 
-function activateAutoRecording(entry,startPose,now){
+function activateAutoRecording(entry,startPose,now,{opticalGapMs=null}={}){
   if(!entry||entry.recording||entry.autoRecording)return;
   entry.autoRecording=true;
   clearMovableWake(entry);
@@ -5907,24 +6100,7 @@ function activateAutoRecording(entry,startPose,now){
   entry.frameColorHex=0xef4444;
   frameBatch.setColor(entry.frameSlot,entry.frameColorHex);
   drawLiveBadge(entry,'rec',entry.handCoupled);
-  if(startPose){
-    const prevDist=entry.lastRecLineMatrix
-      ?Math.hypot(startPose[12]-entry.lastRecLineMatrix[12],startPose[13]-entry.lastRecLineMatrix[13],startPose[14]-entry.lastRecLineMatrix[14])
-      :Infinity;
-    if(!entry.lastRecLineMatrix||prevDist>=0.014){
-      entry.lastRecLineMatrix=startPose.slice();
-      entry.lastRecFrameMatrix=startPose.slice();
-      entry.lastRecAtMs=now;
-      const lastWp=entry.waypoints.at(-1);
-      if(!lastWp||now-lastWp.atMs>750){
-        stampMovableWaypoint(entry.tagId,entry.edgeMm,startPose,now,{silent:true});
-      }else{
-        appendLinePoint(entry,startPose,0);
-      }
-    }else{
-      entry.lastRecAtMs=now;
-    }
-  }
+  seedTrailRecordingStart(entry,startPose,now,{opticalGapMs});
 }
 
 function deactivateAutoRecording(entry,finalPose,now){
@@ -5936,7 +6112,7 @@ function deactivateAutoRecording(entry,finalPose,now){
       finalPose[14]-entry.lastRecLineMatrix[14],
     )*1000;
     if(distMm>=6&&distMm<=150){
-      appendLinePoint(entry,finalPose,0);
+      appendLinePoint(entry,finalPose,0,{atMs:now});
       entry.lastRecLineMatrix=finalPose.slice();
     }
   }
@@ -5991,6 +6167,7 @@ async function setRecordAllActive(active,{silent=false}={}){
       if(!e.recording){
         e.lastRecLineMatrix=null;
         e.lastRecFrameMatrix=null;
+        if(e.lineCount>0)e.pendingTrailBreak=true;
       }
       if(e.visible){
         drawLiveBadge(e,!extraScanActive?'measure':(e.recording?'rec':e.lockState),e.handCoupled);
@@ -6157,6 +6334,9 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       entry.pendingTrail.discard();
       entry.pendingJump=null;
       entry.skipNextJumpGuardUntilMs=now+900;
+      if(pred.reason==='optical-timeout'||pred.reason==='unconfirmed-drift'){
+        if(entry.lineCount>0)entry.pendingTrailBreak=true;
+      }
       const smoothRelease=pred.reason==='pinch-opened'||pred.reason==='hand-pulled-away'||pred.reason==='optical-disagreement';
       if(smoothRelease){
         const handoverBase=(Number.isFinite(xrTimeMs)&&tagPredictor.predict(entry.tagId,xrTimeMs))||entry.targetMatrix||entry.displayMatrix;
@@ -6235,9 +6415,18 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     entry.faceVisible=alive;
     if(!alive){
       if(entry.autoRecording){
-        deactivateAutoRecording(entry,entry.displayMatrix||entry.lastOpticalMatrix,now);
+        deactivateAutoRecording(entry,entry.lastOpticalMatrix||entry.displayMatrix,now);
         entry.lastRecLineMatrix=null;
         entry.lastRecFrameMatrix=null;
+      }
+      if(entry.lineCount>0){
+        entry.pendingTrailBreak=true;
+        if(entry.recording){
+          entry.lastRecLineMatrix=null;
+          entry.lastRecFrameMatrix=null;
+          entry.lastRecAtMs=0;
+          entry.smoothedSpeedMps=0;
+        }
       }
       clearMovableWake(entry);
       syncMovablePerimeterAlert(entry,null,false,now);
@@ -6498,7 +6687,7 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
   }
 }
 
-function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=false,isTimeCopy=false,speedMps=null}={}){
+function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=false,isTimeCopy=false,speedMps=null,isBreak=false,isSegmentStart=false}={}){
   let entry=movableTools.get(tagId);
   if(!entry){entry=createMovableTool(tagId,edgeMm);movableTools.set(tagId,entry);}
   ensureMovableTrailVisuals(entry);
@@ -6506,6 +6695,7 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
   entry.lastMatrix=lFromTag.slice();entry.lastAt=atMs;
   if(!entry.targetMatrix)entry.targetMatrix=lFromTag.slice();
   if(!entry.displayMatrix)entry.displayMatrix=lFromTag.slice();
+  if(!skipLine)appendLinePoint(entry,lFromTag,Number.isFinite(speedMps)?speedMps:0,{isBreak,atMs});
   entry.waypointCount++;
   const timeCopyIndex=isTimeCopy?(++entry.timeCopyCount):0;
   const cx=lFromTag[12],cy=lFromTag[13],cz=lFromTag[14];
@@ -6514,19 +6704,21 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
   const clock=new Date().toTimeString().slice(0,8);
   const wp={
     tagId,edgeMm,index:entry.waypointCount,isTimeCopy,timeCopyIndex,
+    isSegmentStart:Boolean(isSegmentStart),
+    segmentIndex:entry.trailSegmentCount||1,
     speedMps:Number.isFinite(speedMps)?speedMps:null,
     matrix:lFromTag.slice(),centerL:[cx,cy,cz],
     xMm:cx*1000,yMm:cy*1000,zMm:cz*1000,tiltDeg,atMs,
     elapsedS:Math.max(0,(atMs-entry.firstAtMs)/1000),clock,
   };
-  const dotR=isTimeCopy?PATHLINE_DEFAULTS.timeCopyDotRadiusM:PATHLINE_DEFAULTS.waypointDotRadiusM;
+  const dotR=wp.isSegmentStart?0:(isTimeCopy?PATHLINE_DEFAULTS.timeCopyDotRadiusM:PATHLINE_DEFAULTS.waypointDotRadiusM);
   const dotCol=waypointDotColorFor(entry,wp);
   if(entry.waypoints.length>=MAX_TRAIL_WAYPOINTS){
     entry.waypoints.shift();
     entry.waypoints.push(wp);
     for(let i=0;i<entry.waypoints.length;i++){
       const w=entry.waypoints[i];
-      const r=w.isTimeCopy?PATHLINE_DEFAULTS.timeCopyDotRadiusM:PATHLINE_DEFAULTS.waypointDotRadiusM;
+      const r=w.isSegmentStart?0:(w.isTimeCopy?PATHLINE_DEFAULTS.timeCopyDotRadiusM:PATHLINE_DEFAULTS.waypointDotRadiusM);
       _tmpMat4.makeScale(r,r,r).setPosition(w.centerL[0],w.centerL[1],w.centerL[2]);
       entry.dotsMesh.setMatrixAt(i,_tmpMat4);
       entry.dotsMesh.setColorAt(i,waypointDotColorFor(entry,w));
@@ -6541,7 +6733,6 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
   entry.dotsMesh.count=entry.waypoints.length;
   entry.dotsMesh.instanceMatrix.needsUpdate=true;
   if(entry.dotsMesh.instanceColor)entry.dotsMesh.instanceColor.needsUpdate=true;
-  if(!skipLine)appendLinePoint(entry,lFromTag,Number.isFinite(speedMps)?speedMps:0);
   if(!silent){
     const flashPos=root.visible?lPointToWorld(root.matrix.elements,cx,cy,cz):null;
     if(flashPos)triggerPinFlash(flashPos,isTimeCopy?'#22d3ee':'#22c55e','✓');
@@ -6557,6 +6748,7 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
 }
 
 function disposeMovableEntry(e){
+  freeEntryGapVisuals(e);
   if(e.frameSlot>=0)frameBatch.free(e.frameSlot);
   if(e.alertSlot>=0)alertGlowBatch.free(e.alertSlot);
   if(e.axesSlot>=0)axesBatch.free(e.axesSlot);
@@ -6573,6 +6765,7 @@ function disposeMovableEntry(e){
     e.lineSpeeds=null;
     e.lineColors=null;
     e.lineOutside=null;
+    e.lineBreaks=null;
   }
   if(e.wakeTube){
     extraRoot.remove(e.wakeTube.mesh);
@@ -6601,6 +6794,8 @@ function clearAllUserItems(){
   liveTouchLoaderActive=false;
   pinLoadSprite.visible=false;
   for(const e of movableTools.values())disposeMovableEntry(e);
+  trailGapBridgeBatch.clear();
+  trailGapCapBatch.clear();
   for(const extra of placedExtras.values()){
     if(extra.frameSlot>=0)frameBatch.free(extra.frameSlot);
     if(extra.alertSlot>=0)alertGlowBatch.free(extra.alertSlot);
@@ -6624,6 +6819,8 @@ function clearExtras(){
   focusScheduler.reset();
   handHistory.clear();
   for(const e of movableTools.values())disposeMovableEntry(e);
+  trailGapBridgeBatch.clear();
+  trailGapCapBatch.clear();
   for(const extra of placedExtras.values()){
     if(extra.frameSlot>=0)frameBatch.free(extra.frameSlot);
     if(extra.alertSlot>=0)alertGlowBatch.free(extra.alertSlot);
@@ -8085,7 +8282,14 @@ function finalizeDiagnostics(){
   diagnostics.extraTags=[...placedExtras.values()].map(({tagId,edgeMm,lFromTag,placedAt,wp})=>({tagId,edgeMm,lFromTag,placedAt,wp}));
   diagnostics.perimeterFence=perimeterFence?.snapshot()??null;
   diagnostics.anchorCorrection=anchorDriftCorrection.state();
-  diagnostics.movableTrails=[...movableTools.values()].map(m=>({tagId:m.tagId,edgeMm:m.edgeMm,waypoints:m.waypointCount,lastMatrix:m.lastMatrix}));
+  diagnostics.movableTrails=[...movableTools.values()].map(m=>({
+    tagId:m.tagId,
+    edgeMm:m.edgeMm,
+    waypoints:m.waypointCount,
+    segments:m.trailSegmentCount||(m.lineCount>0?1:0),
+    gaps:m.trailGaps?.length||0,
+    lastMatrix:m.lastMatrix,
+  }));
   lastDiagnostics=structuredClone(diagnostics);
   $('download').disabled=false;
   console.info('[webxr-apriltag] session diagnostics:',lastDiagnostics);
@@ -9505,6 +9709,8 @@ try{
       alertGlowBatch.commit();
       overlayFrameBatch.commit();
       rodBatch.commit();
+      trailGapBridgeBatch.commit();
+      trailGapCapBatch.commit();
       overlayRodBatch.commit();
       nodeBatch.commit();
       zRingBatch.commit();

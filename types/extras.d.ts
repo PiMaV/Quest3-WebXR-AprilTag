@@ -413,6 +413,25 @@ export const RIBBON_SPEED_DEFAULTS: Readonly<{
 export const TURBO_SPEED_DEFAULTS: Readonly<{
   refSpeedMps: number;
 }>;
+export const TRAIL_GAP_DEFAULTS: Readonly<{
+  minGapMs: number;
+  minGapDistM: number;
+  hardJumpM: number;
+  hardJumpMinDtMs: number;
+}>;
+export interface TrailGapEvaluation {
+  isBreak: boolean;
+  distM: number;
+  dtMs: number;
+  reason: 'explicit-break' | 'occlusion-gap' | 'occluded-jump' | null;
+}
+export function shouldStartNewTrailSegment(opts?: {
+  prevPose?: Matrix4Array | null;
+  nextPose?: Matrix4Array | null;
+  dtMs?: number | null;
+  explicitBreak?: boolean;
+  options?: Partial<typeof TRAIL_GAP_DEFAULTS> | null;
+}): TrailGapEvaluation;
 export function fuseCommittedTrailSegment<T extends { pose: Matrix4Array }>(
   confirmed: T[],
   opticalPose: Matrix4Array | null | undefined,
@@ -422,7 +441,7 @@ export function smoothLineTail(
   rawPositions: ArrayLike<number>,
   outPositions: { [index: number]: number },
   count: number,
-  opts?: { maxDeviationM?: number },
+  opts?: { maxDeviationM?: number; breakFlags?: ArrayLike<number> | null },
 ): void;
 export function speedToTubeRadius(
   speedMps: number,

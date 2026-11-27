@@ -50,6 +50,7 @@ export interface PathTubeMesh {
       colors?: ArrayLike<number> | null;
       outsideFlags?: ArrayLike<number> | null;
       fades?: ArrayLike<number> | null;
+      breakFlags?: ArrayLike<number> | null;
       fromIndex?: number;
     },
   ): number;

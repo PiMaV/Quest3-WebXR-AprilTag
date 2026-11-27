@@ -48,13 +48,69 @@ export function fuseCommittedTrailSegment(confirmed, opticalPose, {
   return out;
 }
 
+export const TRAIL_GAP_DEFAULTS = Object.freeze({
+  minGapMs: 550,        // optical absence above hand-coupling opticalStaleTimeoutMs (520 ms)
+  minGapDistM: 0.030,   // >= 30 mm shift across absence/stop -> real unrecorded relocation
+  hardJumpM: 0.160,     // >= 160 mm unbridged jump across >= 320 ms optical absence
+  hardJumpMinDtMs: 320,
+});
+
+function hasFinitePosePos(pose) {
+  return Boolean(
+    pose &&
+    pose.length >= 16 &&
+    Number.isFinite(pose[12]) &&
+    Number.isFinite(pose[13]) &&
+    Number.isFinite(pose[14]),
+  );
+}
+
+/**
+ * Decide whether transitioning from the last committed trail pose to nextPose
+ * crosses an unrecorded occlusion / pause gap and should start a new segment.
+ */
+export function shouldStartNewTrailSegment({
+  prevPose,
+  nextPose,
+  dtMs = null,
+  explicitBreak = false,
+  options = null,
+} = {}) {
+  if (!hasFinitePosePos(prevPose) || !hasFinitePosePos(nextPose)) {
+    return { isBreak: false, distM: 0, dtMs: 0, reason: null };
+  }
+  const distM = Math.hypot(
+    nextPose[12] - prevPose[12],
+    nextPose[13] - prevPose[13],
+    nextPose[14] - prevPose[14],
+  );
+  const gapMs = Number.isFinite(dtMs) ? Math.max(0, dtMs) : 0;
+  const cfg = options ? { ...TRAIL_GAP_DEFAULTS, ...options } : TRAIL_GAP_DEFAULTS;
+
+  // Resuming at virtually the same spot never spawns overlapping end/start caps or a tiny bridge.
+  if (distM < cfg.minGapDistM) {
+    return { isBreak: false, distM, dtMs: gapMs, reason: null };
+  }
+  if (explicitBreak) {
+    return { isBreak: true, distM, dtMs: gapMs, reason: 'explicit-break' };
+  }
+  if (gapMs >= cfg.minGapMs) {
+    return { isBreak: true, distM, dtMs: gapMs, reason: 'occlusion-gap' };
+  }
+  if (gapMs >= cfg.hardJumpMinDtMs && distM >= cfg.hardJumpM) {
+    return { isBreak: true, distM, dtMs: gapMs, reason: 'occluded-jump' };
+  }
+  return { isBreak: false, distM, dtMs: gapMs, reason: null };
+}
+
 /**
  * Zero-phase binomial FIR tail smoother ([1,4,6,4,1]/16 interior, [1,2,1]/4 near
- * endpoints) reading raw xyz points into out xyz points while pinning endpoints and
- * bounding maximum corner deviation to maxDeviationM.
+ * endpoints) reading raw xyz points into out xyz points while pinning segment
+ * endpoints (respecting optional breakFlags) and bounding corner deviation to maxDeviationM.
  */
 export function smoothLineTail(rawPositions, outPositions, count, {
   maxDeviationM = 0.012,
+  breakFlags = null,
 } = {}) {
   if (!rawPositions || !outPositions || count <= 0) return;
 
@@ -78,9 +134,22 @@ export function smoothLineTail(rawPositions, outPositions, count, {
     const rx = rawPositions[o];
     const ry = rawPositions[o + 1];
     const rz = rawPositions[o + 2];
-    let sx, sy, sz;
+    const isSegStart = i === 0 || Boolean(breakFlags && breakFlags[i]);
+    const isSegEnd = i === count - 1 || Boolean(breakFlags && breakFlags[i + 1]);
+    if (isSegStart || isSegEnd) {
+      outPositions[o] = rx;
+      outPositions[o + 1] = ry;
+      outPositions[o + 2] = rz;
+      continue;
+    }
 
-    if (i >= 2 && i <= count - 3) {
+    let sx, sy, sz;
+    const can5Tap =
+      i >= 2 &&
+      i <= count - 3 &&
+      !(breakFlags && (breakFlags[i - 1] || breakFlags[i] || breakFlags[i + 1] || breakFlags[i + 2]));
+
+    if (can5Tap) {
       const m2 = o - 6, m1 = o - 3, p1 = o + 3, p2 = o + 6;
       sx = (rawPositions[m2] + 4 * rawPositions[m1] + 6 * rx + 4 * rawPositions[p1] + rawPositions[p2]) * 0.0625;
       sy = (rawPositions[m2 + 1] + 4 * rawPositions[m1 + 1] + 6 * ry + 4 * rawPositions[p1 + 1] + rawPositions[p2 + 1]) * 0.0625;
