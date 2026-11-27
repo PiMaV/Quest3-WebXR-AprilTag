@@ -5636,7 +5636,7 @@ function observeExtraTags(observation,sample,assoc){
     lastSampleStats.carriedConfidence=carriedGate.confidence;
     lastSampleStats.rawGenericIds=all.filter(d=>isGenericTag(d.id)).map(d=>d.id);
   }
-  if(!K||!all.length)return;
+  if(!K)return;
   const counts=new Map();for(const d of all)counts.set(d.id,(counts.get(d.id)||0)+1);
 
   if(staticGate.frozen&&carriedGate.frozen){
@@ -5705,6 +5705,50 @@ function observeExtraTags(observation,sample,assoc){
           showHudToast(`◈ TAG #${v.tagId} ${res.role} FOUND`,'#22d3ee',1400);
         }
         pushDiagEvent({type:'perimeter-marker-detected',tagId:v.tagId,role:res.role,atPerformanceMs:performance.now(),posL:res.pos});
+      }
+    }
+    const isFocusOnly=(sample.focusRoiCount??0)>0&&Boolean(sample.focusHit);
+    const isFrozenFrame=observation.frameEvidence?.frozen===true||observation.frameEvidence?.fresh===false;
+    if(perimeterFence&&!isFocusOnly&&!isFrozenFrame&&perimeterFence.dynamicCount()>0){
+      const rawPerimeterSeen=[];
+      for(const raw of all){if(isPerimeterTag(raw.id))rawPerimeterSeen.push(raw.id);}
+      const occludedIds=[];
+      for(const m of perimeterFence.discoveredMarkers()){
+        if(isTagNearAnyHand(m.matrix,assoc.targetXrTimeMs,0.22))occludedIds.push(m.id);
+      }
+      const pruned=perimeterFence.reconcileView({
+        seenIds:rawPerimeterSeen,
+        lFromCamera,
+        K,
+        atMs,
+        confidence:staticGate.confidence,
+        occludedIds,
+      });
+      if(pruned?.removed?.length){
+        if(perimeterFence.dynamicCount()<7)perimeterCompleteAnnounced=false;
+        for(const rm of pruned.removed){
+          const vis=perimeterTagVisuals.get(rm.id);
+          if(vis?.wp){
+            const pinKey=waypointIdKey(vis.wp);
+            if(pinnedPoints.has(pinKey))unpinWaypoint(pinKey);
+          }
+          pushDiagEvent({
+            type:'perimeter-marker-removed',
+            tagId:rm.id,
+            role:rm.role,
+            atPerformanceMs:performance.now(),
+            posL:rm.pos,
+            deactivated:Boolean(pruned.deactivated),
+          });
+        }
+        if(pruned.deactivated){
+          showHudToast('◈ FENCE OFF · NO MARKERS LEFT','#f59e0b',1800);
+        }else if(pruned.removed.length===1){
+          const rm=pruned.removed[0];
+          showHudToast(`◈ FENCE -${rm.id} ${rm.role} (${perimeterFence.dynamicCount()}/7)`,'#f59e0b',1400);
+        }else{
+          showHudToast(`◈ FENCE -${pruned.removed.length} MARKERS (${perimeterFence.dynamicCount()}/7)`,'#f59e0b',1400);
+        }
       }
     }
   }
@@ -6254,7 +6298,7 @@ function renderTopHudBar(now,as,an,cs){
     headline=`STEP 3 · LOCK L (${q.count||0}/${q.required||5})`;
     sub=q.reason||'Hold all 3 L-tags steady in view';
   }else if(anchored){
-    const tagCount=movableTools.size+placedExtras.size+perimeterTagVisuals.size;
+    const tagCount=movableTools.size+placedExtras.size+(perimeterFence?.dynamicCount?.()??0);
     headline=extraScanActive?`● SCAN MODE · ${fps} FPS`:`■ MEASURE MODE · ${fps} FPS`;
     sub=`Tags: ${tagCount} · Pins: ${pinnedPoints.size} · Drag bottom bar to reposition`;
   }else if(an.phase==='lost'){
@@ -7690,7 +7734,7 @@ try{
           if(hudSlot===0){
             const avgFps=fpsHistory.length?Math.round(fpsHistory.reduce((a,b)=>a+b,0)/fpsHistory.length):0;
             const q=anSummary.quality||{};
-            const tagCount=movableTools.size+placedExtras.size+perimeterTagVisuals.size;
+            const tagCount=movableTools.size+placedExtras.size+(perimeterFence?.dynamicCount?.()??0);
             const topKey=`${asPhase}:${anPhase}:${q.count||0}/${q.required||5}:${q.reason||''}:${extraScanActive?1:0}:${avgFps}:${tagCount}:${pinnedPoints.size}`;
             if(topKey!==hudTopKey){
               hudTopKey=topKey;

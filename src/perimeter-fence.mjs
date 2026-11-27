@@ -204,6 +204,59 @@ export function evaluatePerimeterOutside(posL, vertices, {
   };
 }
 
+export function isTablePointObservableInCamera(posL, lFromCamera, K, {
+  minDistM = 0.22,
+  maxDistM = 1.55,
+  minCosView = 0.38,
+  borderMarginFrac = 0.07,
+  minBorderMarginPx = 48,
+  minExpectedEdgePx = 12,
+  tagEdgeM = 0.020,
+} = {}) {
+  if (
+    !Array.isArray(posL) || posL.length < 3 ||
+    !lFromCamera || lFromCamera.length < 15 ||
+    !K || !(K.fx > 0) || !(K.fy > 0) ||
+    !Number.isFinite(K.cx) || !Number.isFinite(K.cy) ||
+    !(K.width >= 32) || !(K.height >= 32)
+  ) {
+    return false;
+  }
+  const px = posL[0], py = posL[1], pz = posL[2];
+  const tx = lFromCamera[12], ty = lFromCamera[13], tz = lFromCamera[14];
+  if (
+    !Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz) ||
+    !Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tz)
+  ) {
+    return false;
+  }
+  const dx = px - tx;
+  const dy = py - ty;
+  const dz = pz - tz;
+  const dist = Math.hypot(dx, dy, dz);
+  if (!Number.isFinite(dist) || dist < minDistM || dist > maxDistM) return false;
+
+  const cosView = (tz - pz) / dist;
+  if (!Number.isFinite(cosView) || cosView < minCosView) return false;
+
+  // Rigid transpose inverse: p_GL = R^T * (p_L - t), then GL -> OpenCV (x, -y, -z).
+  const xCV = lFromCamera[0] * dx + lFromCamera[1] * dy + lFromCamera[2] * dz;
+  const yCV = -(lFromCamera[4] * dx + lFromCamera[5] * dy + lFromCamera[6] * dz);
+  const zCV = -(lFromCamera[8] * dx + lFromCamera[9] * dy + lFromCamera[10] * dz);
+  if (!Number.isFinite(zCV) || zCV < minDistM || zCV > maxDistM) return false;
+
+  const expectedEdgePx = (tagEdgeM * Math.min(K.fx, K.fy)) / zCV;
+  if (!Number.isFinite(expectedEdgePx) || expectedEdgePx < minExpectedEdgePx) return false;
+
+  const u = K.fx * (xCV / zCV) + K.cx;
+  const v = K.fy * (yCV / zCV) + K.cy;
+  if (!Number.isFinite(u) || !Number.isFinite(v)) return false;
+
+  const marginX = Math.max(minBorderMarginPx, K.width * borderMarginFrac);
+  const marginY = Math.max(minBorderMarginPx, K.height * borderMarginFrac);
+  return u >= marginX && u <= K.width - marginX && v >= marginY && v <= K.height - marginY;
+}
+
 export function createPerimeterFence(rig, {
   heightM = FENCE_HEIGHT_M,
   triggerTagId = PERIMETER_TRIGGER_TAG_ID,
@@ -211,6 +264,17 @@ export function createPerimeterFence(rig, {
   jumpDistanceM = 0.15,
   jumpWindowMs = 500,
   jumpConfirmM = 0.06,
+  missingFramesToRemove = 5,
+  missingMsToRemove = 1000,
+  minGraceAfterSeenMs = 250,
+  minRemoveConfidence = 0.55,
+  inViewMinDistM = 0.22,
+  inViewMaxDistM = 1.55,
+  inViewMinCosView = 0.38,
+  inViewBorderMarginFrac = 0.07,
+  inViewMinBorderMarginPx = 48,
+  inViewMinExpectedEdgePx = 12,
+  tagEdgeM = 0.020,
 } = {}) {
   let anchors = extractRigAnchors(rig);
   const markers = new Map();
@@ -285,10 +349,14 @@ export function createPerimeterFence(rig, {
     const pos = projectPointToTablePlane(rawPos, cameraPosL);
     const yaw = extractTableYaw(lFromTag);
     const w = Number.isFinite(weight) ? Math.max(0, Math.min(1, weight)) : 1;
+    const existing = markers.get(tagId);
+    if (existing) {
+      existing.missCount = 0;
+      existing.missSinceMs = null;
+    }
     if (w <= 0) {
       return { accepted: false, isNew: false, id: tagId, role: spec.role, pos, reason: 'motion-frozen' };
     }
-    const existing = markers.get(tagId);
     const wasOffered = isOffered();
 
     if (!existing) {
@@ -306,6 +374,8 @@ export function createPerimeterFence(rig, {
         lastAt: atMs,
         pendingJump: null,
         updates: 1,
+        missCount: 0,
+        missSinceMs: null,
       });
       dirty = true;
       stateVersion++;
@@ -368,6 +438,114 @@ export function createPerimeterFence(rig, {
       role: spec.role,
       pos,
     };
+  }
+
+  function remove(tagId) {
+    const m = markers.get(tagId);
+    if (!m) return null;
+    markers.delete(tagId);
+    let deactivated = false;
+    if (active && markers.size === 0) {
+      active = false;
+      deactivated = true;
+    }
+    dirty = true;
+    stateVersion++;
+    return {
+      removed: true,
+      id: m.id,
+      role: m.role,
+      pos: m.currentPos.slice(),
+      deactivated,
+      status: status(),
+    };
+  }
+
+  const inViewOpts = {
+    minDistM: inViewMinDistM,
+    maxDistM: inViewMaxDistM,
+    minCosView: inViewMinCosView,
+    borderMarginFrac: inViewBorderMarginFrac,
+    minBorderMarginPx: inViewMinBorderMarginPx,
+    minExpectedEdgePx: inViewMinExpectedEdgePx,
+    tagEdgeM,
+  };
+
+  function reconcileView({
+    seenIds = [],
+    lFromCamera = null,
+    K = null,
+    atMs = NaN,
+    confidence = 1,
+    occludedIds = null,
+  } = {}) {
+    if (markers.size === 0) {
+      return { removed: [], deactivated: false, status: status() };
+    }
+    const seenSet = seenIds instanceof Set ? seenIds : new Set(seenIds);
+    const occludedSet = occludedIds
+      ? (occludedIds instanceof Set ? occludedIds : new Set(occludedIds))
+      : null;
+
+    if (
+      !(confidence >= minRemoveConfidence) ||
+      !lFromCamera ||
+      !K ||
+      !Number.isFinite(atMs)
+    ) {
+      for (const id of seenSet) {
+        const m = markers.get(id);
+        if (m) {
+          m.missCount = 0;
+          m.missSinceMs = null;
+        }
+      }
+      return { removed: [], deactivated: false, status: status() };
+    }
+
+    const toRemove = [];
+    for (const [id, m] of markers) {
+      if (seenSet.has(id) || occludedSet?.has(id)) {
+        m.missCount = 0;
+        m.missSinceMs = null;
+        continue;
+      }
+      if (!isTablePointObservableInCamera(m.currentPos, lFromCamera, K, inViewOpts)) {
+        m.missCount = 0;
+        m.missSinceMs = null;
+        continue;
+      }
+      if (m.lastAt > 0 && atMs - m.lastAt < minGraceAfterSeenMs) {
+        continue;
+      }
+      if (m.missSinceMs === null) {
+        m.missSinceMs = atMs;
+      }
+      m.missCount++;
+      if (m.missCount >= missingFramesToRemove && atMs - m.missSinceMs >= missingMsToRemove) {
+        toRemove.push(id);
+      }
+    }
+
+    if (toRemove.length === 0) {
+      return { removed: [], deactivated: false, status: status() };
+    }
+
+    const removed = [];
+    for (const id of toRemove) {
+      const m = markers.get(id);
+      if (!m) continue;
+      markers.delete(id);
+      removed.push({ id: m.id, role: m.role, pos: m.currentPos.slice() });
+    }
+    let deactivated = false;
+    if (active && markers.size === 0) {
+      active = false;
+      deactivated = true;
+    }
+    dirty = true;
+    stateVersion++;
+    return { removed, deactivated, status: status() };
   }
 
   function step(dtSec) {
@@ -513,6 +691,8 @@ export function createPerimeterFence(rig, {
     setRig,
     reset,
     observe,
+    remove,
+    reconcileView,
     step,
     orderedVertices,
     discoveredMarkers,

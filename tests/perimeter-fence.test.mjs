@@ -10,6 +10,7 @@ import {
   projectPointToTablePlane,
   signedDistanceToPolygonXY,
   evaluatePerimeterOutside,
+  isTablePointObservableInCamera,
   createPerimeterFence,
 } from '../src/perimeter-fence.mjs';
 
@@ -330,4 +331,181 @@ test('signedDistanceToPolygonXY, evaluatePerimeterOutside, and fence.isOutsideXY
   assert.equal(fence.isOutsideXY([5.0, 5.0, 0.45]).outside, true);
   fence.reset();
   assert.equal(fence.isOutsideXY([5.0, 5.0, 0.45]).outside, false);
+});
+
+test('isTablePointObservableInCamera checks frustum margin, distance, viewing angle, and pixel size', () => {
+  const K = { fx: 1000, fy: 1000, cx: 640, cy: 540, width: 1280, height: 1080 };
+  // Overhead GL camera at (0.60, 0.60, 0.80) looking straight down (-Z) at table z = 0
+  const camOver = translationMatrix(0.60, 0.60, 0.80);
+
+  // Center of view -> clearly observable
+  assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camOver, K), true);
+  // Out of FoV -> not observable
+  assert.equal(isTablePointObservableInCamera([2.50, 0.60, 0], camOver, K), false);
+  // Near image border (u = 640 + 1000 * 0.48 / 0.80 = 1240, within 7% = 89.6 px border margin) -> false
+  assert.equal(isTablePointObservableInCamera([1.08, 0.60, 0], camOver, K), false);
+  // Too far (> 1.55 m) -> false
+  const camFar = translationMatrix(0.60, 0.60, 1.80);
+  assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camFar, K), false);
+  // Too close (< 0.22 m) -> false
+  const camClose = translationMatrix(0.60, 0.60, 0.15);
+  assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camClose, K), false);
+  // Grazing elevation angle (tz = 0.20, dist ~ 0.90 -> cosView ~ 0.22 < 0.38) -> false
+  const camGrazing = translationMatrix(0.60, -0.28, 0.20);
+  assert.equal(isTablePointObservableInCamera([0.60, 0.60, 0], camGrazing, K), false);
+});
+
+test('reconcileView prunes disappeared fence markers only when clearly in-view, unoccluded, and steady', () => {
+  const K = { fx: 1000, fy: 1000, cx: 640, cy: 540, width: 1280, height: 1080 };
+  const fence = createPerimeterFence(mainRig);
+  const camInit = [0.4, 0.4, 0.8];
+
+  fence.observe(353, translationMatrix(0.0175, 0.615, 0), camInit, 100); // TL
+  fence.observe(354, translationMatrix(0.9175, 0.615, 0), camInit, 100); // TR
+  fence.observe(355, translationMatrix(0.9175, 0.015, 0), camInit, 100); // BR
+  assert.equal(fence.activate(), true);
+  // Point (0.75, 0.45) is inside the 0.90 m wide fence
+  assert.equal(fence.isOutsideXY([0.75, 0.45, 0.10]).outside, false);
+
+  // Looking away at (-1.0, -1.0) -> TR (354) is outside FoV, must NEVER be removed even after 20 frames / 5 s
+  const camAway = translationMatrix(-1.0, -1.0, 0.8);
+  for (let i = 0; i < 20; i++) {
+    const r = fence.reconcileView({ seenIds: [], lFromCamera: camAway, K, atMs: 1000 + i * 250, confidence: 1 });
+    assert.equal(r.removed.length, 0);
+  }
+  assert.equal(fence.dynamicCount(), 3);
+
+  // Looking right at TR (0.9175, 0.615), but occluded by a hand -> must NOT be removed
+  const camOnTR = translationMatrix(0.9175, 0.615, 0.80);
+  for (let i = 0; i < 10; i++) {
+    const r = fence.reconcileView({
+      seenIds: [],
+      lFromCamera: camOnTR,
+      K,
+      atMs: 7000 + i * 250,
+      confidence: 1,
+      occludedIds: [354],
+    });
+    assert.equal(r.removed.length, 0);
+  }
+  assert.equal(fence.dynamicCount(), 3);
+
+  // Low motion confidence -> must NOT remove
+  for (let i = 0; i < 10; i++) {
+    const r = fence.reconcileView({
+      seenIds: [],
+      lFromCamera: camOnTR,
+      K,
+      atMs: 10000 + i * 250,
+      confidence: 0.3,
+    });
+    assert.equal(r.removed.length, 0);
+  }
+  assert.equal(fence.dynamicCount(), 3);
+
+  // Now look steadily at empty TR spot with no hand occlusion:
+  // First 4 frames (< 5 frames) should not remove yet
+  const verBefore = fence.version();
+  for (let i = 0; i < 4; i++) {
+    const r = fence.reconcileView({
+      seenIds: [],
+      lFromCamera: camOnTR,
+      K,
+      atMs: 13000 + i * 300,
+      confidence: 0.9,
+    });
+    assert.equal(r.removed.length, 0);
+  }
+  // 5th consecutive in-view miss after >= 1000 ms removes TR (354)
+  const pruned = fence.reconcileView({
+    seenIds: [],
+    lFromCamera: camOnTR,
+    K,
+    atMs: 13000 + 4 * 300,
+    confidence: 0.9,
+  });
+  assert.equal(pruned.removed.length, 1);
+  assert.equal(pruned.removed[0].id, 354);
+  assert.equal(pruned.removed[0].role, 'TR');
+  assert.equal(pruned.deactivated, false);
+  assert.equal(fence.isActive(), true);
+  assert.equal(fence.dynamicCount(), 2);
+  assert.ok(fence.version() > verBefore);
+  assert.equal(fence.step(0), true);
+  assert.deepEqual(
+    fence.orderedVertices().map((v) => v.id),
+    [350, 352, 353, 355, 351],
+  );
+  // Polygon shrank diagonally from TL(0.0175,0.615) to BR(0.9175,0.015): (0.75, 0.45) is now OUTSIDE!
+  assert.equal(fence.isOutsideXY([0.75, 0.45, 0.10]).outside, true);
+});
+
+test('disappearing TL #353 cancels offered state, keeps active fence alive with remaining markers, and deactivates when 0 left', () => {
+  const K = { fx: 1000, fy: 1000, cx: 640, cy: 540, width: 1280, height: 1080 };
+  const fence = createPerimeterFence(mainRig, { missingFramesToRemove: 3, missingMsToRemove: 500 });
+  const tlPos = [0.0175, 0.615, 0];
+  const brPos = [0.9175, 0.015, 0];
+  const camOnTL = translationMatrix(tlPos[0], tlPos[1], 0.75);
+  const camOnBR = translationMatrix(brPos[0], brPos[1], 0.75);
+
+  // Case 1: TL disappears while 'offered' -> returns to 'idle'
+  fence.observe(353, translationMatrix(tlPos[0], tlPos[1], 0), [0, 0.6, 0.75], 100);
+  assert.equal(fence.status(), 'offered');
+  assert.equal(fence.isOffered(), true);
+  for (let i = 0; i < 3; i++) {
+    fence.reconcileView({ seenIds: [], lFromCamera: camOnTL, K, atMs: 1000 + i * 300, confidence: 1 });
+  }
+  assert.equal(fence.status(), 'idle');
+  assert.equal(fence.isOffered(), false);
+  assert.equal(fence.dynamicCount(), 0);
+
+  // Case 2: TL disappears while 'active' with BR still present -> fence stays active without TL
+  fence.observe(353, translationMatrix(tlPos[0], tlPos[1], 0), [0, 0.6, 0.75], 3000);
+  fence.observe(355, translationMatrix(brPos[0], brPos[1], 0), [0.9, 0.0, 0.75], 3000);
+  assert.equal(fence.activate(), true);
+  assert.equal(fence.status(), 'active');
+
+  let res;
+  for (let i = 0; i < 3; i++) {
+    res = fence.reconcileView({ seenIds: [], lFromCamera: camOnTL, K, atMs: 4000 + i * 300, confidence: 1 });
+  }
+  assert.equal(res.removed.length, 1);
+  assert.equal(res.removed[0].id, 353);
+  assert.equal(res.deactivated, false);
+  assert.equal(fence.status(), 'active');
+  assert.deepEqual(
+    fence.orderedVertices().map((v) => v.id),
+    [350, 352, 355, 351],
+  );
+
+  // Case 3: Last remaining dynamic marker (BR) disappears -> fence deactivates to 'idle'
+  for (let i = 0; i < 3; i++) {
+    res = fence.reconcileView({ seenIds: [], lFromCamera: camOnBR, K, atMs: 6000 + i * 300, confidence: 1 });
+  }
+  assert.equal(res.removed.length, 1);
+  assert.equal(res.removed[0].id, 355);
+  assert.equal(res.deactivated, true);
+  assert.equal(fence.status(), 'idle');
+  assert.equal(fence.isActive(), false);
+  assert.equal(fence.isOutsideXY([5.0, 5.0, 0]).active, false);
+});
+
+test('explicit remove(tagId) deletes a single marker and deactivates only when last marker is removed', () => {
+  const fence = createPerimeterFence(mainRig);
+  fence.observe(353, translationMatrix(0.0175, 0.615, 0), [0.3, 0.3, 0.8], 100);
+  fence.observe(354, translationMatrix(0.6175, 0.615, 0), [0.3, 0.3, 0.8], 100);
+  assert.equal(fence.activate(), true);
+
+  assert.equal(fence.remove(359), null);
+  const r1 = fence.remove(354);
+  assert.equal(r1?.removed, true);
+  assert.equal(r1?.deactivated, false);
+  assert.equal(fence.isActive(), true);
+  assert.equal(fence.dynamicCount(), 1);
+
+  const r2 = fence.remove(353);
+  assert.equal(r2?.removed, true);
+  assert.equal(r2?.deactivated, true);
+  assert.equal(fence.isActive(), false);
+  assert.equal(fence.status(), 'idle');
 });

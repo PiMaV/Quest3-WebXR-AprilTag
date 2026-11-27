@@ -50,6 +50,26 @@ export interface PerimeterFence {
     pos: Vec3;
     reason?: string;
   } | null;
+  remove(tagId: number): {
+    removed: true;
+    id: number;
+    role: string;
+    pos: Vec3;
+    deactivated: boolean;
+    status: 'idle' | 'offered' | 'active';
+  } | null;
+  reconcileView(opts?: {
+    seenIds?: Iterable<number>;
+    lFromCamera?: Matrix4Array | null;
+    K?: { fx: number; fy: number; cx: number; cy: number; width: number; height: number } | null;
+    atMs?: number;
+    confidence?: number;
+    occludedIds?: Iterable<number> | null;
+  }): {
+    removed: Array<{ id: number; role: string; pos: Vec3 }>;
+    deactivated: boolean;
+    status: 'idle' | 'offered' | 'active';
+  };
   step(dtSec: number): boolean;
   orderedVertices(): PerimeterVertex[];
   discoveredMarkers(): PerimeterVertex[];
@@ -101,6 +121,20 @@ export function evaluatePerimeterOutside(
   vertices: ReadonlyArray<{ pos?: ArrayLike<number> } | ArrayLike<number>>,
   opts?: { wasOutside?: boolean; enterOutsideM?: number; exitOutsideM?: number },
 ): PerimeterOutsideResult;
+export function isTablePointObservableInCamera(
+  posL: Vec3,
+  lFromCamera: Matrix4Array | null | undefined,
+  K: { fx: number; fy: number; cx: number; cy: number; width: number; height: number } | null | undefined,
+  opts?: {
+    minDistM?: number;
+    maxDistM?: number;
+    minCosView?: number;
+    borderMarginFrac?: number;
+    minBorderMarginPx?: number;
+    minExpectedEdgePx?: number;
+    tagEdgeM?: number;
+  },
+): boolean;
 export function createPerimeterFence(
   rig: RigDefinition | null | undefined,
   opts?: {
@@ -110,5 +144,16 @@ export function createPerimeterFence(
     jumpDistanceM?: number;
     jumpWindowMs?: number;
     jumpConfirmM?: number;
+    missingFramesToRemove?: number;
+    missingMsToRemove?: number;
+    minGraceAfterSeenMs?: number;
+    minRemoveConfidence?: number;
+    inViewMinDistM?: number;
+    inViewMaxDistM?: number;
+    inViewMinCosView?: number;
+    inViewBorderMarginFrac?: number;
+    inViewMinBorderMarginPx?: number;
+    inViewMinExpectedEdgePx?: number;
+    tagEdgeM?: number;
   },
 ): PerimeterFence;

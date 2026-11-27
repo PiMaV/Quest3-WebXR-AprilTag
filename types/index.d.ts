@@ -158,6 +158,7 @@ export {
   polygonMetricsXY,
   signedDistanceToPolygonXY,
   evaluatePerimeterOutside,
+  isTablePointObservableInCamera,
   createPerimeterFence,
   type PerimeterFence,
   type PerimeterOutsideResult,
