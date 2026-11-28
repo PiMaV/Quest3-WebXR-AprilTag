@@ -62,23 +62,94 @@ test('createTagMotionPredictor extrapolates rigid 6DOF constant velocity + rotat
   assert.ok(clampedSeed.angDegPerSec <= (TAG_PREDICTOR_DEFAULTS.maxAngularRadPerSec * 180 / Math.PI) + 1e-4);
 });
 
-test('trackingFade stays opaque when slow, fades with speed/staleness, recovers slowly', () => {
+test('trackingFade: stays opaque in 0–600 mm/s even close-up, fades in 600–1000 mm/s lateral, spares axial and brief lag', () => {
+  const viewer = [0, 0, 0]; // tag 0.35 m ahead along +z (close arm's reach)
+  const mk = (dx, dz, opts) => {
+    const p = createTagMotionPredictor(opts);
+    for (let i = 0; i < 4; i++) {
+      p.observe(1, vectorRigid([0, 0, 0, i * dx, 0, 0.35 + i * dz]), 1000 + i * 33);
+    }
+    return p;
+  };
+  const run = (p, endMs = 1255) => {
+    let f = 1;
+    for (let t = 1099; t <= endMs; t += 11) f = p.trackingFade(1, t, viewer);
+    return f;
+  };
+
+  // ~0.545 m/s lateral (< 0.60 m/s) at close 0.35 m distance: stays opaque
+  const stableLat = run(mk(0.018, 0));
+  assert.ok(stableLat > 0.95, `0.545 m/s lateral should stay opaque, got ${stableLat}`);
+
+  // ~0.909 m/s lateral (inside 600–1000 mm/s red zone): fades clearly, never below fadeMinAlpha
+  const fastLat = run(mk(0.030, 0));
+  assert.ok(
+    fastLat < 0.55 && fastLat >= TAG_PREDICTOR_DEFAULTS.fadeMinAlpha - 1e-9,
+    `0.909 m/s lateral should fade between fadeMinAlpha and 0.55, got ${fastLat}`,
+  );
+
+  // ~0.909 m/s axial along view ray: weighted at 0.30 (~0.27 m/s effective) -> stays opaque
+  const fastAxial = run(mk(0, 0.030));
+  assert.ok(fastAxial > 0.95, `0.909 m/s axial should stay opaque, got ${fastAxial}`);
+
+  // Active tracking with brief lag (age = 0.25 s < fadeStaleStartSec 0.35 s): stays opaque
+  const briefLag = run(mk(0.0005, 0), 1349);
+  assert.ok(briefLag > 0.95, `brief 250 ms lag should stay opaque, got ${briefLag}`);
+
+  // True dropout (age = 1.0 s > fadeStaleEndSec 0.90 s): fades out smoothly
+  const dropout = run(mk(0.0005, 0), 2100);
+  assert.ok(dropout < 0.10, `1.0 s stale tag should fade out, got ${dropout}`);
+
+  // Default fadeLearnLoss: false -> noteLoss() does not mutate limitMps
+  const fixed = mk(0.030, 0);
+  run(fixed);
+  assert.equal(fixed.noteLoss(1), TAG_PREDICTOR_DEFAULTS.fadeInitialLimitMps);
+  assert.equal(fixed.limitMps(), TAG_PREDICTOR_DEFAULTS.fadeInitialLimitMps);
+
+  // Opt-in fadeLearnLoss: true -> noteLoss() updates limitMps
+  const adaptive = mk(0.030, 0, { fadeLearnLoss: true });
+  run(adaptive);
+  const before = adaptive.limitMps();
+  assert.notEqual(adaptive.noteLoss(1), before);
+
+  // Unknown tag -> 1
+  assert.equal(fixed.trackingFade(404, 1000, viewer), 1);
+});
+
+test('predict supports optional bounded negative minLeadSec for Passthrough display lag without affecting default callers', () => {
   const pred = createTagMotionPredictor();
-  pred.observe(310, vectorRigid([0, 0, 0, 0.10, 0.20, 0.30]), 1000);
-  pred.observe(310, vectorRigid([0, 0, 0, 0.1005, 0.20, 0.30]), 1033);
-  let f = 1;
-  for (let t = 1033; t < 1100; t += 11) f = pred.trackingFade(310, t);
-  assert.ok(f > 0.95, `slow tag should stay opaque, got ${f}`);
+  const basePose = vectorRigid([0, 0, 0, 0.20, 0.10, 0.05]);
+  pred.seed(320, basePose, 2000, {
+    velL: [0.80, 0, 0],
+    angLocal: [0, 0, 2.0],
+  });
 
-  const fast = createTagMotionPredictor();
-  fast.observe(311, vectorRigid([0, 0, 0, 0.10, 0.20, 0.30]), 1000);
-  fast.observe(311, vectorRigid([0, 0, 0, 0.14, 0.20, 0.30]), 1033); // ~1.2 m/s
-  let ff = 1;
-  for (let t = 1033; t < 1300; t += 11) ff = fast.trackingFade(311, t);
-  assert.ok(ff < 0.5 && ff >= TAG_PREDICTOR_DEFAULTS.fadeMinAlpha - 1e-9, `fast tag should fade, got ${ff}`);
-  assert.ok(fast.offsetEstimate(311, 1300) > TAG_PREDICTOR_DEFAULTS.fadeErrHighM);
+  // Default caller (no opts) never returns negative lead
+  const defPast = pred.predict(320, 1980);
+  assert.ok(defPast && isRigidPose(defPast));
+  assert.equal(defPast[12], 0.20);
 
-  // Unknown tag: no fade, no throw.
-  assert.equal(fast.trackingFade(999, 1000), 1);
-  assert.equal(fast.offsetEstimate(999, 1000), 0);
+  // Display caller with minLeadSec: -0.05 moves smoothly behind observation timestamp
+  const opts = { minLeadSec: -0.05 };
+  const neg = pred.predict(320, 1980, opts);
+  assert.ok(neg && isRigidPose(neg));
+  const expectedNegX = 0.20 - 0.80 * 0.020 * TAG_PREDICTOR_DEFAULTS.leadGain;
+  assert.ok(Math.abs(neg[12] - expectedNegX) < 1e-5, `expected x=${expectedNegX}, got ${neg[12]}`);
+
+  // Smooth continuity across rawAgeSec = 0 (t = 1995..2005)
+  const beforeZero = pred.predict(320, 1995, opts);
+  const atZero = pred.predict(320, 2000, opts);
+  const afterZero = pred.predict(320, 2005, opts);
+  assert.ok(beforeZero[12] < atZero[12] && atZero[12] < afterZero[12]);
+  assert.ok(Math.abs(atZero[12] - 0.20) < 1e-6);
+
+  // Clamped at minLeadSec = -0.05 for large negative offset
+  const clamped = pred.predict(320, 1850, opts);
+  assert.ok(clamped && isRigidPose(clamped));
+  assert.ok(Math.abs(clamped[12] - (0.20 - 0.80 * 0.05)) < 1e-5, `expected clamped x=0.16, got ${clamped[12]}`);
+
+  // Stationary tag remains at exact pose even with minLeadSec
+  pred.seed(321, basePose, 2000, { velL: [0, 0, 0], angLocal: [0, 0, 0] });
+  const stillNeg = pred.predict(321, 1980, opts);
+  assert.equal(stillNeg[12], 0.20);
 });

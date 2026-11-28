@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.8.0] - 2026-11-28
+
+### Added
+- **Upright L-angle Y-axis Developer Dock & Right-Hand Ring toggle:** Added Developer Mode (right-hand wrist menu ring finger `DEV: OFF/ON`, *Advanced & Diagnostics* `#devMode` checkbox, or `?dev=1`) with an extensible vertical control column beside the L-angle Y-axis (`HAND` toggle, `DISP PRED` ON/RAW toggle, and grab-locked `OPT LAG` / `HAND LAG` sliders with 400 ms release lockout in `examples/quest.mjs` and `examples/quest.html`).
+- **Passthrough display-lag calibration:** Added optional bounded negative lead (`minLeadSec`) in `src/tag-predictor.mjs` (`types/extras.d.ts`, `tests/tag-predictor.test.mjs`) and calibrated separate display lags (`OPT LAG = 28 ms`, `HAND LAG = 22 ms`, live-overridable via `?ptLag=` / `?handLag=`) while keeping Focus-ROI prediction at full physical lead (`0.90 / 120 ms`) and keeping recorded `pendingTrail` poses un-delayed.
+- **Diagnostic lighting-quality estimator:** Added ~5 Hz worker-side lighting analysis (`src/light-quality.mjs`, `tests/light-quality.test.mjs`, `src/detector-worker.js`, `src/camera.mjs`) with live HUD metrics in `examples/quest.mjs`.
+
+### Changed
+- **Calibrated tracking fade (600–1000 mm/s):** Keyed `trackingFade` in `src/tag-predictor.mjs` to view-relative speed (lateral 600–1000 mm/s fading to 25 %, axial z weighted at 0.30, stale fade 0.35–0.90 s) without close-range distance inflation.
+- **Display smoothing & hand visuals:** Fixed the off-by-one `prevXrTime` reference in `captureDisplayErrorOffset` to eliminate per-camera-frame sawtooth jumps, and scaled wrist/metacarpal hand glow spheres down to 35 % while keeping knuckle/finger spheres and full depth occlusion (`examples/quest.mjs`).
+
+---
+
 ## [1.7.0] - 2026-11-28
 
 ### Added

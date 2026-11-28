@@ -6,12 +6,14 @@ const _rawBase=_customWasmBase
   :new URL('../vendor/apriltag/',self.location.href).href;
 const base=_rawBase.endsWith('/')?_rawBase:`${_rawBase}/`;
 const YUV_FORMATS=new Set(['I420','I420A','I422','I444','NV12']);
+let analyzeLight=null,lastLight=null,lastLightAt=-Infinity,LIGHT_INTERVAL_MS=200;
 let detector,prepareRgbaFrame,prepareGrayFrame,observeReference,solveSingleTagPose,offscreen=null,offCtx=null,copyBuf=null,grayBuf=null;
 let detectMode='full',activeDecimate=1,trackRefIds=null,lastRefHintBox=null;
 (async()=>{
   importScripts(base+'apriltag_wasm.js');
   const wasm=await AprilTagWasm({locateFile:path=>base+path});
-  const [{createAprilTagDetector},pixels,rig]=await Promise.all([import('./detector.mjs'),import('./frame-evidence.mjs'),import('./rig.mjs')]);
+  const [{createAprilTagDetector},pixels,rig,lightMod]=await Promise.all([import('./detector.mjs'),import('./frame-evidence.mjs'),import('./rig.mjs'),import('./light-quality.mjs')]);
+  analyzeLight=lightMod.analyzeLight;LIGHT_INTERVAL_MS=lightMod.LIGHT_INTERVAL_MS;
   prepareRgbaFrame=pixels.prepareRgbaFrame;prepareGrayFrame=pixels.prepareGrayFrame;
   observeReference=rig.observeReference;solveSingleTagPose=rig.solveSingleTagPose;
   detector=createAprilTagDetector(wasm,1);postMessage({type:'ready'});
@@ -188,6 +190,14 @@ self.onmessage=async({data})=>{
       }
       poseFitMs=performance.now()-poseStarted;
     }
-    postMessage({type:'detections',serial:data.serial,markers,observation,poseFitMs,frameEvidence:evidence,preprocessMs,detectMs,readbackMode,detectMode,coarseMs,roiMs,roiCount,focusHit,focusMissedBoxes});
+    // Lighting metric: throttled to ~5 Hz (not every frame) to protect detection performance.
+    // `light` is null on frames in between; the main thread keeps the last value.
+    let light=null;
+    const nowMs=performance.now();
+    if(analyzeLight&&nowMs-lastLightAt>=LIGHT_INTERVAL_MS) {
+      lastLightAt=nowMs;
+      try {light=analyzeLight(gray,data.width,data.height,markers,lastLight);lastLight=light;} catch { /* diagnostic only */ }
+    }
+    postMessage({type:'detections',serial:data.serial,light,markers,observation,poseFitMs,frameEvidence:evidence,preprocessMs,detectMs,readbackMode,detectMode,coarseMs,roiMs,roiCount,focusHit,focusMissedBoxes});
   } catch(error) {postMessage({type:'error',message:String(error)});}
 };

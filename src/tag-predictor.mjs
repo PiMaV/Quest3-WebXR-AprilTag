@@ -12,13 +12,22 @@ export const TAG_PREDICTOR_DEFAULTS = Object.freeze({
   minDtSec: 0.012,
   maxDtSec: 0.35,
   // Tracking-confidence fade (O(1) scalar math per tag per frame, no allocations).
-  fadeTagRadiusM: 0.04,     // lever arm that turns angular speed into a corner displacement
-  fadeSigmaSec: 0.025,      // unmodelled timing jitter that prediction cannot remove
-  fadeErrLowM: 0.012,       // estimated offset below this: fully opaque
-  fadeErrHighM: 0.050,      // estimated offset above this: minimum opacity
-  fadeMinAlpha: 0.25,
-  fadeAttackTauSec: 0.05,   // fade out quickly...
-  fadeReleaseTauSec: 0.25,  // ...come back slowly (no flicker)
+  // Fade is keyed on *view-relative* speed: lateral motion blurs the image / leaves the view (tracking loss),
+  // motion along the view ray (z) barely changes pixels and is tolerated much better.
+  fadeAxialWeight: 0.30,    // weight of speed along the view ray vs. lateral speed
+  fadeStartFrac: 0.60,      // fade begins at 60 % of the limit (= 0.6 m/s, start of the red/unstable range)...
+  fadeEndFrac: 1.00,        // ...and reaches fadeMinAlpha at 1.0 m/s
+  fadeInitialLimitMps: 1.00,// field-measured: stable to ~0.6 m/s, unstable 0.6..1.0 m/s
+  fadeLearnLoss: false,     // true = noteLoss() adapts the limit (off: the fixed scale is the spec)
+  fadeLimitMinMps: 0.15,
+  fadeLimitMaxMps: 1.5,
+  fadeMinAlpha: 0.25,       // tag border stays faintly visible while tracking is alive
+  fadeStaleStartSec: 0.35,  // well above Quest 3 p95 opticalLagMs (~190 ms) to avoid dropout flicker
+  fadeStaleEndSec: 0.90,    // fades smoothly to 0 just before the 950 ms live dropout cutoff
+  fadeAttackTauSec: 0.06,
+  fadeReleaseTauSec: 0.22,
+  fadeTagRadiusM: 0.04,     // offsetEstimate(): lever arm for angular speed
+  fadeSigmaSec: 0.025,      // offsetEstimate(): unmodelled timing jitter
 });
 
 function clampVec3Norm(v, maxNorm) {
@@ -35,6 +44,7 @@ function clampVec3Norm(v, maxNorm) {
 export function createTagMotionPredictor(options = {}) {
   const cfg = { ...TAG_PREDICTOR_DEFAULTS, ...options };
   const states = new Map();
+  let limitMps = cfg.fadeInitialLimitMps;
 
   function observe(tagId, lFromTag, obsTimeMs) {
     if (!isRigidPose(lFromTag) || !Number.isFinite(obsTimeMs)) return null;
@@ -49,6 +59,7 @@ export function createTagMotionPredictor(options = {}) {
         angDegPerSec: 0,
         fade: prev?.fade ?? 1,
         fadeTimeMs: prev?.fadeTimeMs,
+        effPeak: prev?.effPeak ?? 0,
       });
       return { speedMps: 0, angDegPerSec: 0 };
     }
@@ -64,6 +75,7 @@ export function createTagMotionPredictor(options = {}) {
         angDegPerSec: 0,
         fade: prev?.fade ?? 1,
         fadeTimeMs: prev?.fadeTimeMs,
+        effPeak: prev?.effPeak ?? 0,
       });
       return { speedMps: 0, angDegPerSec: 0 };
     }
@@ -109,20 +121,28 @@ export function createTagMotionPredictor(options = {}) {
       angDegPerSec,
       fade: prev.fade ?? 1,
       fadeTimeMs: prev.fadeTimeMs,
+      effPeak: prev.effPeak ?? 0,
     });
     return { speedMps, angDegPerSec };
   }
 
-  function predict(tagId, nowTimeMs) {
+  function predict(tagId, nowTimeMs, opts = null) {
     const st = states.get(tagId);
     if (!st || !Number.isFinite(nowTimeMs)) return null;
-    const ageSec = Math.max(0, (nowTimeMs - st.obsTimeMs) / 1000);
-    if (ageSec <= 0 || (st.speedMps < 0.015 && st.angDegPerSec < 4)) {
+    if (st.speedMps < 0.015 && st.angDegPerSec < 4) {
       return st.pose.slice();
     }
-    const decay = Math.exp(-Math.max(0, ageSec - 0.12) / cfg.decayTauSec);
-    const leadSec = Math.min(cfg.maxLeadSec, ageSec * cfg.leadGain) * decay;
-    if (leadSec <= 1e-4) return st.pose.slice();
+    const rawAgeSec = (nowTimeMs - st.obsTimeMs) / 1000;
+    const minL = opts && Number.isFinite(opts.minLeadSec) ? Math.min(0, opts.minLeadSec) : 0;
+    let leadSec;
+    if (rawAgeSec >= 0) {
+      const decay = Math.exp(-Math.max(0, rawAgeSec - 0.12) / cfg.decayTauSec);
+      leadSec = Math.min(cfg.maxLeadSec, rawAgeSec * cfg.leadGain) * decay;
+    } else {
+      if (minL >= 0) return st.pose.slice();
+      leadSec = Math.max(minL, rawAgeSec * cfg.leadGain);
+    }
+    if (Math.abs(leadSec) <= 1e-4) return st.pose.slice();
 
     const dRot = vectorRigid([
       st.angLocal[0] * leadSec,
@@ -152,25 +172,55 @@ export function createTagMotionPredictor(options = {}) {
     return (st.speedMps + angRad * cfg.fadeTagRadiusM) * uncovered;
   }
 
+  function effectiveSpeed(st, viewerPos) {
+    const vx = st.velL[0], vy = st.velL[1], vz = st.velL[2];
+    const full = st.speedMps;
+    if (!viewerPos || viewerPos.length < 3) return full;
+    const rx = st.pose[12] - viewerPos[0], ry = st.pose[13] - viewerPos[1], rz = st.pose[14] - viewerPos[2];
+    const dist = Math.hypot(rx, ry, rz);
+    if (!(dist > 0.05)) return full;
+    const ax = (vx * rx + vy * ry + vz * rz) / dist;
+    const lat2 = Math.max(0, full * full - ax * ax);
+    return Math.hypot(Math.sqrt(lat2), cfg.fadeAxialWeight * ax);
+  }
+
   /**
-   * Smoothed opacity 1..fadeMinAlpha: opaque while the tag is slow/fresh, fading when the estimated
-   * offset grows (fast motion or stale optical data) = "about to leave the trackable range".
+   * Smoothed opacity 1..fadeMinAlpha: opaque while the tag is slow (view-relative), fading as the speed
+   * enters the unstable optical range, and fading to 0 as optical data goes stale.
+   * Pass the viewer position (same frame as the tag pose) for the lateral/axial split.
    */
-  function trackingFade(tagId, nowTimeMs) {
+  function trackingFade(tagId, nowTimeMs, viewerPos = null) {
     const st = states.get(tagId);
     if (!st || !Number.isFinite(nowTimeMs)) return 1;
-    const err = offsetEstimate(tagId, nowTimeMs);
-    let t = (err - cfg.fadeErrLowM) / (cfg.fadeErrHighM - cfg.fadeErrLowM);
-    t = t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
-    const target = 1 - t * (1 - cfg.fadeMinAlpha);
-    const prevFade = st.fade ?? 1;
     const prevT = st.fadeTimeMs;
     const dt = Number.isFinite(prevT) ? Math.max(0, Math.min(0.1, (nowTimeMs - prevT) / 1000)) : 0;
+    const eff = effectiveSpeed(st, viewerPos);
+    st.effPeak = Math.max(eff, (st.effPeak ?? 0) * Math.exp(-dt / 0.3));
+    const lo = limitMps * cfg.fadeStartFrac, hi = limitMps * cfg.fadeEndFrac;
+    let t = (eff - lo) / Math.max(1e-6, hi - lo);
+    t = t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+    let target = 1 - t * (1 - cfg.fadeMinAlpha);
+    const ageSec = Math.max(0, (nowTimeMs - st.obsTimeMs) / 1000);
+    if (ageSec > cfg.fadeStaleStartSec) {
+      let u = (ageSec - cfg.fadeStaleStartSec) / (cfg.fadeStaleEndSec - cfg.fadeStaleStartSec);
+      u = u >= 1 ? 1 : u * u * (3 - 2 * u);
+      target = Math.min(target, 1 - u);
+    }
+    const prevFade = st.fade ?? 1;
     const tau = target < prevFade ? cfg.fadeAttackTauSec : cfg.fadeReleaseTauSec;
     const k = dt > 0 ? 1 - Math.exp(-dt / tau) : 0;
     st.fade = prevFade + (target - prevFade) * k;
     st.fadeTimeMs = nowTimeMs;
     return st.fade;
+  }
+
+  /** Call when optical tracking of a moving tag is lost: learns the view-relative speed where that happens. */
+  function noteLoss(tagId) {
+    const st = states.get(tagId);
+    const peak = st?.effPeak ?? 0;
+    if (!cfg.fadeLearnLoss || peak < 0.08) return limitMps;
+    limitMps = Math.min(cfg.fadeLimitMaxMps, Math.max(cfg.fadeLimitMinMps, limitMps * 0.7 + peak * 1.15 * 0.3));
+    return limitMps;
   }
 
   function seed(tagId, lFromTag, obsTimeMs, { velL = null, angLocal = null } = {}) {
@@ -192,6 +242,9 @@ export function createTagMotionPredictor(options = {}) {
       angLocal: clampedAng,
       speedMps,
       angDegPerSec,
+      fade: 1,
+      fadeTimeMs: undefined,
+      effPeak: 0,
     });
     return { speedMps, angDegPerSec };
   }
@@ -207,5 +260,5 @@ export function createTagMotionPredictor(options = {}) {
     else states.clear();
   }
 
-  return { observe, seed, predict, speedOf, offsetEstimate, trackingFade, reset };
+  return { observe, seed, predict, speedOf, offsetEstimate, trackingFade, noteLoss, limitMps: () => limitMps, reset };
 }

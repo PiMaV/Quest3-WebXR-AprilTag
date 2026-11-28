@@ -26,11 +26,16 @@ const PERIMETER_ENABLED=true;
 const EXTRA_COLORS=[0x38bdf8,0xf59e0b,0xa78bfa,0x34d399,0xfb7185,0xfacc15];
 const urlParams=new URLSearchParams(location.search);
 const aaToggleEl=$('aaToggle');
+const devModeEl=$('devMode');
 const qualityModeEl=$('qualityMode');
 const longRangeEl=$('longRange');
 const trailColorModeEl=$('trailColorMode');
 const TRAIL_COLOR_MODES=Object.freeze(['id','speed']);
 if(urlParams.has('aa')&&aaToggleEl)aaToggleEl.checked=urlParams.get('aa')!=='0';
+if(urlParams.has('dev')&&devModeEl)devModeEl.checked=urlParams.get('dev')==='1';
+let devModeEnabled=urlParams.has('dev')?urlParams.get('dev')==='1':Boolean(devModeEl?.checked);
+let devHandCouplingEnabled=urlParams.get('handCouple')!=='0';
+let devDisplayPredEnabled=urlParams.get('dispPred')!=='0';
 const reqQuality=urlParams.get('quality');
 if(reqQuality&&ADAPTIVE_QUALITY_MODES.includes(reqQuality)&&qualityModeEl)qualityModeEl.value=reqQuality;
 if(urlParams.has('range')&&longRangeEl)longRangeEl.checked=urlParams.get('range')==='far'||urlParams.get('range')==='1';
@@ -148,6 +153,11 @@ if(longRangeEl){
     lastQualityState=adaptiveQuality.state();
   };
 }
+if(devModeEl){
+  devModeEl.onchange=()=>{
+    devModeEnabled=Boolean(devModeEl.checked);
+  };
+}
 const perfTracker=createPerfTracker();
 
 const scene=new THREE.Scene(),camera3d=new THREE.PerspectiveCamera();
@@ -261,6 +271,31 @@ const hudTopBar=new THREE.Mesh(
 hudTopBar.position.set(...hudLayout.top.pos);orientHudPanel(hudTopBar);hudTopBar.renderOrder=999;
 const hudTopGrab=makeHudGrabHandle(0.060);hudTopBar.add(hudTopGrab.mesh);
 hudRig.add(hudTopBar);
+
+
+// ── Lighting-quality telemetry (rendered inside right HUD panel when HUD is visible) ─────────
+// Metrics are computed in the detector worker at ~5 Hz (src/light-quality.mjs) and arrive via
+// sample.light. Recording samples here touches zero DOM/GPU resources while the HUD is hidden.
+const LIGHT_HIST_LEN=60;                       // 60 samples * 200 ms ≈ last 12 s
+const LIGHT_COLORS={good:'#22c55e',warn:'#facc15',bad:'#ef4444'};
+const LIGHT_BADGE_COLORS={good:'#16a34a',warn:'#ca8a04',bad:'#dc2626'};
+const LIGHT_LEVEL_LABELS={good:'GOOD',warn:'WARN',bad:'POOR'};
+const LIGHT_FLAG_TEXT={
+  backlight:'BACKLIGHT',
+  dark:'TOO DARK',
+  overexposed:'OVEREXPOSED',
+  'ae-hunting':'AE HUNTING',
+  'tag-low-contrast':'LOW TAG CONTRAST',
+  'tag-clipped':'TAG CLIPPED',
+};
+const lightScoreHistory=[];                    // {score,level}
+let lightLast=null,lightLastAt=0;
+
+function pushLightSample(light,now){
+  lightLast=light;lightLastAt=now;
+  lightScoreHistory.push({score:light.score,level:light.level});
+  if(lightScoreHistory.length>LIGHT_HIST_LEN)lightScoreHistory.shift();
+}
 
 const hudDraggablePanels=[
   {id:'left',mesh:hudLeft,grab:hudLeftGrab},
@@ -683,6 +718,12 @@ function toggleLongRangeMode(){
   playModeTick(next?'scan':'pin');
   showHudToast(next?'RANGE: EXP FAR (DEC 1 IDLE)':'RANGE: AUTO (MAX DEC 1.5)',next?'#22d3ee':'#94a3b8',1600);
 }
+function toggleDevMode(){
+  devModeEnabled=!devModeEnabled;
+  if(devModeEl)devModeEl.checked=devModeEnabled;
+  playModeTick(devModeEnabled?'scan':'pin');
+  showHudToast(devModeEnabled?'DEV MODE: ON (L Y-AXIS)':'DEV MODE: OFF',devModeEnabled?'#c084fc':'#94a3b8',1600);
+}
 let leftPalmDwellSince=null,leftMenuOpenUntil=0,leftWristPrev=null,leftWristSpeed=0,leftDotTapSince=null;
 let leftPalmFacingViewer=false,leftMenuOpenNow=false;
 let rightPalmDwellSince=null,rightMenuOpenUntil=0,rightWristPrev=null,rightWristSpeed=0,rightDotTapSince=null;
@@ -691,7 +732,7 @@ let liveTouchLoaderActive=false;
 let pinHoldWp=null,pinHoldKey=null,pinHoldHand=null,pinHoldFloorMm=null,pinHoldSince=null,pinHoldConsumed=false;
 let hoverCardPosL=null,hoverCardForWpKey=null,lastInspectorTimeMs=null,lastViewerBasis=null;
 let pinFlashPos=null,pinFlashUntilMs=0,pinFlashColor='#e879f9',pinFlashSymbol='✓';
-let lastXrTime=null,fpsHistory=[],stabilityHistory=[],rmsHistory=[],maxFrameGapMs=0;
+let lastXrTime=null,prevXrTime=null,fpsHistory=[],stabilityHistory=[],rmsHistory=[],maxFrameGapMs=0;
 let anchorBaseline=null,liveJitterMm=null,liveDriftMm=null,liveDriftDeg=null;
 const ANCHOR_WIN_CAP=60;
 const anchorWinBuf=new Float32Array(ANCHOR_WIN_CAP*3);
@@ -715,6 +756,28 @@ const audit=createAnchorAudit({maxSamples:120});
 const handHistory=createHandHistory({maxMs:1800});
 const tagHandCoupler=createTagHandCoupler({opticalStaleTimeoutMs:380,maxUnconfirmedDriftM:0.26});
 const tagPredictor=createTagMotionPredictor();
+// Quest 3 Passthrough shows moving (non-head-reprojected) objects behind WebXR scanout (xrTimeMs).
+// Subtract devOptLagMs only for visual display so Focus-ROI stays at full physical lead (0.90 / 120 ms)
+// while the drawn overlay aligns with the Passthrough car (live-tunable in Dev Dock or via ?ptLag=<ms>, 0..120).
+let devOptLagMs=(()=>{
+  if(urlParams.has('ptLag')){
+    const v=Number(urlParams.get('ptLag'));
+    if(Number.isFinite(v))return Math.max(0,Math.min(120,Math.round(v/2)*2));
+  }
+  return 28;
+})();
+let devHandLagMs=(()=>{
+  if(urlParams.has('handLag')){
+    const v=Number(urlParams.get('handLag'));
+    if(Number.isFinite(v))return Math.max(0,Math.min(60,Math.round(v/2)*2));
+  }
+  return 22;
+})();
+const DISPLAY_PREDICT_OPTS=Object.freeze({minLeadSec:-0.05});
+function predictDisplayTagPose(tagId,xrTimeMs){
+  if(!devDisplayPredEnabled||!Number.isFinite(xrTimeMs))return null;
+  return tagPredictor.predict(tagId,xrTimeMs-devOptLagMs,DISPLAY_PREDICT_OPTS);
+}
 const focusScheduler=createFocusScheduler();
 const context=()=>({sessionId,spaceEpoch:epoch});
 // M.E.S.S. convention: x00-x49 = generic (no assigned role, user decides how to use it); x50-x99 = dedicated (role from a geometry profile).
@@ -3301,6 +3364,309 @@ function updateModeAnchorPill(frameInputs,world,anPhase,asPhase,now){
   if(modeHelpOpen)drawModeHelpCard(extraScanActive);
 }
 
+// Extensible Developer Dock along the outside of the L-angle Y-axis (x < 0, clear of tags & workspace).
+function setDevHandCoupling(enabled){
+  devHandCouplingEnabled=Boolean(enabled);
+  if(!devHandCouplingEnabled){
+    tagHandCoupler.reset();
+    for(const entry of movableTools.values()){
+      if(entry.handCoupled){
+        entry.handCoupled=false;
+        entry.coupledHand=null;
+        entry.coupledStepCount=0;
+        resetDisplayErrorOffset(entry);
+        drawLiveBadge(entry,isEntryRecording(entry)?'rec':entry.lockState,false);
+      }
+    }
+  }
+  playModeTick(devHandCouplingEnabled?'scan':'pin');
+  showHudToast(devHandCouplingEnabled?'DEV · HAND COUPLE: ON':'DEV · HAND COUPLE: OFF (OPTICAL)',devHandCouplingEnabled?'#4ade80':'#f59e0b',1500);
+}
+function setDevDisplayPred(enabled){
+  devDisplayPredEnabled=Boolean(enabled);
+  for(const entry of movableTools.values())resetDisplayErrorOffset(entry);
+  playModeTick(devDisplayPredEnabled?'scan':'pin');
+  showHudToast(devDisplayPredEnabled?'DEV · DISP PRED: ON':'DEV · DISP PRED: RAW (OFF)',devDisplayPredEnabled?'#38bdf8':'#f43f5e',1500);
+}
+
+const devDockGroup=new THREE.Group();
+devDockGroup.visible=false;
+devDockGroup.position.set(-0.092,0.080,0.036);
+root.add(devDockGroup);
+const devDockStem=new THREE.Mesh(
+  _rodGeo,
+  new THREE.MeshBasicMaterial({color:0xa855f7,transparent:true,opacity:0.40,depthWrite:false}),
+);
+devDockStem.rotation.x=Math.PI/2;
+devDockStem.scale.set(0.0007,0.228,0.0007);
+devDockStem.position.set(0,0,0.078);
+devDockGroup.add(devDockStem);
+let hoveredDevDock=false;
+let devActiveSliderId=null,devActiveSliderProbeId=null,devSliderCooldownUntil=0;
+
+const devDockSpecs=[
+  {id:'hand',kind:'toggle',y:0,z:0.000,label:'HAND',onText:'ON',offText:'OFF',onColor:'#4ade80',offColor:'#f59e0b',get:()=>devHandCouplingEnabled,onToggle:()=>setDevHandCoupling(!devHandCouplingEnabled)},
+  {id:'pred',kind:'toggle',y:0,z:0.056,label:'DISP PRED',onText:'ON',offText:'RAW',onColor:'#38bdf8',offColor:'#f43f5e',get:()=>devDisplayPredEnabled,onToggle:()=>setDevDisplayPred(!devDisplayPredEnabled)},
+  {id:'optLag',kind:'slider',y:0,z:0.122,label:'OPT LAG',min:0,max:120,step:2,unit:'ms',accent:'#38bdf8',get:()=>devOptLagMs,set:v=>{devOptLagMs=v;},dimmed:()=>!devDisplayPredEnabled},
+  {id:'handLag',kind:'slider',y:0,z:0.192,label:'HAND LAG',min:0,max:60,step:2,unit:'ms',accent:'#c084fc',get:()=>devHandLagMs,set:v=>{devHandLagMs=v;},dimmed:()=>!devHandCouplingEnabled},
+];
+
+const devDockItems=devDockSpecs.map(spec=>{
+  const isSlider=spec.kind==='slider';
+  const canvas=document.createElement('canvas');
+  canvas.width=isSlider?320:280;
+  canvas.height=isSlider?96:84;
+  const tex=makeUiTexture(canvas);
+  const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:true,depthWrite:false}));
+  sprite.position.set(0,spec.y,spec.z);
+  sprite.scale.set(isSlider?0.114:0.094,isSlider?0.034:0.028,1);
+  sprite.renderOrder=14;
+  devDockGroup.add(sprite);
+  return {
+    spec,canvas,tex,sprite,
+    trackHalfW:isSlider?0.048:0,
+    lastKey:'',
+    pokeSince:null,pokeConsumed:false,cooldownUntil:0,lastTickAt:0,
+    bestDist:Infinity,bestU:0,bestProbeId:null,
+  };
+});
+
+function drawDevToggle(item,hot,prog=0){
+  const on=Boolean(item.spec.get());
+  const key=`${on?1:0}:${hot?1:0}:${Math.round(prog*20)}`;
+  if(key===item.lastKey)return;
+  item.lastKey=key;
+  const ctx=item.canvas.getContext('2d');
+  ctx.clearRect(0,0,280,84);
+  const col=on?item.spec.onColor:item.spec.offColor;
+  ctx.fillStyle=on?'rgba(14,10,28,0.92)':'rgba(18,12,24,0.88)';
+  ctx.beginPath();ctx.roundRect(4,4,272,76,20);ctx.fill();
+  if(prog>0.01){
+    ctx.save();
+    ctx.beginPath();ctx.roundRect(4,4,272,76,20);ctx.clip();
+    ctx.fillStyle='rgba(192,132,252,0.28)';
+    ctx.fillRect(4,4,272*Math.min(1,prog),76);
+    ctx.restore();
+  }
+  ctx.strokeStyle=hot?'#fef08a':(on?'#a855f7':col);
+  ctx.lineWidth=hot?5:3;
+  ctx.beginPath();ctx.roundRect(4,4,272,76,20);ctx.stroke();
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.arc(30,42,9,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=hot?'#ffffff':'#f8fafc';
+  ctx.font='bold 21px ui-monospace,monospace';
+  ctx.textAlign='left';
+  ctx.textBaseline='middle';
+  ctx.fillText(`${item.spec.label}: ${on?item.spec.onText:item.spec.offText}`,50,43,214);
+  ctx.textBaseline='alphabetic';
+  item.tex.needsUpdate=true;
+}
+
+function drawDevSlider(item,hot,active){
+  const val=item.spec.get();
+  const dim=Boolean(item.spec.dimmed?.());
+  const key=`${val}:${dim?1:0}:${hot?1:0}:${active?1:0}`;
+  if(key===item.lastKey)return;
+  item.lastKey=key;
+  const ctx=item.canvas.getContext('2d');
+  ctx.clearRect(0,0,320,96);
+  const {min,max,unit,label,accent}=item.spec;
+  const frac=Math.max(0,Math.min(1,(val-min)/Math.max(1e-6,max-min)));
+  ctx.fillStyle=dim?'rgba(14,12,22,0.78)':'rgba(14,10,28,0.92)';
+  ctx.beginPath();ctx.roundRect(4,4,312,88,20);ctx.fill();
+  ctx.strokeStyle=(hot||active)?'#fef08a':(dim?'#475569':accent);
+  ctx.lineWidth=(hot||active)?5:3;
+  ctx.beginPath();ctx.roundRect(4,4,312,88,20);ctx.stroke();
+  ctx.fillStyle=dim?'#94a3b8':'#e2e8f0';
+  ctx.font='bold 19px ui-monospace,monospace';
+  ctx.textAlign='left';
+  ctx.fillText(label,20,33,168);
+  ctx.fillStyle=dim?'#64748b':((hot||active)?'#fef08a':accent);
+  ctx.textAlign='right';
+  const suffix=dim?(item.spec.id==='optLag'?' (RAW)':' (OFF)'):'';
+  ctx.fillText(`${val} ${unit}${suffix}`,300,33,128);
+  ctx.textAlign='left';
+  const tx=24,ty=64,tw=272,th=12;
+  ctx.fillStyle='rgba(51,65,85,0.85)';
+  ctx.beginPath();ctx.roundRect(tx,ty-th/2,tw,th,6);ctx.fill();
+  const barCol=active?'#fef08a':(dim?'#64748b':accent);
+  if(frac>0.005){
+    ctx.fillStyle=barCol;
+    ctx.beginPath();ctx.roundRect(tx,ty-th/2,Math.max(th,tw*frac),th,6);ctx.fill();
+  }
+  const kx=tx+tw*frac;
+  ctx.fillStyle=dim?'#cbd5e1':'#ffffff';
+  ctx.beginPath();ctx.arc(kx,ty,active?15:12,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle=barCol;
+  ctx.lineWidth=3.5;
+  ctx.stroke();
+  item.tex.needsUpdate=true;
+}
+
+const _devSliderHit=[0,0];
+function probeDevSlider(item,px,py,pz,gx,gy,gz,rx,ry,rz){
+  const sp=item.sprite.position;
+  const dx=px-(gx+sp.x),dy=py-(gy+sp.y),dz=pz-(gz+sp.z);
+  const along=dx*rx+dy*ry+dz*rz;
+  const clamped=Math.max(-item.trackHalfW,Math.min(item.trackHalfW,along));
+  _devSliderHit[0]=Math.hypot(dx-rx*clamped,dy-ry*clamped,dz-rz*clamped);
+  _devSliderHit[1]=(clamped+item.trackHalfW)/(2*item.trackHalfW);
+}
+
+function applyDevSliderValue(item,u,now){
+  const {min,max,step}=item.spec;
+  const raw=min+u*(max-min);
+  const val=Math.max(min,Math.min(max,Math.round(raw/step)*step));
+  if(val!==item.spec.get()){
+    item.spec.set(val);
+    if(now-item.lastTickAt>=90){
+      item.lastTickAt=now;
+      playModeTick('pin');
+    }
+  }
+}
+
+function resetDevDockPoke(){
+  devActiveSliderId=null;
+  devActiveSliderProbeId=null;
+  devSliderCooldownUntil=0;
+  for(const item of devDockItems){
+    item.pokeSince=null;
+    item.pokeConsumed=false;
+    item.bestDist=Infinity;
+    item.bestProbeId=null;
+  }
+}
+
+function updateDevDock(frameInputs,world,anPhase,asPhase,now){
+  const anchored=Boolean(world)&&asPhase==='ready'&&(anPhase==='tracking'||anPhase==='created');
+  if(!devModeEnabled||!anchored){
+    devDockGroup.visible=false;
+    hoveredDevDock=false;
+    resetDevDockPoke();
+    return;
+  }
+  devDockGroup.visible=true;
+  if(leaveConfirmState){
+    hoveredDevDock=false;
+    resetDevDockPoke();
+    return;
+  }
+
+  const probes=frameInputs.getProbesL();
+  const rightL=frameInputs.viewerRightL;
+  const rx=rightL[0],ry=rightL[1],rz=rightL[2];
+  const gx=devDockGroup.position.x,gy=devDockGroup.position.y,gz=devDockGroup.position.z;
+
+  if(devActiveSliderId!=null){
+    const locked=devDockItems.find(it=>it.spec.id===devActiveSliderId);
+    let pr=null;
+    if(locked&&devActiveSliderProbeId){
+      for(const cand of probes){if(cand.probeId===devActiveSliderProbeId){pr=cand;break;}}
+    }
+    if(locked&&pr){
+      probeDevSlider(locked,pr.pos[0],pr.pos[1],pr.pos[2],gx,gy,gz,rx,ry,rz);
+      const perp=_devSliderHit[0],u=_devSliderHit[1];
+      if(perp<0.046){
+        hoveredDevDock=true;
+        recordProbeProximity(pr.probeId,perp);
+        applyDevSliderValue(locked,u,now);
+        for(const item of devDockItems){
+          if(item===locked){
+            item.sprite.scale.set(0.118,0.036,1);
+            drawDevSlider(item,true,true);
+          }else{
+            item.pokeSince=null;
+            if(item.spec.kind==='slider'){
+              item.sprite.scale.set(0.114,0.034,1);
+              drawDevSlider(item,false,false);
+            }else{
+              item.sprite.scale.set(0.094,0.028,1);
+              drawDevToggle(item,false,0);
+            }
+          }
+        }
+        return;
+      }
+    }
+    devActiveSliderId=null;
+    devActiveSliderProbeId=null;
+    devSliderCooldownUntil=now+400;
+  }
+
+  for(const item of devDockItems){
+    item.bestDist=Infinity;
+    item.bestU=0;
+    item.bestProbeId=null;
+  }
+  for(const pr of probes){
+    const px=pr.pos[0],py=pr.pos[1],pz=pr.pos[2];
+    let probeMin=Infinity;
+    for(const item of devDockItems){
+      if(item.spec.kind==='slider'){
+        probeDevSlider(item,px,py,pz,gx,gy,gz,rx,ry,rz);
+        const perp=_devSliderHit[0];
+        if(perp<probeMin)probeMin=perp;
+        if(perp<item.bestDist){
+          item.bestDist=perp;
+          item.bestU=_devSliderHit[1];
+          item.bestProbeId=pr.probeId;
+        }
+      }else{
+        const sp=item.sprite.position;
+        const d=Math.hypot(px-(gx+sp.x),py-(gy+sp.y),pz-(gz+sp.z));
+        if(d<probeMin)probeMin=d;
+        if(d<item.bestDist){
+          item.bestDist=d;
+          item.bestProbeId=pr.probeId;
+        }
+      }
+    }
+    recordProbeProximity(pr.probeId,probeMin);
+  }
+
+  let closestItem=null,closestDist=Infinity;
+  for(const item of devDockItems){
+    const maxHover=item.spec.kind==='slider'?0.036:0.038;
+    if(item.bestDist<maxHover&&item.bestDist<closestDist){
+      closestDist=item.bestDist;
+      closestItem=item;
+    }
+  }
+  hoveredDevDock=Boolean(closestItem);
+
+  for(const item of devDockItems){
+    const hot=closestItem===item;
+    if(item.spec.kind==='slider'){
+      const grab=hot&&now>=devSliderCooldownUntil&&item.bestDist<0.020;
+      if(grab){
+        devActiveSliderId=item.spec.id;
+        devActiveSliderProbeId=item.bestProbeId;
+        applyDevSliderValue(item,item.bestU,now);
+      }
+      item.sprite.scale.set((hot||grab)?0.118:0.114,(hot||grab)?0.036:0.034,1);
+      drawDevSlider(item,hot,grab);
+    }else{
+      item.sprite.scale.set(hot?0.100:0.094,hot?0.031:0.028,1);
+      let prog=0;
+      if(hot&&now>=devSliderCooldownUntil&&item.bestDist<0.032&&now>=item.cooldownUntil){
+        if(!item.pokeConsumed){
+          if(item.pokeSince==null)item.pokeSince=now;
+          prog=Math.min(1,(now-item.pokeSince)/220);
+          if(prog>=1){
+            item.pokeConsumed=true;item.pokeSince=null;item.cooldownUntil=now+650;
+            item.spec.onToggle();
+          }
+        }
+      }else{
+        item.pokeSince=null;
+        if(item.bestDist>0.048)item.pokeConsumed=false;
+      }
+      drawDevToggle(item,hot,prog);
+    }
+  }
+}
+
 // Interactive ribbon waypoint inspector (activated when controller or index fingertip comes within 5 cm of a gray tag frame).
 const inspectRoot=new THREE.Group();
 inspectRoot.visible=false;
@@ -3423,6 +3789,8 @@ const RIGHT_HAND_TINT_IDLE=0x7dd3fc,RIGHT_HAND_TINT_REC_ALL=0xef4444;
 // Joint order of XRHand (WebXR spec): wrist, thumb(4), index(5), middle(5), ring(5), pinky(5) = 25.
 const HAND_TINT_CHAINS=[[0,1,2,3,4],[0,5,6,7,8,9],[0,10,11,12,13,14],[0,15,16,17,18,19],[0,20,21,22,23,24]];
 const HAND_PALM_LOOP=[0,1,2,6,11,16,21,20];
+// Wrist + metacarpal (palm) joint balls drawn small; bones/palm hull keep the full-size occluder.
+const HAND_SPHERE_SCALE=new Float32Array(25).fill(1);for(const j of [0,1,5,10,15,20])HAND_SPHERE_SCALE[j]=0.35;
 const HAND_TINT_MAX=64,HAND_BONE_MAX=88,HAND_PALM_VERTS_MAX=2*32*3;
 const _tintMats=new Float32Array(25*16),_tintRadii=new Float32Array(25);
 const _tintColLeftMeasure=new THREE.Color(LEFT_HAND_TINT_MEASURE),_tintColLeftScan=new THREE.Color(LEFT_HAND_TINT_SCAN),_tintColLeftScanRec=new THREE.Color(LEFT_HAND_TINT_SCAN_REC);
@@ -3484,7 +3852,7 @@ function appendHandOccluder(handInput,col,sphereMatArr,sphereColArr,boneMatArr,b
     if(counts.spheres>=HAND_TINT_MAX)break;
     const o=idx*16,x=_tintMats[o+12],y=_tintMats[o+13],z=_tintMats[o+14];
     if(!Number.isFinite(x))continue;
-    const r=jR(idx);
+    const r=jR(idx)*HAND_SPHERE_SCALE[idx];
     const m=counts.spheres*16,c=counts.spheres*3;counts.spheres++;
     sphereMatArr[m]=r;sphereMatArr[m+1]=0;sphereMatArr[m+2]=0;sphereMatArr[m+3]=0;
     sphereMatArr[m+4]=0;sphereMatArr[m+5]=r;sphereMatArr[m+6]=0;sphereMatArr[m+7]=0;
@@ -4513,8 +4881,8 @@ function updateSpatialPortals(frameInputs,world,anPhase,asPhase,now,pose=null){
     }
   }
   let best=null,bestDist=Infinity,bestProbe=null;
-  // Never steal interaction while inspecting a waypoint, closing a pin, pressing TL offer, or pressing mode controls.
-  if(!hoveredWaypoint&&!hoveredClosePinKey&&!hoveredTlOffer&&!hoveredModePill){
+  // Never steal interaction while inspecting a waypoint, closing a pin, pressing TL offer, or pressing mode/dev controls.
+  if(!hoveredWaypoint&&!hoveredClosePinKey&&!hoveredTlOffer&&!hoveredModePill&&!hoveredDevDock){
     for(const p of spatialPortals){
       if(!p.spec.panel&&extraScanActive)continue;
       const s=p.spec;
@@ -6013,7 +6381,7 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
 
   // Check 90 Hz hand-tracking coupling first so picking up a locked tag immediately follows the hand at ~0 ms latency.
   let coupRes={mode:'free',event:null};
-  if(Number.isFinite(targetXrTimeMs)){
+  if(devHandCouplingEnabled&&Number.isFinite(targetXrTimeMs)){
     coupRes=tagHandCoupler.observeOptical({
       tagId,
       lFromTag,
@@ -6041,7 +6409,8 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
       entry.pendingJump=null;
       entry.skipNextJumpGuardUntilMs=atMs+900;
       if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
-      const handoverBase=(coupRes.reason!=='tag-stationary'&&Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||lFromTag;
+      const handoverRefT=entry.displayMatrix?(prevXrTime??lastXrTime):lastXrTime;
+      const handoverBase=(coupRes.reason!=='tag-stationary'&&predictDisplayTagPose(tagId,handoverRefT))||lFromTag;
       if(entry.displayMatrix)captureDisplayErrorOffset(entry,handoverBase,coupRes.reason==='tag-stationary'?0.045:0.090);
       else{entry.displayMatrix=handoverBase.slice();resetDisplayErrorOffset(entry);}
       entry.targetMatrix=lFromTag.slice();
@@ -6278,7 +6647,8 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
         entry.stillSinceMs=atMs;
         entry.stillSamples=[lFromTag.slice()];
         if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
-        const predTarget=(Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||lFromTag;
+        const unlockRefT=entry.displayMatrix?(prevXrTime??lastXrTime):lastXrTime;
+        const predTarget=predictDisplayTagPose(tagId,unlockRefT)||lFromTag;
         if(entry.displayMatrix)captureDisplayErrorOffset(entry,predTarget,0.055);
         const occludedReloc=opticalGapMs>=TRAIL_GAP_DEFAULTS.minGapMs&&posMm>=TRAIL_GAP_DEFAULTS.minGapDistM*1000;
         if(recordAllActive&&!entry.recording){
@@ -6313,7 +6683,8 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
           entry.stillSinceMs=atMs;
           entry.stillSamples=[lFromTag.slice()];
           if(Number.isFinite(targetXrTimeMs))tagPredictor.observe(tagId,lFromTag,targetXrTimeMs);
-          const predTarget=(Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||lFromTag;
+          const relocRefT=entry.displayMatrix?(prevXrTime??lastXrTime):lastXrTime;
+          const predTarget=predictDisplayTagPose(tagId,relocRefT)||lFromTag;
           if(entry.displayMatrix)captureDisplayErrorOffset(entry,predTarget,0.055);
           const occludedReloc=opticalGapMs>=TRAIL_GAP_DEFAULTS.minGapMs&&posMm>=TRAIL_GAP_DEFAULTS.minGapDistM*1000;
           if(recordAllActive&&!entry.recording){
@@ -6368,9 +6739,15 @@ function updateLiveMovablePreview(tagId,edgeMm,lFromTag,atMs,{confidence=1,targe
       if(vel.speedMps>0.01)perfTracker.recordTagSpeed(vel.speedMps,false);
     }
   }
-  const newPred=(Number.isFinite(lastXrTime)&&tagPredictor.predict(tagId,lastXrTime))||nextPose;
-  if(entry.displayMatrix)captureDisplayErrorOffset(entry,newPred,0.048);
-  else{entry.displayMatrix=newPred.slice();resetDisplayErrorOffset(entry);}
+  if(!devDisplayPredEnabled){
+    entry.displayMatrix=nextPose.slice();
+    resetDisplayErrorOffset(entry);
+  }else{
+    const dispRefT=entry.displayMatrix?(prevXrTime??lastXrTime):lastXrTime;
+    const newPred=predictDisplayTagPose(tagId,dispRefT)||nextPose;
+    if(entry.displayMatrix)captureDisplayErrorOffset(entry,newPred,0.048);
+    else{entry.displayMatrix=newPred.slice();resetDisplayErrorOffset(entry);}
+  }
 
   // Rolling pre-touch pose ring buffer.
   if(conf>=0.30){
@@ -6766,7 +7143,7 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     entry.measureModeApplied=false;
 
     // SCAN mode: check 90 Hz hand coupling prediction first.
-    const pred=Number.isFinite(xrTimeMs)?tagHandCoupler.predict(entry.tagId,handHistory,xrTimeMs):null;
+    const pred=(devHandCouplingEnabled&&Number.isFinite(xrTimeMs))?tagHandCoupler.predict(entry.tagId,handHistory,xrTimeMs):null;
     if(pred?.released){
       pushDiagEvent({
         type:'hand-released',tagId:entry.tagId,handedness:pred.prevHand,reason:pred.reason,
@@ -6784,7 +7161,8 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       }
       const smoothRelease=pred.reason==='pinch-opened'||pred.reason==='hand-pulled-away'||pred.reason==='optical-disagreement';
       if(smoothRelease){
-        const handoverBase=(Number.isFinite(xrTimeMs)&&tagPredictor.predict(entry.tagId,xrTimeMs))||entry.targetMatrix||entry.displayMatrix;
+        const relRefT=entry.displayMatrix?(prevXrTime??xrTimeMs):xrTimeMs;
+        const handoverBase=predictDisplayTagPose(entry.tagId,relRefT)||entry.targetMatrix||entry.displayMatrix;
         if(handoverBase){
           if(entry.displayMatrix)captureDisplayErrorOffset(entry,handoverBase,0.095);
           else{entry.displayMatrix=handoverBase.slice();resetDisplayErrorOffset(entry);}
@@ -6815,6 +7193,9 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     entry.coupledHand=isCoupled?pred.handedness:null;
     if(!isCoupled)entry.coupledStepCount=0;
     if(isCoupled){
+      const coupledPose=(devHandLagMs>0&&Number.isFinite(xrTimeMs))
+        ?(tagHandCoupler.predictAt(entry.tagId,handHistory,xrTimeMs-devHandLagMs)||pred.lFromTag)
+        :pred.lFromTag;
       if(entry.lockState==='locked'&&!recordAllActive&&!entry.recording&&entry.lockedMatrix){
         seedMovableWake(entry,entry.lockedMatrix,now);
       }
@@ -6822,17 +7203,17 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       entry.lastAt=now;
       const dtGap=entry.lastCoupledStepAtMs>0?(now-entry.lastCoupledStepAtMs):0;
       const jumpM=entry.displayMatrix?Math.hypot(
-        pred.lFromTag[12]-entry.displayMatrix[12],
-        pred.lFromTag[13]-entry.displayMatrix[13],
-        pred.lFromTag[14]-entry.displayMatrix[14],
+        coupledPose[12]-entry.displayMatrix[12],
+        coupledPose[13]-entry.displayMatrix[13],
+        coupledPose[14]-entry.displayMatrix[14],
       ):0;
       if(!entry.displayMatrix||!wasCoupled||dtGap>280||jumpM>0.065){
-        entry.displayMatrix=pred.lFromTag.slice();
+        entry.displayMatrix=coupledPose.slice();
         entry.coupledStepCount=1;
       }else{
         // Ultra-snappy 90 Hz hand following (~0 ms trailing while suppressing sub-mm jitter).
         const alpha=1-Math.exp(-dt*95);
-        entry.displayMatrix=blendRigid(entry.displayMatrix,pred.lFromTag,alpha);
+        entry.displayMatrix=blendRigid(entry.displayMatrix,coupledPose,alpha);
         entry.coupledStepCount=(entry.coupledStepCount||0)+1;
         if(dt>0.004&&jumpM<0.065){
           const rawSpd=Math.min(2.5,jumpM/dt);
@@ -6843,10 +7224,10 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       entry.lastCoupledStepAtMs=now;
       entry.targetMatrix=entry.displayMatrix.slice();
       if(recordAllActive&&!entry.recording&&!entry.autoRecording){
-        activateAutoRecording(entry,entry.lockedMatrix||entry.displayMatrix||pred.lFromTag,now);
+        activateAutoRecording(entry,entry.lockedMatrix||entry.displayMatrix||coupledPose,now);
       }
       if(isEntryRecording(entry)&&pred.opticalAgeMs<=450&&Number.isFinite(xrTimeMs)){
-        entry.pendingTrail.push({xrTimeMs,atMs:now,pose:entry.displayMatrix});
+        entry.pendingTrail.push({xrTimeMs,atMs:now,pose:pred.lFromTag});
       }else if(!isEntryRecording(entry)){
         entry.pendingTrail.discard();
       }
@@ -6887,6 +7268,7 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       badgeMesh.setQuadVisible(entry.markPillSlot,false);
       entry.markHoldSince=null;entry.markHoldConsumed=false;
       entry.recHoldSince=null;entry.recHoldConsumed=false;
+      if(entry.lockState==='moving')tagPredictor.noteLoss(entry.tagId);
       if(entry.lockState!=='settling'||entry.lockedMatrix||entry.displayMatrix||entry.currentPose){
         tagPredictor.reset(entry.tagId);
         resetDisplayErrorOffset(entry);
@@ -6918,9 +7300,13 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
         // 100% rigid — zero wobble, zero drift.
         entry.displayMatrix=entry.lockedMatrix;
       }else if(entry.lockState==='moving'){
-        const predTarget=(Number.isFinite(xrTimeMs)?tagPredictor.predict(entry.tagId,xrTimeMs):null)||entry.targetMatrix;
-        if(predTarget){
-          entry.displayMatrix=entry.displayMatrix?applyAndDecayErrorOffset(entry,predTarget,dt):predTarget.slice();
+        if(!devDisplayPredEnabled){
+          if(entry.targetMatrix)entry.displayMatrix=entry.targetMatrix.slice();
+        }else{
+          const predTarget=predictDisplayTagPose(entry.tagId,xrTimeMs)||entry.targetMatrix;
+          if(predTarget){
+            entry.displayMatrix=entry.displayMatrix?applyAndDecayErrorOffset(entry,predTarget,dt):predTarget.slice();
+          }
         }
       }else{
         const predTarget=entry.targetMatrix;
@@ -6932,7 +7318,7 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
     }
 
     // Latency-offset fade: only optically-driven (moving, uncoupled) tags can lag; everything else stays opaque.
-    const trackFade=(!isCoupled&&entry.lockState==='moving'&&Number.isFinite(xrTimeMs))?tagPredictor.trackingFade(entry.tagId,xrTimeMs):1;
+    const trackFade=(!isCoupled&&entry.lockState==='moving'&&Number.isFinite(xrTimeMs))?tagPredictor.trackingFade(entry.tagId,xrTimeMs,lastViewerBasis?.viewerPosL):1;
     setTagFramePose(frameBatch,entry.frameSlot,entry.displayMatrix,0,entry.edgeMm/20);
     frameBatch.setVisible(entry.frameSlot,true);
     frameBatch.setFade(entry.frameSlot,trackFade);
@@ -8121,6 +8507,27 @@ function drawSparkline(ctx,x,y,w,h,values,{min=0,max=100,color='#38bdf8',guides=
   ctx.stroke();
 }
 
+function drawLightSparkline(ctx,x,y,w,h,samples,{guides=[]}={}){
+  ctx.fillStyle='rgba(15,23,42,0.88)';ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='#334155';ctx.lineWidth=1.5;ctx.strokeRect(x,y,w,h);
+  for(const g of guides){
+    const gy=y+h-(g.value/100)*h;
+    ctx.strokeStyle=g.color;ctx.lineWidth=1;ctx.setLineDash([4,4]);
+    ctx.beginPath();ctx.moveTo(x,gy);ctx.lineTo(x+w,gy);ctx.stroke();ctx.setLineDash([]);
+  }
+  const n=samples.length;
+  if(n<2)return;
+  ctx.lineWidth=2.5;
+  const denom=Math.max(1,n-1);
+  for(let i=1;i<n;i++){
+    const a=samples[i-1],b=samples[i];
+    const ax=x+((i-1)/denom)*w,ay=y+h-(Math.max(0,Math.min(100,a.score))/100)*h;
+    const bx=x+(i/denom)*w,by=y+h-(Math.max(0,Math.min(100,b.score))/100)*h;
+    ctx.strokeStyle=LIGHT_COLORS[b.level]||'#94a3b8';
+    ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.stroke();
+  }
+}
+
 function analyzeFraming(){
   const expected=rig?rig.tools[0].tags.map(t=>t.id):[350,351,352];
   const seenTags=(lastObs?.tags??[]).filter(t=>expected.includes(t.id));
@@ -8418,6 +8825,7 @@ function renderRightHud(now,as,an,cs){
   c.clearRect(0,0,512,420);
   c.fillStyle='rgba(10,16,26,0.90)';c.fillRect(0,0,512,420);
   c.strokeStyle='#334155';c.lineWidth=3;c.strokeRect(2,2,508,416);
+  c.textAlign='left';c.textBaseline='alphabetic';
 
   // Prominent Camera Power / Load Badge (top banner).
   const camActive=cs.running||cs.starting;
@@ -8425,14 +8833,14 @@ function renderRightHud(now,as,an,cs){
   const ppText=lastSampleStats?.preprocessMs!=null?` · pp ${Math.round(lastSampleStats.preprocessMs)}ms`:'';
   const decText=`d${cs.decimate??1}${lastQualityState.longRangeActive?'·EXP1':''}`;
   const camLabel=camActive?`● CAM ON (${decText}${ppText}${detText})`:'○ CAM OFF · NATIVE XR ONLY';
-  c.fillStyle=camActive?'#dc2626':'#15803d';c.fillRect(0,0,512,46);
-  c.fillStyle='#ffffff';c.font='bold 20px system-ui';c.textAlign='center';c.fillText(camLabel,256,30);c.textAlign='left';
+  c.fillStyle=camActive?'#dc2626':'#15803d';c.fillRect(0,0,512,40);
+  c.fillStyle='#ffffff';c.font='bold 19px system-ui';c.textAlign='center';c.fillText(camLabel,256,27);c.textAlign='left';
 
   // Sparkline 1: XR FPS (always active from frame 1).
   const curFps=fpsHistory.length?fpsHistory.at(-1):0;
-  c.fillStyle='#cbd5e1';c.font='bold 18px system-ui';
-  c.fillText(`XR FPS: ${curFps.toFixed(0)}   maxGap: ${maxFrameGapMs.toFixed(0)} ms`,18,74);
-  drawSparkline(c,18,84,476,96,fpsHistory,{
+  c.fillStyle='#cbd5e1';c.font='bold 17px system-ui';
+  c.fillText(`XR FPS: ${curFps.toFixed(0)}   maxGap: ${maxFrameGapMs.toFixed(0)} ms`,18,59);
+  drawSparkline(c,18,65,476,54,fpsHistory,{
     min:0,max:100,color:curFps>=70?'#38bdf8':curFps>=45?'#f59e0b':'#ef4444',
     guides:[{value:72,color:'rgba(74,222,128,0.55)'}],
   });
@@ -8478,16 +8886,48 @@ function renderRightHud(now,as,an,cs){
     }
   }
 
-  c.fillStyle='#cbd5e1';c.font='bold 18px system-ui';c.fillText(title2,18,210);
-  c.fillStyle=badgeColor;c.fillRect(390,188,104,26);
-  c.fillStyle='#ffffff';c.font='bold 16px system-ui';c.textAlign='center';c.fillText(badge,442,206);c.textAlign='left';
-  drawSparkline(c,18,220,476,96,series,{
+  c.fillStyle='#cbd5e1';c.font='bold 17px system-ui';c.fillText(title2,18,141,364);
+  c.fillStyle=badgeColor;c.fillRect(390,124,104,22);
+  c.fillStyle='#ffffff';c.font='bold 15px system-ui';c.textAlign='center';c.fillText(badge,442,140);c.textAlign='left';
+  drawSparkline(c,18,150,476,54,series,{
     min:0,max:maxScale,
     color:badgeColor==='#16a34a'?'#4ade80':badgeColor==='#ca8a04'?'#facc15':'#f97316',
     guides,
   });
 
+  // Sparkline 3: Light Intensity (traffic light + score + flags + raw telemetry + sparkline).
+  const lightFresh=camActive&&Boolean(lightLast)&&now-lightLastAt<3000;
+  const lightDotCol=lightFresh?(LIGHT_COLORS[lightLast.level]||'#94a3b8'):'#475569';
+  const lightBadgeCol=lightFresh?(LIGHT_BADGE_COLORS[lightLast.level]||'#475569'):'#475569';
+  const lightBadgeTxt=lightFresh?(LIGHT_LEVEL_LABELS[lightLast.level]||'OK'):(camActive?'WAIT':'OFF');
+  const lightTitle=lightFresh?`LIGHT INTENSITY: ${lightLast.score}`:'LIGHT INTENSITY: –';
+
+  c.fillStyle=lightDotCol;c.beginPath();c.arc(26,221,7.5,0,Math.PI*2);c.fill();
+  c.fillStyle='#cbd5e1';c.font='bold 17px system-ui';c.fillText(lightTitle,40,227,342);
+  c.fillStyle=lightBadgeCol;c.fillRect(390,210,104,22);
+  c.fillStyle='#ffffff';c.font='bold 15px system-ui';c.textAlign='center';c.fillText(lightBadgeTxt,442,226);c.textAlign='left';
+
+  if(lightFresh){
+    const flagTxt=lightLast.flags.length?lightLast.flags.map(f=>LIGHT_FLAG_TEXT[f]||f.toUpperCase()).join(' · '):'Lighting OK';
+    c.fillStyle=lightLast.flags.length?lightDotCol:'#86efac';c.font='bold 13px system-ui';
+    c.fillText(flagTxt,18,249,236);
+    const tagTxt=lightLast.tagCount?`Tag C ${Math.round(lightLast.tagContrastMin)}`:'Tag –';
+    const rawTxt=`Luma ${Math.round(lightLast.meanLuma)} · Clip ${(lightLast.clipHi*100).toFixed(0)}% · ${tagTxt}`;
+    c.fillStyle='#cbd5e1';c.font='13px ui-monospace,monospace';c.textAlign='right';
+    c.fillText(rawTxt,494,249,232);c.textAlign='left';
+  }else{
+    c.fillStyle='#94a3b8';c.font='13px system-ui';
+    c.fillText(camActive?'Waiting for camera frame…':'Camera off · switch to SCAN for live light metrics',18,249);
+  }
+  drawLightSparkline(c,18,255,476,62,lightScoreHistory,{
+    guides:[
+      {value:70,color:'rgba(74,222,128,0.50)'},
+      {value:40,color:'rgba(250,204,21,0.45)'},
+    ],
+  });
+
   // Compact technical metrics footer.
+  c.fillStyle='#1e293b';c.fillRect(18,327,476,1.5);
   const seed=an.seed;
   const line1=(seed&&profile)
     ?`Seed ±${seed.positionSpreadMm.toFixed(1)}mm · Cal ±${(profile.validation?.positionP95Mm??0).toFixed(1)}mm · fx ${Math.round(profile.K.fx)} k1 ${(profile.distCoeffs?.[0]??0).toFixed(3)}`
@@ -8770,7 +9210,8 @@ function clean(s){
   clearFenceBreaches();
   modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeRecAll=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;lastModePillKey='';modeRecAllPokeSince=null;modeRecAllPokeConsumed=false;modeRecAllCooldownUntil=0;lastModeRecAllKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';modeColorPokeSince=null;modeColorPokeConsumed=false;modeColorCooldownUntil=0;lastModeColorKey='';turboBarSprite.visible=false;lastTurboBarKey='';
   modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
-  session=null;space=null;floorSpace=null;profile=null;extraScanActive=false;recordAllActive=false;lastMotionState=null;lastObs=null;lastObsAtMs=0;reanchorConfirmUntil=0;resetAnchorStability();
+  devDockGroup.visible=false;hoveredDevDock=false;resetDevDockPoke();
+  session=null;space=null;floorSpace=null;profile=null;extraScanActive=false;recordAllActive=false;lastMotionState=null;lastObs=null;lastObsAtMs=0;reanchorConfirmUntil=0;lightScoreHistory.length=0;lightLast=null;lightLastAt=0;resetAnchorStability();
   hasPrevViewerPose=false;smoothedHeadAngDegS=0;smoothedHeadLinMS=0;appliedFoveation=null;
   hudPanelsVisible=false;hudDragState=null;resetHudCache();axHoldSince=null;axLongFired=false;
   leftFistToggle.reset();leftFistFlashUntil=0;leftFistFlashPos=null;leftFistFlashToScan=false;
@@ -9154,6 +9595,7 @@ try{
       if(!session)return;
       const now=performance.now();
       lastObs=observation;lastObsAtMs=now;
+      if(sample.light)pushLightSample(sample.light,now); // lighting metric (~5 Hz)
       if(rigSwitching)return;
       if(maybeAutoSwitchRig(observation))return;
       if(latestViewMat)tagHintViewMat=latestViewMat.slice();
@@ -9415,10 +9857,11 @@ try{
       trailColorMode=currentTrailColorMode();
       lastModePillKey='';modePillGroup.visible=false;hoveredModePill=false;hoveredModeMain=false;hoveredModeRecAll=false;hoveredModeInfo=false;hoveredModeFence=false;hoveredModeClear=false;hoveredModeColor=false;modePillPokeSince=null;modePillPokeConsumed=false;modePillCooldownUntil=0;modeRecAllPokeSince=null;modeRecAllPokeConsumed=false;modeRecAllCooldownUntil=0;lastModeRecAllKey='';modeFencePokeSince=null;modeFencePokeConsumed=false;modeFenceCooldownUntil=0;lastModeFenceKey='';modeClearPokeSince=null;modeClearPokeConsumed=false;modeClearCooldownUntil=0;lastModeClearKey='';modeColorPokeSince=null;modeColorPokeConsumed=false;modeColorCooldownUntil=0;lastModeColorKey='';turboBarSprite.visible=false;lastTurboBarKey='';
       modeHelpOpen=false;modeHelpSprite.visible=false;modeInfoPokeSince=null;modeInfoPokeConsumed=false;modeInfoCooldownUntil=0;lastModeInfoKey='';lastModeHelpKey='';
+      devDockGroup.visible=false;hoveredDevDock=false;resetDevDockPoke();
       hudPanelsVisible=false;hudDragState=null;resetHudCache();perfTracker.reset();
       leftFistToggle.reset();leftFistFlashUntil=0;leftFistFlashPos=null;leftFistFlashToScan=false;
       rightFistToggle.reset();rightFistFlashUntil=0;rightFistFlashPos=null;rightFistFlashToRecAll=false;
-      lastXrTime=null;fpsHistory=[];stabilityHistory=[];rmsHistory=[];maxFrameGapMs=0;resetAnchorStability();
+      lastXrTime=null;prevXrTime=null;fpsHistory=[];stabilityHistory=[];rmsHistory=[];lightScoreHistory.length=0;lightLast=null;lightLastAt=0;maxFrameGapMs=0;resetAnchorStability();
       lastAuditRow=null;lastMovedTargetAt=0;lastMotionState=null;lastSampleStats=null;lastObs=null;lastObsAtMs=0;lastCalPhase='idle';lastCalCount=0;
       rvfcWindowStart=performance.now();rvfcWindowCount=capture.presentedCallbacks?.()??capture.state().presentedCallbacks;rvfcHz=0;
       diagnostics={appVersion:APP_VERSION_LABEL,startedAt:new Date().toISOString(),userAgent:navigator.userAgent,sessionId,rigId:rig.id,samples:[],events:[],errors:[]};
@@ -9523,7 +9966,7 @@ try{
         fpsHistory.push(1000/dt);if(fpsHistory.length>60)fpsHistory.shift();
       }
     }
-    lastXrTime=time;
+    prevXrTime=lastXrTime;lastXrTime=time;
 
     const pose=frame.getViewerPose(space);
     const viewerTracked=Boolean(pose&&!pose.emulatedPosition);
@@ -9622,6 +10065,7 @@ try{
     syncMeasurementTrailFocus();
     updateTlPerimeterOffer(frameInputs,renderWorld,anPhase,asPhase,now);
     updateModeAnchorPill(frameInputs,renderWorld,anPhase,asPhase,now);
+    updateDevDock(frameInputs,renderWorld,anPhase,asPhase,now);
     updateSpatialPortals(frameInputs,renderWorld,anPhase,asPhase,now,pose);
     updateLeaveConfirm(frameInputs,pose,now,renderWorld);
 
@@ -9845,7 +10289,7 @@ try{
         }
         const rightNearLeft=Boolean(rightIdxPos&&innerWristPos&&pDist(rightIdxPos,innerWristPos)<0.075);
         const leftCarrying=tagHandCoupler.isHandCarrying('left');
-        const fistSuppressed=leftMenuOpen||leftCarrying||leftNearTag||pinHoldHand==='left'||rightNearLeft||hudDragState?.probeId==='hand:left';
+        const fistSuppressed=leftMenuOpen||leftCarrying||leftNearTag||pinHoldHand==='left'||rightNearLeft||hudDragState?.probeId==='hand:left'||hoveredDevDock;
         const fistRes=leftFistToggle.update({pose:fistPose,inView:fistInView&&palmDot>0.35,speedMps:speed,enabled:canScan,suppressed:fistSuppressed,nowMs:now});
         if(fistRes.triggered){
           leftHandCooldownUntil=now+1200;
@@ -9967,7 +10411,7 @@ try{
           const dRightRing=intentional?jDist(jt,jr):Infinity;
           const dRightPinky=intentional?jDist(jt,jp):Infinity;
           let rightActive=null;
-          if(dRightMid<PINCH_DIST&&dRightMid<=dRightPinky){
+          if(dRightMid<PINCH_DIST&&dRightMid<=dRightRing&&dRightMid<=dRightPinky){
             rightRingPinchSince=null;rightPinkyPinchSince=null;rightActive='mid';
             if(rightMidPinchSince==null)rightMidPinchSince=now;
             const p=Math.min(1,(now-rightMidPinchSince)/HOLD_MS);
@@ -9976,8 +10420,17 @@ try{
               rightMidPinchSince=null;rightHandCooldownUntil=now+1000;
               cycleHandGlow();
             }
+          }else if(dRightRing<PINCH_DIST&&dRightRing<=dRightPinky){
+            rightMidPinchSince=null;rightPinkyPinchSince=null;rightActive='ring';
+            if(rightRingPinchSince==null)rightRingPinchSince=now;
+            const p=Math.min(1,(now-rightRingPinchSince)/HOLD_MS);
+            showRingAt(jt,jr,0xc084fc,p);
+            if(p>=1){
+              rightRingPinchSince=null;rightHandCooldownUntil=now+1000;
+              toggleDevMode();
+            }
           }else if(dRightPinky<PINCH_DIST){
-            rightMidPinchSince=null;rightActive='pinky';
+            rightMidPinchSince=null;rightRingPinchSince=null;rightActive='pinky';
             if(rightPinkyPinchSince==null)rightPinkyPinchSince=now;
             const p=Math.min(1,(now-rightPinkyPinchSince)/HOLD_MS);
             showRingAt(jt,jp,0xf59e0b,p);
@@ -9991,8 +10444,12 @@ try{
           if(rightMenuOpen){
             const qText=`GLOW: ${HAND_GLOW_LEVELS[handGlowLevel]}`;
             const pQual=placePill(fingerBadgeRightMid,jm,true,qText,'#38bdf8',rightActive==='mid'||wristPillPokeId==='r-qual');
+            const devText=devModeEnabled?'DEV: ON':'DEV: OFF';
+            const devCol=devModeEnabled?'#c084fc':'#94a3b8';
+            const pDev=placePill(fingerBadgeRightRing,jr,true,devText,devCol,rightActive==='ring'||wristPillPokeId==='r-dev');
             const pRecal=placePill(fingerBadgeRightPinky,jp,true,'↺ RECALIBRATE','#fbbf24',rightActive==='pinky'||wristPillPokeId==='r-recal');
             if(pQual)openPills.push({id:'r-qual',probeId:'hand:left',pos:pQual,poker:leftIdxPos,color:0x38bdf8,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;cycleHandGlow();}});
+            if(pDev)openPills.push({id:'r-dev',probeId:'hand:left',pos:pDev,poker:leftIdxPos,color:0xc084fc,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;toggleDevMode();}});
             if(pRecal)openPills.push({id:'r-recal',probeId:'hand:left',pos:pRecal,poker:leftIdxPos,color:0xf59e0b,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+1400;triggerRecalibrate();}});
           }
         }else{
@@ -10020,7 +10477,7 @@ try{
         const rightMenuOpenNow=!extraScanActive&&now<rightMenuOpenUntil;
         const leftNearRight=Boolean(leftIdxPos&&innerWristPos&&pDist(leftIdxPos,innerWristPos)<0.075);
         const rightCarrying=tagHandCoupler.isHandCarrying('right');
-        const rightFistSuppressed=rightMenuOpenNow||rightCarrying||rightNearTag||pinHoldHand==='right'||leftNearRight||hudDragState?.probeId==='hand:right'||leftFistActiveForCursor||hoveredModePill||liveTouchLoaderActive;
+        const rightFistSuppressed=rightMenuOpenNow||rightCarrying||rightNearTag||pinHoldHand==='right'||leftNearRight||hudDragState?.probeId==='hand:right'||leftFistActiveForCursor||hoveredModePill||hoveredDevDock||liveTouchLoaderActive;
         const rFistRes=rightFistToggle.update({pose:fistPose,inView:fistInView&&palmDot>0.35,speedMps:speed,enabled:canScan,suppressed:rightFistSuppressed,nowMs:now});
         if(rFistRes.triggered){
           rightHandCooldownUntil=now+1200;

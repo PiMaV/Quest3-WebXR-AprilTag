@@ -598,8 +598,8 @@ export function measureTrailArcLength(opts?: {
 }): number | null;
 
 // src/tag-predictor.mjs
-export const TAG_PREDICTOR_DEFAULTS: Readonly<Record<string, number>>;
-export function createTagMotionPredictor(options?: Record<string, number>): {
+export const TAG_PREDICTOR_DEFAULTS: Readonly<Record<string, number | boolean>>;
+export function createTagMotionPredictor(options?: Record<string, number | boolean>): {
   observe(tagId: number, lFromTag: Matrix4Array, obsTimeMs: number): { speedMps: number; angDegPerSec: number } | null;
   seed(
     tagId: number,
@@ -607,10 +607,12 @@ export function createTagMotionPredictor(options?: Record<string, number>): {
     obsTimeMs: number,
     opts?: { velL?: Vec3 | null; angLocal?: Vec3 | null },
   ): { speedMps: number; angDegPerSec: number } | null;
-  predict(tagId: number, nowTimeMs: number): Matrix4Array | null;
+  predict(tagId: number, nowTimeMs: number, opts?: { minLeadSec?: number } | null): Matrix4Array | null;
   speedOf(tagId: number): { speedMps: number; angDegPerSec: number } | null;
   offsetEstimate(tagId: number, nowTimeMs: number): number;
-  trackingFade(tagId: number, nowTimeMs: number): number;
+  trackingFade(tagId: number, nowTimeMs: number, viewerPos?: Vec3 | null): number;
+  noteLoss(tagId: number): number;
+  limitMps(): number;
   reset(tagId?: number | null): void;
 };
 

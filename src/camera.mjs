@@ -59,6 +59,7 @@ export function createReferenceCamera({video,geometry,getSettings,getContext,onO
       previousEvidence=data.frameEvidence;sourceFrames++;lastEvidenceAt=sample.submittedAtPerformanceMs;
       if(stalled) {stalled=false;notify();}
       sample.frameEvidence=data.frameEvidence;sample.workerPreprocessMs=data.preprocessMs;
+      sample.light=data.light??null; // ~5 Hz lighting metric (null between analyses)
       if(data.readbackMode) sample.readbackMode=data.readbackMode;
       if(data.detectMode) sample.detectMode=data.detectMode;
       if(Number.isFinite(data.coarseMs)) sample.coarseMs=data.coarseMs;
