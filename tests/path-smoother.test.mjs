@@ -16,6 +16,11 @@ import {
   speedToTurboColor,
   MOTION_WAKE_DEFAULTS,
   createMotionWakeBuffer,
+  TRAIL_VERTEX_ROLE,
+  TRAIL_MEASURE_STYLE_DEFAULTS,
+  buildTrailMeasureFocus,
+  evaluateEntryTrailMeasureStyle,
+  measureTrailArcLength,
 } from '../src/path-smoother.mjs';
 import {isRigidPose} from '../src/anchor.mjs';
 import {vectorRigid} from '../src/runtime.mjs';
@@ -362,4 +367,231 @@ test('smoothLineTail respects breakFlags: pins segment endpoints, prevents cross
   for(let k=0;k<rawShort.length;k++){
     assert.ok(Math.abs(outShort[k]-rawShort[k])<1e-6,`short segment coord ${k} must remain exact`);
   }
+});
+
+test('buildTrailMeasureFocus and evaluateEntryTrailMeasureStyle distinguish hovered, 1-pin, between-pins span, outer tails, and unrelated gray strands',()=>{
+  // Build two tags: tag 301 has segment 1 (vertices 0..5, seqs 1..6) and segment 2 (vertices 6..9, seqs 7..10).
+  // Tag 302 has segment 1 (vertices 0..3, seqs 1..4).
+  const n301=10;
+  const segIds301=new Uint32Array([1,1,1,1,1,1,2,2,2,2]);
+  const seqs301=new Uint32Array([1,2,3,4,5,6,7,8,9,10]);
+  const base301=new Float32Array(n301*3);
+  for(let i=0;i<n301;i++){
+    base301[i*3]=0.10;
+    base301[i*3+1]=0.85;
+    base301[i*3+2]=0.95;
+  }
+
+  const n302=4;
+  const segIds302=new Uint32Array([1,1,1,1]);
+  const seqs302=new Uint32Array([1,2,3,4]);
+  const base302=new Float32Array(n302*3);
+  for(let i=0;i<n302;i++){
+    base302[i*3]=0.95;
+    base302[i*3+1]=0.40;
+    base302[i*3+2]=0.15;
+  }
+
+  const roles301=new Uint8Array(n301),radii301=new Float32Array(n301),fades301=new Float32Array(n301),cols301=new Float32Array(n301*3);
+  const roles302=new Uint8Array(n302),radii302=new Float32Array(n302),fades302=new Float32Array(n302),cols302=new Float32Array(n302*3);
+  const baseR=0.0015;
+  const gray=TRAIL_MEASURE_STYLE_DEFAULTS.unrelatedGrayLinearRgb;
+
+  // 1. Inactive or empty -> NORMAL with exact base colors and normalFade.
+  const inactive=buildTrailMeasureFocus({active:false,pinnedPoints:[{tagId:301,segmentIndex:1,lineSeq:2}],hoveredPoints:[{tagId:301,segmentIndex:1,lineSeq:4}]});
+  assert.equal(inactive.hasFocus,false);
+  const sInactive=evaluateEntryTrailMeasureStyle({
+    tagId:301,lineCount:n301,lineSegmentIds:segIds301,lineSeqs:seqs301,baseColors:base301,
+    focus:inactive,baseRadiusM:baseR,outRoles:roles301,outRadii:radii301,outFades:fades301,outColors:cols301,
+  });
+  assert.equal(sInactive.hasFocus,false);
+  assert.equal(sInactive.hasMixedLayers,false);
+  for(let i=0;i<n301;i++){
+    assert.equal(roles301[i],TRAIL_VERTEX_ROLE.NORMAL);
+    assert.ok(Math.abs(fades301[i]-TRAIL_MEASURE_STYLE_DEFAULTS.normalFade)<1e-6);
+    assert.ok(Math.abs(cols301[i*3]-0.10)<1e-6);
+  }
+  const emptyFocus=buildTrailMeasureFocus({active:true,pinnedPoints:[],hoveredPoints:[{tagId:301,segmentIndex:0}]});
+  assert.equal(emptyFocus.hasFocus,false);
+
+  // 2. Hovering 1 point on (301, 1): seg 1 -> HOVERED; seg 2 of 301 & seg 1 of 302 -> UNRELATED transparent gray.
+  const hoverOnly=buildTrailMeasureFocus({active:true,hoveredPoints:[{tagId:301,segmentIndex:1,lineSeq:3}]});
+  assert.equal(hoverOnly.hasFocus,true);
+  assert.equal(hoverOnly.strands.get('301:1')?.state,'hovered');
+  const sumHover301=evaluateEntryTrailMeasureStyle({
+    tagId:301,lineCount:n301,lineSegmentIds:segIds301,lineSeqs:seqs301,baseColors:base301,
+    focus:hoverOnly,baseRadiusM:baseR,outRoles:roles301,outRadii:radii301,outFades:fades301,outColors:cols301,
+  });
+  const sumHover302=evaluateEntryTrailMeasureStyle({
+    tagId:302,lineCount:n302,lineSegmentIds:segIds302,lineSeqs:seqs302,baseColors:base302,
+    focus:hoverOnly,baseRadiusM:baseR,outRoles:roles302,outRadii:radii302,outFades:fades302,outColors:cols302,
+  });
+  assert.equal(sumHover301.hasActiveVertex,true);
+  assert.equal(sumHover301.hasDimVertex,true);
+  assert.equal(sumHover301.hasMixedLayers,true);
+  assert.equal(sumHover302.hasActiveVertex,false);
+  assert.equal(sumHover302.hasDimVertex,true);
+  for(let i=0;i<6;i++){
+    assert.equal(roles301[i],TRAIL_VERTEX_ROLE.HOVERED);
+    assert.ok(Math.abs(fades301[i]-TRAIL_MEASURE_STYLE_DEFAULTS.hoveredFade)<1e-6);
+    assert.ok(radii301[i]>baseR);
+  }
+  for(let i=6;i<n301;i++){
+    assert.equal(roles301[i],TRAIL_VERTEX_ROLE.UNRELATED);
+    assert.ok(Math.abs(fades301[i]-TRAIL_MEASURE_STYLE_DEFAULTS.unrelatedFade)<1e-6);
+    assert.ok(Math.abs(cols301[i*3]-gray[0])<1e-6&&Math.abs(cols301[i*3+1]-gray[1])<1e-6&&Math.abs(cols301[i*3+2]-gray[2])<1e-6);
+  }
+  for(let i=0;i<n302;i++){
+    assert.equal(roles302[i],TRAIL_VERTEX_ROLE.UNRELATED);
+    assert.ok(Math.abs(cols302[i*3]-gray[0])<1e-6);
+  }
+
+  // 3. Pinning 1 point on (301, 1) with no hover -> PINNED_SINGLE (colored, fade 0.72), other runs/IDs -> UNRELATED gray.
+  const pin1Only=buildTrailMeasureFocus({active:true,pinnedPoints:[{tagId:301,segmentIndex:1,lineSeq:2}]});
+  assert.equal(pin1Only.strands.get('301:1')?.state,'pinned-single');
+  evaluateEntryTrailMeasureStyle({
+    tagId:301,lineCount:n301,lineSegmentIds:segIds301,lineSeqs:seqs301,baseColors:base301,
+    focus:pin1Only,baseRadiusM:baseR,outRoles:roles301,outRadii:radii301,outFades:fades301,outColors:cols301,
+  });
+  for(let i=0;i<6;i++){
+    assert.equal(roles301[i],TRAIL_VERTEX_ROLE.PINNED_SINGLE);
+    assert.ok(Math.abs(fades301[i]-TRAIL_MEASURE_STYLE_DEFAULTS.pinnedSingleFade)<1e-6);
+    assert.ok(cols301[i*3+2]>0.75,'PINNED_SINGLE must keep tag color rather than neutral gray');
+  }
+  for(let i=6;i<n301;i++)assert.equal(roles301[i],TRAIL_VERTEX_ROLE.UNRELATED);
+
+  // 4. Pinning 1 point (seq 2) + hovering another point (seq 5) on (301, 1) -> indices 1..4 PINNED_PREVIEW, 0 & 5 PINNED_OUTER.
+  const pin1Hover=buildTrailMeasureFocus({
+    active:true,
+    pinnedPoints:[{tagId:301,segmentIndex:1,lineSeq:2}],
+    hoveredPoints:[{tagId:301,segmentIndex:1,lineSeq:5}],
+  });
+  evaluateEntryTrailMeasureStyle({
+    tagId:301,lineCount:n301,lineSegmentIds:segIds301,lineSeqs:seqs301,baseColors:base301,
+    focus:pin1Hover,baseRadiusM:baseR,outRoles:roles301,outRadii:radii301,outFades:fades301,outColors:cols301,
+  });
+  assert.equal(roles301[0],TRAIL_VERTEX_ROLE.PINNED_OUTER);
+  for(let i=1;i<=4;i++)assert.equal(roles301[i],TRAIL_VERTEX_ROLE.PINNED_PREVIEW);
+  assert.equal(roles301[5],TRAIL_VERTEX_ROLE.PINNED_OUTER);
+  assert.ok(Math.abs(fades301[0]-TRAIL_MEASURE_STYLE_DEFAULTS.pinnedOuterFade)<1e-6);
+  assert.ok(Math.abs(fades301[2]-TRAIL_MEASURE_STYLE_DEFAULTS.pinnedPreviewFade)<1e-6);
+
+  // 5. Pinning 2 points (seq 2 and 5) and 3 points (seq 2, 4, 5) -> [1..4] PINNED_SPAN (1.64x, fade 1.0), outer [0,5] PINNED_OUTER (colored, fade 0.48), seg 2 UNRELATED gray.
+  for(const pinSeqList of [[2,5],[2,4,5]]){
+    const pinFocus=buildTrailMeasureFocus({
+      active:true,
+      pinnedPoints:pinSeqList.map(seq=>({tagId:301,segmentIndex:1,lineSeq:seq})),
+    });
+    assert.equal(pinFocus.strands.get('301:1')?.state,'pinned-span');
+    evaluateEntryTrailMeasureStyle({
+      tagId:301,lineCount:n301,lineSegmentIds:segIds301,lineSeqs:seqs301,baseColors:base301,
+      focus:pinFocus,baseRadiusM:baseR,preserveChroma:false,
+      outRoles:roles301,outRadii:radii301,outFades:fades301,outColors:cols301,
+    });
+    assert.equal(roles301[0],TRAIL_VERTEX_ROLE.PINNED_OUTER);
+    assert.equal(roles301[5],TRAIL_VERTEX_ROLE.PINNED_OUTER);
+    assert.ok(cols301[2]>cols301[0]&&cols301[2]>gray[2]+0.2,'PINNED_OUTER must remain colored (not gray)');
+    for(let i=1;i<=4;i++){
+      assert.equal(roles301[i],TRAIL_VERTEX_ROLE.PINNED_SPAN);
+      assert.ok(Math.abs(fades301[i]-1.0)<1e-6);
+      assert.ok(Math.abs(radii301[i]-baseR*TRAIL_MEASURE_STYLE_DEFAULTS.pinnedSpanRadiusScale)<1e-7);
+      assert.ok(cols301[i*3]>0.10,'ID mode lifts span color toward white');
+    }
+    for(let i=6;i<n301;i++)assert.equal(roles301[i],TRAIL_VERTEX_ROLE.UNRELATED);
+
+    // preserveChroma: true (Turbo Speed mode) keeps exact unmodified base color on PINNED_SPAN.
+    evaluateEntryTrailMeasureStyle({
+      tagId:301,lineCount:n301,lineSegmentIds:segIds301,lineSeqs:seqs301,baseColors:base301,
+      focus:pinFocus,baseRadiusM:baseR,preserveChroma:true,
+      outRoles:roles301,outRadii:radii301,outFades:fades301,outColors:cols301,
+    });
+    assert.ok(Math.abs(cols301[1*3]-0.10)<1e-6&&Math.abs(cols301[1*3+1]-0.85)<1e-6&&Math.abs(cols301[1*3+2]-0.95)<1e-6);
+  }
+
+  // 6. Dual-hand hover on same unpinned strand previews span; dual-hand hover on different strands highlights both while graying out third.
+  const dualSame=buildTrailMeasureFocus({
+    active:true,
+    hoveredPoints:[{tagId:301,segmentIndex:1,lineSeq:2},{tagId:301,segmentIndex:1,lineSeq:5}],
+  });
+  evaluateEntryTrailMeasureStyle({
+    tagId:301,lineCount:n301,lineSegmentIds:segIds301,lineSeqs:seqs301,baseColors:base301,
+    focus:dualSame,baseRadiusM:baseR,outRoles:roles301,outRadii:radii301,outFades:fades301,outColors:cols301,
+  });
+  assert.equal(roles301[0],TRAIL_VERTEX_ROLE.PINNED_OUTER);
+  for(let i=1;i<=4;i++)assert.equal(roles301[i],TRAIL_VERTEX_ROLE.PINNED_PREVIEW);
+  assert.equal(roles301[5],TRAIL_VERTEX_ROLE.PINNED_OUTER);
+
+  const dualDiff=buildTrailMeasureFocus({
+    active:true,
+    hoveredPoints:[{tagId:301,segmentIndex:2,lineSeq:8},{tagId:302,segmentIndex:1,lineSeq:2}],
+  });
+  evaluateEntryTrailMeasureStyle({
+    tagId:301,lineCount:n301,lineSegmentIds:segIds301,lineSeqs:seqs301,baseColors:base301,
+    focus:dualDiff,baseRadiusM:baseR,outRoles:roles301,outRadii:radii301,outFades:fades301,outColors:cols301,
+  });
+  evaluateEntryTrailMeasureStyle({
+    tagId:302,lineCount:n302,lineSegmentIds:segIds302,lineSeqs:seqs302,baseColors:base302,
+    focus:dualDiff,baseRadiusM:baseR,outRoles:roles302,outRadii:radii302,outFades:fades302,outColors:cols302,
+  });
+  for(let i=0;i<6;i++)assert.equal(roles301[i],TRAIL_VERTEX_ROLE.UNRELATED);
+  for(let i=6;i<n301;i++)assert.equal(roles301[i],TRAIL_VERTEX_ROLE.HOVERED);
+  for(let i=0;i<n302;i++)assert.equal(roles302[i],TRAIL_VERTEX_ROLE.HOVERED);
+
+  // 7. Ring-buffer wraparound: scrolled-out seq (e.g. seq 1 when buffer starts at seq 4) clamps gracefully without NaN.
+  const wrappedSeqs=new Uint32Array([4,5,6,7,8,9]);
+  const wrappedSegs=new Uint32Array([1,1,1,1,1,1]);
+  const wrappedRoles=new Uint8Array(6),wrappedRadii=new Float32Array(6),wrappedFades=new Float32Array(6),wrappedCols=new Float32Array(18);
+  const wrapFocus=buildTrailMeasureFocus({
+    active:true,
+    pinnedPoints:[{tagId:301,segmentIndex:1,lineSeq:1},{tagId:301,segmentIndex:1,lineSeq:7}],
+  });
+  evaluateEntryTrailMeasureStyle({
+    tagId:301,lineCount:6,lineSegmentIds:wrappedSegs,lineSeqs:wrappedSeqs,baseColors:base301,
+    focus:wrapFocus,baseRadiusM:baseR,outRoles:wrappedRoles,outRadii:wrappedRadii,outFades:wrappedFades,outColors:wrappedCols,
+  });
+  assert.equal(wrappedRoles[0],TRAIL_VERTEX_ROLE.PINNED_SPAN);
+  assert.equal(wrappedRoles[3],TRAIL_VERTEX_ROLE.PINNED_SPAN);
+  assert.equal(wrappedRoles[4],TRAIL_VERTEX_ROLE.PINNED_OUTER);
+  for(let i=0;i<6;i++)assert.ok(Number.isFinite(wrappedRadii[i])&&Number.isFinite(wrappedFades[i]));
+});
+
+test('measureTrailArcLength computes exact curved path length along a continuous segment and guards breaks/eviction',()=>{
+  // Segment 1 (indices 0..4, seqs 10..14): 90-deg L-shape:
+  // (0,0,0) -> (0.10,0,0) -> (0.20,0,0) -> (0.20,0.10,0) -> (0.20,0.20,0) => arc = 0.40 m vs ~0.283 m straight line.
+  // Segment 2 (indices 5..8, seqs 15..18): U-turn loop:
+  // (0.50,0,0) -> (0.70,0,0) -> (0.70,0.02,0) -> (0.50,0.02,0) => arc = 0.42 m vs 0.02 m straight line.
+  const coords=[
+    [0.00,0.00,0.00],[0.10,0.00,0.00],[0.20,0.00,0.00],[0.20,0.10,0.00],[0.20,0.20,0.00],
+    [0.50,0.00,0.00],[0.70,0.00,0.00],[0.70,0.02,0.00],[0.50,0.02,0.00],
+  ];
+  const n=coords.length;
+  const pos=new Float32Array(n*3);
+  for(let i=0;i<n;i++)pos.set(coords[i],i*3);
+  const segIds=new Uint32Array([1,1,1,1,1,2,2,2,2]);
+  const seqs=new Uint32Array([10,11,12,13,14,15,16,17,18]);
+  const breaks=new Uint8Array([0,0,0,0,0,1,0,0,0]);
+
+  // L-shape forward & reverse symmetry
+  const lForward=measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:breaks,segmentIndex:1,seqA:10,seqB:14});
+  const lReverse=measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:breaks,segmentIndex:1,seqA:14,seqB:10});
+  assert.ok(Math.abs(lForward-0.40)<1e-6,`expected 0.40 m, got ${lForward}`);
+  assert.ok(Math.abs(lReverse-0.40)<1e-6);
+
+  // Sub-span (seq 11 -> seq 13 = 0.20 m) and identical seq -> 0
+  const lSub=measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:breaks,segmentIndex:1,seqA:11,seqB:13});
+  assert.ok(Math.abs(lSub-0.20)<1e-6);
+  assert.equal(measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:breaks,segmentIndex:1,seqA:12,seqB:12}),0);
+
+  // Segment 2 U-turn loop: start and end are 20 mm apart straight-line, arc length is 0.42 m
+  const uLoop=measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:breaks,segmentIndex:2,seqA:15,seqB:18});
+  assert.ok(Math.abs(uLoop-0.42)<1e-6,`expected 0.42 m, got ${uLoop}`);
+
+  // Missing segment, break inside span, evicted seq, or invalid args return null
+  assert.equal(measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:breaks,segmentIndex:3,seqA:10,seqB:14}),null);
+  assert.equal(measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:breaks,segmentIndex:1,seqA:8,seqB:14}),null);
+  assert.equal(measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:breaks,segmentIndex:1,seqA:10,seqB:15}),null);
+
+  const badBreaks=new Uint8Array([0,0,1,0,0,1,0,0,0]);
+  assert.equal(measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:badBreaks,segmentIndex:1,seqA:10,seqB:14}),null);
+  assert.equal(measureTrailArcLength({linePositions:pos,lineCount:1,lineSegmentIds:segIds,lineSeqs:seqs,segmentIndex:1,seqA:10,seqB:10}),null);
 });

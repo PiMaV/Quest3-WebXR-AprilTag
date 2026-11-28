@@ -11,6 +11,14 @@ export const TAG_PREDICTOR_DEFAULTS = Object.freeze({
   decayTauSec: 0.085,
   minDtSec: 0.012,
   maxDtSec: 0.35,
+  // Tracking-confidence fade (O(1) scalar math per tag per frame, no allocations).
+  fadeTagRadiusM: 0.04,     // lever arm that turns angular speed into a corner displacement
+  fadeSigmaSec: 0.025,      // unmodelled timing jitter that prediction cannot remove
+  fadeErrLowM: 0.012,       // estimated offset below this: fully opaque
+  fadeErrHighM: 0.050,      // estimated offset above this: minimum opacity
+  fadeMinAlpha: 0.25,
+  fadeAttackTauSec: 0.05,   // fade out quickly...
+  fadeReleaseTauSec: 0.25,  // ...come back slowly (no flicker)
 });
 
 function clampVec3Norm(v, maxNorm) {
@@ -39,6 +47,8 @@ export function createTagMotionPredictor(options = {}) {
         angLocal: [0, 0, 0],
         speedMps: 0,
         angDegPerSec: 0,
+        fade: prev?.fade ?? 1,
+        fadeTimeMs: prev?.fadeTimeMs,
       });
       return { speedMps: 0, angDegPerSec: 0 };
     }
@@ -52,6 +62,8 @@ export function createTagMotionPredictor(options = {}) {
         angLocal: [0, 0, 0],
         speedMps: 0,
         angDegPerSec: 0,
+        fade: prev?.fade ?? 1,
+        fadeTimeMs: prev?.fadeTimeMs,
       });
       return { speedMps: 0, angDegPerSec: 0 };
     }
@@ -95,6 +107,8 @@ export function createTagMotionPredictor(options = {}) {
       angLocal,
       speedMps,
       angDegPerSec,
+      fade: prev.fade ?? 1,
+      fadeTimeMs: prev.fadeTimeMs,
     });
     return { speedMps, angDegPerSec };
   }
@@ -121,6 +135,42 @@ export function createTagMotionPredictor(options = {}) {
     out[13] = st.pose[13] + st.velL[1] * leadSec;
     out[14] = st.pose[14] + st.velL[2] * leadSec;
     return out;
+  }
+
+  /**
+   * Cheap estimate of the remaining draw offset (metres) of the predicted pose:
+   * speed × (uncovered latency + jitter). Pure scalar math, no allocation.
+   */
+  function offsetEstimate(tagId, nowTimeMs) {
+    const st = states.get(tagId);
+    if (!st || !Number.isFinite(nowTimeMs)) return 0;
+    const ageSec = Math.max(0, (nowTimeMs - st.obsTimeMs) / 1000);
+    const decay = Math.exp(-Math.max(0, ageSec - 0.12) / cfg.decayTauSec);
+    const covered = Math.min(cfg.maxLeadSec, ageSec * cfg.leadGain) * decay;
+    const uncovered = Math.max(0, ageSec - covered) + cfg.fadeSigmaSec;
+    const angRad = (st.angDegPerSec * Math.PI) / 180;
+    return (st.speedMps + angRad * cfg.fadeTagRadiusM) * uncovered;
+  }
+
+  /**
+   * Smoothed opacity 1..fadeMinAlpha: opaque while the tag is slow/fresh, fading when the estimated
+   * offset grows (fast motion or stale optical data) = "about to leave the trackable range".
+   */
+  function trackingFade(tagId, nowTimeMs) {
+    const st = states.get(tagId);
+    if (!st || !Number.isFinite(nowTimeMs)) return 1;
+    const err = offsetEstimate(tagId, nowTimeMs);
+    let t = (err - cfg.fadeErrLowM) / (cfg.fadeErrHighM - cfg.fadeErrLowM);
+    t = t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+    const target = 1 - t * (1 - cfg.fadeMinAlpha);
+    const prevFade = st.fade ?? 1;
+    const prevT = st.fadeTimeMs;
+    const dt = Number.isFinite(prevT) ? Math.max(0, Math.min(0.1, (nowTimeMs - prevT) / 1000)) : 0;
+    const tau = target < prevFade ? cfg.fadeAttackTauSec : cfg.fadeReleaseTauSec;
+    const k = dt > 0 ? 1 - Math.exp(-dt / tau) : 0;
+    st.fade = prevFade + (target - prevFade) * k;
+    st.fadeTimeMs = nowTimeMs;
+    return st.fade;
   }
 
   function seed(tagId, lFromTag, obsTimeMs, { velL = null, angLocal = null } = {}) {
@@ -157,5 +207,5 @@ export function createTagMotionPredictor(options = {}) {
     else states.clear();
   }
 
-  return { observe, seed, predict, speedOf, reset };
+  return { observe, seed, predict, speedOf, offsetEstimate, trackingFade, reset };
 }

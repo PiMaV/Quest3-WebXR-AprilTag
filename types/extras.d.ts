@@ -63,6 +63,10 @@ export const TAG_ACTION_PILL_DEFAULTS: {
   exitNearM: number;
   belowOffsetM: number;
   sideHalfSpanM: number;
+  pillSizeM: number;
+  pillHotDistM: number;
+  pillPokeDistM: number;
+  pillReleaseDistM: number;
   minTableZ: number;
 };
 export interface TagRestState {
@@ -502,6 +506,96 @@ export interface MotionWakeBuffer {
 export function createMotionWakeBuffer(
   options?: Partial<typeof MOTION_WAKE_DEFAULTS>,
 ): MotionWakeBuffer;
+export const TRAIL_VERTEX_ROLE: Readonly<{
+  NORMAL: 0;
+  UNRELATED: 1;
+  PINNED_OUTER: 2;
+  PINNED_SINGLE: 3;
+  HOVERED: 4;
+  PINNED_PREVIEW: 5;
+  PINNED_SPAN: 6;
+}>;
+export const TRAIL_MEASURE_STYLE_DEFAULTS: Readonly<{
+  normalRadiusScale: number;
+  unrelatedRadiusScale: number;
+  hoveredRadiusScale: number;
+  pinnedSingleRadiusScale: number;
+  pinnedOuterRadiusScale: number;
+  pinnedPreviewRadiusScale: number;
+  pinnedSpanRadiusScale: number;
+  normalFade: number;
+  unrelatedFade: number;
+  hoveredFade: number;
+  pinnedSingleFade: number;
+  pinnedOuterFade: number;
+  pinnedPreviewFade: number;
+  pinnedSpanFade: number;
+  unrelatedGrayLinearRgb: readonly [number, number, number];
+  pinnedSingleDesat: number;
+  pinnedOuterDesat: number;
+  hoveredLiftId: number;
+  pinnedPreviewLiftId: number;
+  pinnedSpanLiftId: number;
+}>;
+export interface TrailMeasurePointRef {
+  tagId: number;
+  segmentIndex: number;
+  lineSeq?: number | null;
+}
+export interface TrailStrandFocus {
+  key: string;
+  tagId: number;
+  segmentIndex: number;
+  pinSeqs: number[];
+  hoverSeqs: number[];
+  pinTotal: number;
+  pinCount: number;
+  isHovered: boolean;
+  state: 'hovered' | 'pinned-single' | 'pinned-span';
+}
+export interface TrailMeasureFocus {
+  hasFocus: boolean;
+  strands: Map<string, TrailStrandFocus>;
+  pinnedStrands: Set<string>;
+  hoveredStrands: Set<string>;
+}
+export interface TrailMeasureEntrySummary {
+  hasFocus: boolean;
+  hasActiveVertex: boolean;
+  hasDimVertex: boolean;
+  hasMixedLayers: boolean;
+  segmentStates: Map<number, string>;
+}
+export function buildTrailMeasureFocus(opts?: {
+  active?: boolean;
+  pinnedPoints?: Iterable<TrailMeasurePointRef | null | undefined>;
+  hoveredPoints?: Iterable<TrailMeasurePointRef | null | undefined>;
+}): TrailMeasureFocus;
+export function evaluateEntryTrailMeasureStyle(opts?: {
+  tagId?: number;
+  lineCount?: number;
+  lineSegmentIds?: ArrayLike<number> | null;
+  lineSeqs?: ArrayLike<number> | null;
+  baseColors?: ArrayLike<number> | null;
+  focus?: TrailMeasureFocus | null;
+  baseRadiusM?: number;
+  preserveChroma?: boolean;
+  outRoles?: { [index: number]: number } | null;
+  outRadii?: { [index: number]: number } | null;
+  outFades?: { [index: number]: number } | null;
+  outColors?: { [index: number]: number } | null;
+  style?: Partial<typeof TRAIL_MEASURE_STYLE_DEFAULTS> | null;
+}): TrailMeasureEntrySummary;
+export function measureTrailArcLength(opts?: {
+  linePositions?: ArrayLike<number> | null;
+  lineCount?: number;
+  lineSegmentIds?: ArrayLike<number> | null;
+  lineSeqs?: ArrayLike<number> | null;
+  lineBreaks?: ArrayLike<number> | null;
+  segmentIndex?: number;
+  seqA?: number | null;
+  seqB?: number | null;
+}): number | null;
 
 // src/tag-predictor.mjs
 export const TAG_PREDICTOR_DEFAULTS: Readonly<Record<string, number>>;
@@ -515,6 +609,8 @@ export function createTagMotionPredictor(options?: Record<string, number>): {
   ): { speedMps: number; angDegPerSec: number } | null;
   predict(tagId: number, nowTimeMs: number): Matrix4Array | null;
   speedOf(tagId: number): { speedMps: number; angDegPerSec: number } | null;
+  offsetEstimate(tagId: number, nowTimeMs: number): number;
+  trackingFade(tagId: number, nowTimeMs: number): number;
   reset(tagId?: number | null): void;
 };
 

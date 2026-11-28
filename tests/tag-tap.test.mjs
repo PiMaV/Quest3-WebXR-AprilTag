@@ -183,7 +183,7 @@ test('computeTagActionPillLayout places pills side-by-side below mid-air tags an
     viewerUpL: [0, 0, 1],
     recording: false,
   });
-  // Both pills sit below the tag (z < 0.40) and separated by 2 * 43 mm = 86 mm along X.
+  // Both pills sit below the tag (z < 0.40) and separated by 2 * sideHalfSpanM (60 mm).
   assert.ok(airLayout.recPosL[2] < 0.36);
   assert.ok(airLayout.markPosL[2] < 0.36);
   const sepAir = Math.hypot(
@@ -191,7 +191,10 @@ test('computeTagActionPillLayout places pills side-by-side below mid-air tags an
     airLayout.markPosL[1] - airLayout.recPosL[1],
     airLayout.markPosL[2] - airLayout.recPosL[2],
   );
-  assert.ok(Math.abs(sepAir - 0.086) < 1e-6);
+  assert.ok(Math.abs(sepAir - 2 * TAG_ACTION_PILL_DEFAULTS.sideHalfSpanM) < 1e-6);
+  assert.ok(TAG_ACTION_PILL_DEFAULTS.pillSizeM < 2 * TAG_ACTION_PILL_DEFAULTS.sideHalfSpanM);
+  assert.ok(TAG_ACTION_PILL_DEFAULTS.pillPokeDistM < TAG_ACTION_PILL_DEFAULTS.sideHalfSpanM);
+  assert.ok(TAG_ACTION_PILL_DEFAULTS.pillReleaseDistM > TAG_ACTION_PILL_DEFAULTS.pillPokeDistM);
   assert.ok(airLayout.recPosL[0] < airLayout.zoneCenterL[0]);
   assert.ok(airLayout.markPosL[0] > airLayout.zoneCenterL[0]);
 

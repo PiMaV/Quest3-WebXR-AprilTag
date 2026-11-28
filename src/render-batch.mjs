@@ -40,6 +40,13 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     alertAttr.setUsage(THREE.DynamicDrawUsage);
     meshGeo.setAttribute('aAlert', alertAttr);
   }
+  const fades = ownGeo ? new Float32Array(cap).fill(1) : null;
+  const packedFades = ownGeo ? new Float32Array(cap).fill(1) : null;
+  const fadeAttr = ownGeo ? new THREE.InstancedBufferAttribute(packedFades, 1) : null;
+  if (fadeAttr) {
+    fadeAttr.setUsage(THREE.DynamicDrawUsage);
+    meshGeo.setAttribute('aFade', fadeAttr);
+  }
 
   const freeStack = new Int32Array(cap);
   let freeTop = cap;
@@ -62,6 +69,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     colors[cOff + 1] = 1;
     colors[cOff + 2] = 1;
     if (alerts) alerts[slot] = 0;
+    if (fades) fades[slot] = 1;
     dirty = true;
     return slot;
   }
@@ -177,6 +185,14 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     dirty = true;
   }
 
+  function setFade(slot, alpha) {
+    if (slot < 0 || slot >= cap || !allocated[slot] || !fades) return;
+    const v = alpha <= 0 ? 0 : alpha >= 1 ? 1 : alpha;
+    if (Math.abs(fades[slot] - v) < 0.01) return;
+    fades[slot] = v;
+    dirty = true;
+  }
+
   function setVisible(slot, vis) {
     if (slot < 0 || slot >= cap || !allocated[slot]) return;
     const v = vis ? 1 : 0;
@@ -190,6 +206,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     visible.fill(0);
     valid.fill(0);
     if (alerts) alerts.fill(0);
+    if (fades) fades.fill(1);
     freeTop = cap;
     for (let i = 0; i < cap; i++) freeStack[i] = cap - 1 - i;
     mesh.count = 0;
@@ -218,6 +235,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
         const av = alerts[s];
         packedAlerts[count] = av;
         if (av > 0.5) alertCnt++;
+        packedFades[count] = fades[s];
       }
       count++;
     }
@@ -225,6 +243,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     if (alertAttr) alertAttr.needsUpdate = true;
+    if (fadeAttr) fadeAttr.needsUpdate = true;
     lastCount = count;
     lastAlertCount = alertCnt;
     dirty = false;
@@ -246,6 +265,7 @@ export function createInstancedPool(geometry, material, capacity, { renderOrder 
     setPoint,
     setColor,
     setAlert,
+    setFade,
     setVisible,
     clear,
     commit,
@@ -530,6 +550,7 @@ export function createPathTubeMesh(maxPoints, material, {
     fades = null,
     breakFlags = null,
     fromIndex = 0,
+    sortByFade = false,
   } = {}) {
     const n = Math.max(0, Math.min(cap, count | 0));
     activePoints = n;
@@ -712,6 +733,25 @@ export function createPathTubeMesh(maxPoints, material, {
       }
     }
 
+    function appendSegmentIndices(segIdx, writeOff) {
+      const r0 = segIdx * segSides;
+      const r1 = (segIdx + 1) * segSides;
+      for (let s = 0; s < segSides; s++) {
+        const sn = (s + 1) % segSides;
+        const a = r0 + s;
+        const b = r0 + sn;
+        const c = r1 + sn;
+        const d = r1 + s;
+        indices[writeOff++] = a;
+        indices[writeOff++] = b;
+        indices[writeOff++] = c;
+        indices[writeOff++] = a;
+        indices[writeOff++] = c;
+        indices[writeOff++] = d;
+      }
+      return writeOff;
+    }
+
     let anyBreak = false;
     if (breakFlags) {
       for (let i = 1; i < n; i++) {
@@ -721,26 +761,28 @@ export function createPathTubeMesh(maxPoints, material, {
         }
       }
     }
-    if (anyBreak || contiguousUpTo < n - 1) {
+    if (sortByFade && fadeAttr && fades) {
+      let writeOff = 0;
+      let segCount = 0;
+      for (let pass = 0; pass < 3; pass++) {
+        for (let i = 0; i < n - 1; i++) {
+          if (breakFlags && breakFlags[i + 1]) continue;
+          const segFade = Math.min(fadeData[i * segSides], fadeData[(i + 1) * segSides]);
+          const bucket = segFade < 0.35 ? 0 : (segFade < 0.92 ? 1 : 2);
+          if (bucket !== pass) continue;
+          writeOff = appendSegmentIndices(i, writeOff);
+          segCount++;
+        }
+      }
+      activeSegCount = segCount;
+      contiguousUpTo = 0;
+      indexAttr.needsUpdate = true;
+    } else if (anyBreak || contiguousUpTo < n - 1) {
       let writeOff = 0;
       let segCount = 0;
       for (let i = 0; i < n - 1; i++) {
         if (breakFlags && breakFlags[i + 1]) continue;
-        const r0 = i * segSides;
-        const r1 = (i + 1) * segSides;
-        for (let s = 0; s < segSides; s++) {
-          const sn = (s + 1) % segSides;
-          const a = r0 + s;
-          const b = r0 + sn;
-          const c = r1 + sn;
-          const d = r1 + s;
-          indices[writeOff++] = a;
-          indices[writeOff++] = b;
-          indices[writeOff++] = c;
-          indices[writeOff++] = a;
-          indices[writeOff++] = c;
-          indices[writeOff++] = d;
-        }
+        writeOff = appendSegmentIndices(i, writeOff);
         segCount++;
       }
       activeSegCount = segCount;

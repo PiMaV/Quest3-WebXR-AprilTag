@@ -61,3 +61,24 @@ test('createTagMotionPredictor extrapolates rigid 6DOF constant velocity + rotat
   assert.ok(clampedSeed.speedMps <= TAG_PREDICTOR_DEFAULTS.maxLinearMps + 1e-6);
   assert.ok(clampedSeed.angDegPerSec <= (TAG_PREDICTOR_DEFAULTS.maxAngularRadPerSec * 180 / Math.PI) + 1e-4);
 });
+
+test('trackingFade stays opaque when slow, fades with speed/staleness, recovers slowly', () => {
+  const pred = createTagMotionPredictor();
+  pred.observe(310, vectorRigid([0, 0, 0, 0.10, 0.20, 0.30]), 1000);
+  pred.observe(310, vectorRigid([0, 0, 0, 0.1005, 0.20, 0.30]), 1033);
+  let f = 1;
+  for (let t = 1033; t < 1100; t += 11) f = pred.trackingFade(310, t);
+  assert.ok(f > 0.95, `slow tag should stay opaque, got ${f}`);
+
+  const fast = createTagMotionPredictor();
+  fast.observe(311, vectorRigid([0, 0, 0, 0.10, 0.20, 0.30]), 1000);
+  fast.observe(311, vectorRigid([0, 0, 0, 0.14, 0.20, 0.30]), 1033); // ~1.2 m/s
+  let ff = 1;
+  for (let t = 1033; t < 1300; t += 11) ff = fast.trackingFade(311, t);
+  assert.ok(ff < 0.5 && ff >= TAG_PREDICTOR_DEFAULTS.fadeMinAlpha - 1e-9, `fast tag should fade, got ${ff}`);
+  assert.ok(fast.offsetEstimate(311, 1300) > TAG_PREDICTOR_DEFAULTS.fadeErrHighM);
+
+  // Unknown tag: no fade, no throw.
+  assert.equal(fast.trackingFade(999, 1000), 1);
+  assert.equal(fast.offsetEstimate(999, 1000), 0);
+});

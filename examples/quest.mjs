@@ -2,7 +2,7 @@ import * as THREE from '../vendor/three/three.module.js';
 import {
   createReferenceCamera,createCalibrationAssistant,createLAnchorController,deviceIdentity,
   createObservationBuffer,fitPlanarPose,solveSingleTagPose,requiredTagEdgeMm,product,inverse,cvToGL,meanRigid,rigidVector,
-  xrExitPressed,nextExitHold,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos,createTagRestState,resetTagRestState,updateTagRestState,computeTagActionPillLayout,evaluateTagActionPills,computeHoverCardLayout,computePinPillPositions,HOVER_CALLOUT_DEFAULTS,
+  xrExitPressed,nextExitHold,tagSurfaceMetrics,isPinchHandEligible,classifyCursorProximity,INDEX_TIP_HOVER_OFFSET_M,projectIndexSelectorPos,TAG_ACTION_PILL_DEFAULTS,createTagRestState,resetTagRestState,updateTagRestState,computeTagActionPillLayout,evaluateTagActionPills,computeHoverCardLayout,computePinPillPositions,HOVER_CALLOUT_DEFAULTS,
   viewerVelocityAt,resolveCameraInL,evaluateMotionGate,evaluateCarriedJumpGuard,CARRIED_MOTION_GATE_DEFAULTS,createDampedAnchorCorrection,
   buildHandSample,createHandHistory,createTagHandCoupler,createCoupledTrailBuffer,
   classifyFistPose,createFistToggleController,
@@ -10,6 +10,7 @@ import {
   projectPriorRois,fuseCommittedTrailSegment,TRAIL_GAP_DEFAULTS,shouldStartNewTrailSegment,smoothLineTail,
   TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor,
   MOTION_WAKE_DEFAULTS,createMotionWakeBuffer,
+  TRAIL_VERTEX_ROLE,TRAIL_MEASURE_STYLE_DEFAULTS,buildTrailMeasureFocus,evaluateEntryTrailMeasureStyle,measureTrailArcLength,
   createTagMotionPredictor,createFocusScheduler,APP_VERSION_LABEL,
 } from '../src/index.mjs';
 import {
@@ -103,7 +104,9 @@ function warmupSceneShaders(r,scn,cam){
   tmpTrailGeo.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0.01,0,0,0,0.01,0],3));
   tmpTrailGeo.setAttribute('color',new THREE.Float32BufferAttribute([1,1,1,1,1,1,1,1,1],3));
   tmpTrailGeo.setAttribute('aDash',new THREE.Float32BufferAttribute([0,1,0.01,1,0.02,1],2));
+  tmpTrailGeo.setAttribute('aFade',new THREE.Float32BufferAttribute([1,1,1],1));
   const tmpTrail=new THREE.Mesh(tmpTrailGeo,trailLineMat);
+  const tmpTrailDim=new THREE.Mesh(tmpTrailGeo,trailLineDimMat);
   const tmpWakeGeo=new THREE.BufferGeometry();
   tmpWakeGeo.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0.01,0,0,0,0.01,0],3));
   tmpWakeGeo.setAttribute('color',new THREE.Float32BufferAttribute([1,1,1,1,1,1,1,1,1],3));
@@ -111,7 +114,7 @@ function warmupSceneShaders(r,scn,cam){
   const tmpWake=new THREE.Mesh(tmpWakeGeo,wakeLineMat);
   const tmpSpriteMat=new THREE.SpriteMaterial({color:0xffffff,transparent:true,depthTest:false,depthWrite:false});
   const tmpSprite=new THREE.Sprite(tmpSpriteMat);
-  scn.add(tmpInst,tmpAxes,tmpLine,tmpTrail,tmpWake,tmpSprite);
+  scn.add(tmpInst,tmpAxes,tmpLine,tmpTrail,tmpTrailDim,tmpWake,tmpSprite);
   const prevFrameCount=frameBatch.mesh.count;
   const prevAlertGlowCount=alertGlowBatch.mesh.count;
   if(prevFrameCount===0)frameBatch.mesh.count=1;
@@ -122,7 +125,7 @@ function warmupSceneShaders(r,scn,cam){
   }catch{}
   frameBatch.mesh.count=prevFrameCount;
   alertGlowBatch.mesh.count=prevAlertGlowCount;
-  scn.remove(tmpInst,tmpAxes,tmpLine,tmpTrail,tmpWake,tmpSprite);
+  scn.remove(tmpInst,tmpAxes,tmpLine,tmpTrail,tmpTrailDim,tmpWake,tmpSprite);
   tmpInst.dispose();tmpGeo.dispose();tmpInstMat.dispose();
   tmpAxes.geometry.dispose();tmpAxes.material.dispose();
   tmpLineGeo.dispose();tmpLineMat.dispose();
@@ -486,6 +489,38 @@ function playModeTick(kind='scan'){
   }catch{}
 }
 
+// Mini, soft looping siren while any tag is in alarm (outside perimeter). Quiet sine wobble, fades in/out.
+let _sirenOsc=null,_sirenGain=null,_sirenLfo=null;
+function updateAlarmSiren(on){
+  try{
+    if(on){
+      if(_sirenOsc)return;
+      const AC=window.AudioContext||window.webkitAudioContext;
+      if(!AC)return;
+      if(!_audioCtx)_audioCtx=new AC();
+      if(_audioCtx.state==='suspended')_audioCtx.resume().catch(()=>{});
+      const t=_audioCtx.currentTime;
+      const osc=_audioCtx.createOscillator(),gain=_audioCtx.createGain();
+      const lfo=_audioCtx.createOscillator(),lfoGain=_audioCtx.createGain();
+      osc.type='sine';osc.frequency.value=720;
+      lfo.type='sine';lfo.frequency.value=1.6;lfoGain.gain.value=180;
+      lfo.connect(lfoGain);lfoGain.connect(osc.frequency);
+      gain.gain.setValueAtTime(0.0001,t);
+      gain.gain.exponentialRampToValueAtTime(0.018,t+0.25);
+      osc.connect(gain);gain.connect(_audioCtx.destination);
+      osc.start(t);lfo.start(t);
+      _sirenOsc=osc;_sirenGain=gain;_sirenLfo=lfo;
+    }else if(_sirenOsc){
+      const t=_audioCtx.currentTime,o=_sirenOsc,l=_sirenLfo;
+      _sirenGain.gain.cancelScheduledValues(t);
+      _sirenGain.gain.setValueAtTime(Math.max(0.0001,_sirenGain.gain.value),t);
+      _sirenGain.gain.exponentialRampToValueAtTime(0.0001,t+0.2);
+      o.stop(t+0.25);l.stop(t+0.25);
+      _sirenOsc=_sirenGain=_sirenLfo=null;
+    }
+  }catch{}
+}
+
 // Radial loading ring + checkmark burst shown when pinching a waypoint to pin/unpin its box.
 const pinLoadCanvas=document.createElement('canvas');pinLoadCanvas.width=128;pinLoadCanvas.height=128;
 const pinLoadTex=makeUiTexture(pinLoadCanvas);
@@ -494,6 +529,27 @@ const pinLoadSprite=new THREE.Sprite(pinLoadMat);
 pinLoadSprite.scale.set(0.044,0.044,1);
 pinLoadSprite.visible=false;pinLoadSprite.renderOrder=999;
 scene.add(pinLoadSprite);
+function drawPinIconPath(ctx,cx,cy,size,fillStyle,holeFillStyle){
+  const r=size*0.31;
+  const headY=cy-size*0.14;
+  const tipY=cy+size*0.50;
+  const d=tipY-headY;
+  const phi=Math.asin(Math.min(0.95,r/d));
+  const aL=Math.PI-phi;
+  const aR=Math.PI*2+phi;
+  ctx.beginPath();
+  ctx.moveTo(cx,tipY);
+  ctx.lineTo(cx+r*Math.cos(aL),headY+r*Math.sin(aL));
+  ctx.arc(cx,headY,r,aL,aR,false);
+  ctx.closePath();
+  ctx.fillStyle=fillStyle;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx,headY,r*0.40,0,Math.PI*2);
+  ctx.fillStyle=holeFillStyle;
+  ctx.fill();
+}
+
 let lastPinLoadKey='';
 function drawPinLoader(progress,color,symbol,done=false){
   const bucket=done?'done':Math.round(progress*36);
@@ -510,11 +566,15 @@ function drawPinLoader(progress,color,symbol,done=false){
   ctx.beginPath();
   ctx.arc(64,64,44,-Math.PI/2,-Math.PI/2+Math.max(0.04,done?1:progress)*Math.PI*2);
   ctx.stroke();
-  ctx.fillStyle=done?'#ffffff':color;
-  ctx.font=done?'bold 48px system-ui,sans-serif':'bold 38px system-ui,sans-serif';
-  ctx.textAlign='center';ctx.textBaseline='middle';
-  ctx.fillText(symbol,64,66);
-  ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  if(symbol==='pin'){
+    drawPinIconPath(ctx,64,65,42,done?'#ffffff':color,done?'rgba(15,23,42,0.92)':'rgba(8,14,24,0.75)');
+  }else{
+    ctx.fillStyle=done?'#ffffff':color;
+    ctx.font=done?'bold 48px system-ui,sans-serif':'bold 38px system-ui,sans-serif';
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(symbol,64,66);
+    ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  }
   pinLoadTex.needsUpdate=true;
 }
 
@@ -609,6 +669,11 @@ function cycleAdaptiveQualityMode(){
   if(qualityModeEl)qualityModeEl.value=next;
   playModeTick('pin');
   showHudToast(`QUALITY: ${next.toUpperCase()}`,next==='crisp'?'#38bdf8':(next==='fluid'?'#f59e0b':'#4ade80'),1500);
+}
+function cycleHandGlow(){
+  handGlowLevel=(handGlowLevel+1)%HAND_GLOW_LEVELS.length;
+  playModeTick('pin');
+  showHudToast(`HAND GLOW: ${HAND_GLOW_LEVELS[handGlowLevel]}`,['#94a3b8','#4ade80','#38bdf8','#f59e0b'][handGlowLevel],1400);
 }
 function toggleLongRangeMode(){
   const next=!adaptiveQuality.getLongRange();
@@ -1280,24 +1345,35 @@ const PATHLINE_DEFAULTS=Object.freeze({
   gapEndCapColorHex:0xcbd5e1,
   gapStartCapColorHex:0xf8fafc,
 });
-const trailLineMat=new THREE.MeshBasicMaterial({
+function applyTrailLineShader(mat,cacheKey){
+  mat.customProgramCacheKey=()=>cacheKey;
+  mat.onBeforeCompile=shader=>{
+    shader.vertexShader=shader.vertexShader
+      .replace('#include <common>','#include <common>\nattribute vec2 aDash;\nattribute float aFade;\nvarying vec2 vDash;\nvarying float vFade;')
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nvDash = aDash;\nvFade = aFade;');
+    shader.fragmentShader=shader.fragmentShader
+      .replace('#include <common>','#include <common>\nvarying vec2 vDash;\nvarying float vFade;')
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>\nif (vDash.y > 0.5) {\n  float dashPhase = fract(vDash.x / ${PATHLINE_DEFAULTS.dashPeriodM.toFixed(4)});\n  if (dashPhase > ${PATHLINE_DEFAULTS.dashDuty.toFixed(2)}) discard;\n}\ndiffuseColor.a *= clamp(vFade, 0.0, 1.0);`,
+      );
+  };
+  return mat;
+}
+const trailLineMat=applyTrailLineShader(new THREE.MeshBasicMaterial({
   color:0xffffff,
   vertexColors:true,
   transparent:true,
-  opacity:PATHLINE_DEFAULTS.lineOpacity,
-});
-trailLineMat.customProgramCacheKey=()=>'trail-line-dash-v1';
-trailLineMat.onBeforeCompile=shader=>{
-  shader.vertexShader=shader.vertexShader
-    .replace('#include <common>','#include <common>\nattribute vec2 aDash;\nvarying vec2 vDash;')
-    .replace('#include <begin_vertex>','#include <begin_vertex>\nvDash = aDash;');
-  shader.fragmentShader=shader.fragmentShader
-    .replace('#include <common>','#include <common>\nvarying vec2 vDash;')
-    .replace(
-      '#include <color_fragment>',
-      `#include <color_fragment>\nif (vDash.y > 0.5) {\n  float dashPhase = fract(vDash.x / ${PATHLINE_DEFAULTS.dashPeriodM.toFixed(4)});\n  if (dashPhase > ${PATHLINE_DEFAULTS.dashDuty.toFixed(2)}) discard;\n}`,
-    );
-};
+  opacity:1.0,
+  depthWrite:true,
+}),'trail-line-dash-fade-v2');
+const trailLineDimMat=applyTrailLineShader(new THREE.MeshBasicMaterial({
+  color:0xffffff,
+  vertexColors:true,
+  transparent:true,
+  opacity:1.0,
+  depthWrite:false,
+}),'trail-line-dash-fade-dim-v2');
 const wakeLineMat=new THREE.MeshBasicMaterial({
   color:0xffffff,
   vertexColors:true,
@@ -1341,20 +1417,20 @@ function setTagOriginDot(dotMesh,matrix,edgeMm){
 
 const frameShimmerUniforms={uTime:{value:0}};
 const frameBatchMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.92,side:THREE.DoubleSide});
-frameBatchMat.customProgramCacheKey=()=>'tag-frame-shimmer-v2';
+frameBatchMat.customProgramCacheKey=()=>'tag-frame-shimmer-v3';
 frameBatchMat.onBeforeCompile=shader=>{
   shader.uniforms.uTime=frameShimmerUniforms.uTime;
   shader.vertexShader=shader.vertexShader
-    .replace('#include <common>','#include <common>\nattribute float aAlert;\nvarying vec2 vFrameUv;\nvarying float vFramePhase;\nvarying float vFrameAlert;')
+    .replace('#include <common>','#include <common>\nattribute float aAlert;\nattribute float aFade;\nvarying float vFrameFade;\nvarying vec2 vFrameUv;\nvarying float vFramePhase;\nvarying float vFrameAlert;')
     .replace(
       '#include <begin_vertex>',
-      '#include <begin_vertex>\nvFrameUv = position.xy / 0.0124;\n#ifdef USE_INSTANCING\nvFramePhase = dot(instanceMatrix[3].xyz, vec3(19.37, 43.13, 27.91));\nvFrameAlert = aAlert;\n#else\nvFramePhase = 0.0;\nvFrameAlert = 0.0;\n#endif',
+      '#include <begin_vertex>\nvFrameUv = position.xy / 0.0124;\n#ifdef USE_INSTANCING\nvFramePhase = dot(instanceMatrix[3].xyz, vec3(19.37, 43.13, 27.91));\nvFrameAlert = aAlert;\nvFrameFade = aFade;\n#else\nvFramePhase = 0.0;\nvFrameAlert = 0.0;\nvFrameFade = 1.0;\n#endif',
     );
   shader.fragmentShader=shader.fragmentShader
-    .replace('#include <common>','#include <common>\nuniform float uTime;\nvarying vec2 vFrameUv;\nvarying float vFramePhase;\nvarying float vFrameAlert;')
+    .replace('#include <common>','#include <common>\nuniform float uTime;\nvarying float vFrameFade;\nvarying vec2 vFrameUv;\nvarying float vFramePhase;\nvarying float vFrameAlert;')
     .replace(
       '#include <color_fragment>',
-      '#include <color_fragment>\nif (vFrameAlert > 0.5) {\n  float alarmWave = 0.5 + 0.5 * sin(uTime * 11.5);\n  float alarmFlash = pow(alarmWave, 1.8);\n  diffuseColor.rgb = mix(vec3(0.88, 0.05, 0.05), vec3(1.0, 0.36, 0.30), alarmFlash);\n  diffuseColor.a = mix(0.88, 1.0, alarmFlash);\n} else {\n  float ang = atan(vFrameUv.y, vFrameUv.x);\n  float sweep = pow(0.5 + 0.5 * sin(ang * 2.0 - uTime * 2.4 + vFramePhase), 6.0);\n  float corner = smoothstep(0.60, 0.96, min(abs(vFrameUv.x), abs(vFrameUv.y)));\n  float twinkle = corner * pow(0.5 + 0.5 * sin(uTime * 4.0 + vFramePhase * 2.3 + ang * 4.0), 4.0);\n  float glint = clamp(sweep * 0.40 + twinkle * 0.60, 0.0, 0.80);\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), glint * 0.68);\n  diffuseColor.a = min(1.0, diffuseColor.a + glint * 0.14);\n}',
+      '#include <color_fragment>\nif (vFrameAlert > 0.5) {\n  float alarmWave = 0.5 + 0.5 * sin(uTime * 11.5);\n  float alarmFlash = pow(alarmWave, 1.8);\n  diffuseColor.rgb = mix(vec3(0.88, 0.05, 0.05), vec3(1.0, 0.36, 0.30), alarmFlash);\n  diffuseColor.a = mix(0.88, 1.0, alarmFlash);\n} else {\n  float ang = atan(vFrameUv.y, vFrameUv.x);\n  float sweep = pow(0.5 + 0.5 * sin(ang * 2.0 - uTime * 2.4 + vFramePhase), 6.0);\n  float corner = smoothstep(0.60, 0.96, min(abs(vFrameUv.x), abs(vFrameUv.y)));\n  float twinkle = corner * pow(0.5 + 0.5 * sin(uTime * 4.0 + vFramePhase * 2.3 + ang * 4.0), 4.0);\n  float glint = clamp(sweep * 0.40 + twinkle * 0.60, 0.0, 0.80);\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), glint * 0.68);\n  diffuseColor.a = min(1.0, diffuseColor.a + glint * 0.14);\n}\ndiffuseColor.a *= vFrameFade;',
     );
 };
 
@@ -3021,7 +3097,7 @@ function drawModeHelpCard(scanActive){
     '• Look at AprilTags (300–359) to auto-lock (moving wake)',
     '• Grab & move tag/ruler → 90 Hz hand tracking',
     '• Poke [● REC ALL] or Right Fist → record all moving tags',
-    '• Hold [● REC] above tag → single-tag 3D path',
+    '• Hold ● below tag → path · Hold Pin → Time-Copy',
     '• Poke [■ MEASURE] or Left Fist → switch to 90 FPS inspect',
   ]:[
     '• Hover any tag/point → X/Y/Z, speed & 3D square',
@@ -3342,16 +3418,19 @@ function hideAllProbeCursors(){
 }
 
 // ---- Bilateral hand mode/REC-ALL sphere-joint tint in ONE shared InstancedMesh (0 extra draw calls). ----
-const LEFT_HAND_TINT_MEASURE=0x6fcf97,LEFT_HAND_TINT_SCAN=0xe07a7a;
+const LEFT_HAND_TINT_MEASURE=0x6fcf97,LEFT_HAND_TINT_SCAN=0x7dd3fc,LEFT_HAND_TINT_SCAN_REC=0xef4444;
 const RIGHT_HAND_TINT_IDLE=0x7dd3fc,RIGHT_HAND_TINT_REC_ALL=0xef4444;
 // Joint order of XRHand (WebXR spec): wrist, thumb(4), index(5), middle(5), ring(5), pinky(5) = 25.
 const HAND_TINT_CHAINS=[[0,1,2,3,4],[0,5,6,7,8,9],[0,10,11,12,13,14],[0,15,16,17,18,19],[0,20,21,22,23,24]];
 const HAND_PALM_LOOP=[0,1,2,6,11,16,21,20];
 const HAND_TINT_MAX=64,HAND_BONE_MAX=88,HAND_PALM_VERTS_MAX=2*32*3;
 const _tintMats=new Float32Array(25*16),_tintRadii=new Float32Array(25);
-const _tintColLeftMeasure=new THREE.Color(LEFT_HAND_TINT_MEASURE),_tintColLeftScan=new THREE.Color(LEFT_HAND_TINT_SCAN);
+const _tintColLeftMeasure=new THREE.Color(LEFT_HAND_TINT_MEASURE),_tintColLeftScan=new THREE.Color(LEFT_HAND_TINT_SCAN),_tintColLeftScanRec=new THREE.Color(LEFT_HAND_TINT_SCAN_REC);
 const _tintColRightIdle=new THREE.Color(RIGHT_HAND_TINT_IDLE),_tintColRightRecAll=new THREE.Color(RIGHT_HAND_TINT_REC_ALL);
-let handOcclusionEnabled=true,handTintEnabled=false;
+let handOcclusionEnabled=true;
+// Hand glow: 0=OFF, 1=LOW, 2=MID, 3=HIGH (solid joint spheres only; bones/palm stay invisible depth occluders).
+const HAND_GLOW_LEVELS=['OFF','LOW','MID','HIGH'],HAND_GLOW_OPACITY=[0,0.10,0.20,0.32];
+let handGlowLevel=1;
 const handOccluderMat=new THREE.MeshBasicMaterial({colorWrite:false,depthWrite:true,depthTest:true,side:THREE.DoubleSide});
 const handTintMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.22,depthTest:false,depthWrite:false,side:THREE.DoubleSide});
 const handTintMesh=new THREE.InstancedMesh(new THREE.SphereGeometry(1,12,10),handOccluderMat,HAND_TINT_MAX);
@@ -3360,6 +3439,10 @@ handTintMesh.setColorAt(0,_tintColLeftMeasure);scene.add(handTintMesh);
 const handBoneMesh=new THREE.InstancedMesh(new THREE.CylinderGeometry(1,1,1,12,1,true),handOccluderMat,HAND_BONE_MAX);
 handBoneMesh.frustumCulled=false;handBoneMesh.renderOrder=-10;handBoneMesh.visible=false;handBoneMesh.count=0;
 handBoneMesh.setColorAt(0,_tintColLeftMeasure);scene.add(handBoneMesh);
+// Visible glow spheres share matrix/color buffers with the occluder sphere mesh (no extra per-frame work).
+const handGlowMesh=new THREE.InstancedMesh(handTintMesh.geometry,handTintMat,HAND_TINT_MAX);
+handGlowMesh.instanceMatrix=handTintMesh.instanceMatrix;handGlowMesh.instanceColor=handTintMesh.instanceColor;
+handGlowMesh.frustumCulled=false;handGlowMesh.renderOrder=990;handGlowMesh.visible=false;handGlowMesh.count=0;scene.add(handGlowMesh);
 const handPalmPosArr=new Float32Array(HAND_PALM_VERTS_MAX*3);
 const handPalmGeo=new THREE.BufferGeometry();
 handPalmGeo.setAttribute('position',new THREE.BufferAttribute(handPalmPosArr,3));
@@ -3457,28 +3540,24 @@ function appendHandOccluder(handInput,col,sphereMatArr,sphereColArr,boneMatArr,b
   }
 }
 function hideHandOccluders(){
-  handTintMesh.visible=false;handBoneMesh.visible=false;handPalmMesh.visible=false;
+  handTintMesh.visible=false;handGlowMesh.visible=false;handBoneMesh.visible=false;handPalmMesh.visible=false;
 }
 function updateHandTints(leftHandInput,rightHandInput,scanMode,recAllMode,show){
   // Solid watertight hand depth-occluder (joint spheres + continuous bone cylinders + extruded palm hull):
   // defaults to invisible depth-only occlusion so 3D lines, tags, and pills behind the user's real Passthrough hands
   // are cleanly occluded without gaps; optional color tint remains toggleable.
-  if(!show||(!handOcclusionEnabled&&!handTintEnabled)){hideHandOccluders();return;}
-  const wantMat=handTintEnabled?handTintMat:handOccluderMat;
-  const wantOrder=handTintEnabled?990:-10;
-  for(const mesh of [handTintMesh,handBoneMesh,handPalmMesh]){
-    if(mesh.material!==wantMat)mesh.material=wantMat;
-    if(mesh.renderOrder!==wantOrder)mesh.renderOrder=wantOrder;
-  }
+  if(!show||!handOcclusionEnabled){hideHandOccluders();return;}
+  const glowOn=handGlowLevel>0;
+  if(glowOn)handTintMat.opacity=HAND_GLOW_OPACITY[handGlowLevel];
   const counts={spheres:0,bones:0,palmVerts:0};
-  appendHandOccluder(leftHandInput,scanMode?_tintColLeftScan:_tintColLeftMeasure,handTintMesh.instanceMatrix.array,handTintMesh.instanceColor.array,handBoneMesh.instanceMatrix.array,handBoneMesh.instanceColor.array,handPalmPosArr,counts);
+  appendHandOccluder(leftHandInput,scanMode?(recAllMode?_tintColLeftScanRec:_tintColLeftScan):_tintColLeftMeasure,handTintMesh.instanceMatrix.array,handTintMesh.instanceColor.array,handBoneMesh.instanceMatrix.array,handBoneMesh.instanceColor.array,handPalmPosArr,counts);
   appendHandOccluder(rightHandInput,recAllMode?_tintColRightRecAll:_tintColRightIdle,handTintMesh.instanceMatrix.array,handTintMesh.instanceColor.array,handBoneMesh.instanceMatrix.array,handBoneMesh.instanceColor.array,handPalmPosArr,counts);
   if(counts.spheres===0&&counts.bones===0&&counts.palmVerts===0){hideHandOccluders();return;}
   handTintMesh.count=counts.spheres;handTintMesh.instanceMatrix.needsUpdate=true;
-  if(handTintEnabled)handTintMesh.instanceColor.needsUpdate=true;
+  if(glowOn)handTintMesh.instanceColor.needsUpdate=true;
   handTintMesh.visible=counts.spheres>0;
+  handGlowMesh.count=counts.spheres;handGlowMesh.visible=glowOn&&counts.spheres>0;
   handBoneMesh.count=counts.bones;handBoneMesh.instanceMatrix.needsUpdate=true;
-  if(handTintEnabled)handBoneMesh.instanceColor.needsUpdate=true;
   handBoneMesh.visible=counts.bones>0;
   handPalmGeo.attributes.position.needsUpdate=true;
   handPalmGeo.setDrawRange(0,counts.palmVerts);
@@ -3707,10 +3786,71 @@ function drawPinPillAtlas(slot,wp,{closeHot=false}={}){
   });
 }
 
-function drawDistanceBadgeAtlas(slot,distMm,dzMm,dtSec,preview=false){
+function computeSameTrailPathLengthMm(wpA,wpB){
+  if(
+    !wpA?.isTrailPoint||!wpB?.isTrailPoint||
+    wpA.tagId!==wpB.tagId||
+    !(wpA.segmentIndex>=1)||wpA.segmentIndex!==wpB.segmentIndex||
+    !Number.isFinite(wpA.lineSeq)||!Number.isFinite(wpB.lineSeq)
+  ){
+    return null;
+  }
+  const entry=movableTools.get(wpA.tagId);
+  if(!entry?.linePositions||entry.lineCount<2)return null;
+  const arcM=measureTrailArcLength({
+    linePositions:entry.linePositions,
+    lineCount:entry.lineCount,
+    lineSegmentIds:entry.lineSegmentIds,
+    lineSeqs:entry.lineSeqs,
+    lineBreaks:entry.lineBreaks,
+    segmentIndex:wpA.segmentIndex,
+    seqA:wpA.lineSeq,
+    seqB:wpB.lineSeq,
+  });
+  return Number.isFinite(arcM)?arcM*1000:null;
+}
+
+function drawDistanceBadgeAtlas(slot,distMm,dzMm,dtSec,preview=false,pathLenMm=null){
   if(slot<0)return;
   const dzSign=dzMm>=0?'+':'';
   const sub=dtSec!=null?`ΔZ ${dzSign}${dzMm.toFixed(0)} mm · Δt ${dtSec.toFixed(1)}s`:`ΔZ ${dzSign}${dzMm.toFixed(0)} mm`;
+  if(Number.isFinite(pathLenMm)){
+    const resolvedPathMm=Math.max(distMm,pathLenMm);
+    const directText=`${distMm.toFixed(0)} mm`;
+    const pathText=`${resolvedPathMm.toFixed(0)} mm`;
+    const key=`dist2:${directText}:${pathText}:${sub}:${preview?1:0}`;
+    badgeAtlas.draw(slot,key,(ctx,w,h)=>{
+      ctx.scale(w/256,h/96);
+      ctx.fillStyle=preview?'rgba(24,14,42,0.78)':'rgba(14,10,30,0.90)';
+      ctx.beginPath();ctx.roundRect(3,3,250,90,12);ctx.fill();
+      ctx.strokeStyle=preview?'#a855f7':'#e879f9';ctx.lineWidth=2.5;ctx.stroke();
+
+      ctx.strokeStyle='#f0abfc';ctx.lineWidth=2.5;ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(16,21);ctx.lineTo(42,21);ctx.stroke();
+      ctx.fillStyle='#f0abfc';
+      ctx.beginPath();ctx.arc(16,21,3,0,Math.PI*2);ctx.arc(42,21,3,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#ffffff';ctx.font='bold 23px ui-monospace,monospace';ctx.textAlign='left';
+      ctx.fillText(directText,50,29);
+      ctx.fillStyle='#d8b4fe';ctx.font='bold 12px system-ui,sans-serif';ctx.textAlign='right';
+      ctx.fillText('LINE',242,26);
+
+      ctx.strokeStyle='#22d3ee';ctx.lineWidth=2.5;ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(16,52);ctx.bezierCurveTo(23,39,35,57,42,44);ctx.stroke();
+      ctx.fillStyle='#22d3ee';
+      ctx.beginPath();ctx.arc(16,52,3,0,Math.PI*2);ctx.arc(42,44,3,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#67e8f9';ctx.font='bold 23px ui-monospace,monospace';ctx.textAlign='left';
+      ctx.fillText(pathText,50,56);
+      ctx.fillStyle='#67e8f9';ctx.font='bold 12px system-ui,sans-serif';ctx.textAlign='right';
+      ctx.fillText('PATH',242,53);
+
+      ctx.strokeStyle='rgba(148,163,184,0.25)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(14,64);ctx.lineTo(242,64);ctx.stroke();
+      ctx.fillStyle='#e9d5ff';ctx.font='bold 14px ui-monospace,monospace';ctx.textAlign='center';
+      ctx.fillText(sub,128,83);
+      ctx.textAlign='left';
+    });
+    return;
+  }
   const main=`${distMm.toFixed(0)} mm`;
   const key=`dist:${main}:${sub}:${preview?1:0}`;
   badgeAtlas.draw(slot,key,(ctx,w,h)=>{
@@ -3741,6 +3881,7 @@ function addRailSegment(slotList,wpA,wpB,preview=false,includeEndpoints=false){
   const distMm=Math.hypot(bx-ax,by-ay,bz-az)*1000;
   const dzMm=(bz-az)*1000;
   const dtSec=(wpA.atMs!=null&&wpB.atMs!=null)?Math.abs(wpB.atMs-wpA.atMs)/1000:null;
+  const pathLenMm=computeSameTrailPathLengthMm(wpA,wpB);
   const rodSlot=rodBatch.alloc();
   if(rodSlot>=0){
     rodBatch.setRod(rodSlot,ax,ay,az,bx,by,bz,preview?0.0011:0.0014);
@@ -3755,8 +3896,11 @@ function addRailSegment(slotList,wpA,wpB,preview=false,includeEndpoints=false){
   }
   const badgeSlot=badgeAtlas.acquire();
   if(badgeSlot>=0){
-    drawDistanceBadgeAtlas(badgeSlot,distMm,dzMm,dtSec,preview);
-    badgeMesh.setQuad(badgeSlot,[(ax+bx)/2,(ay+by)/2,(az+bz)/2+0.020],preview?0.082:0.088,preview?0.026:0.029,true);
+    drawDistanceBadgeAtlas(badgeSlot,distMm,dzMm,dtSec,preview,pathLenMm);
+    const hasPath=Number.isFinite(pathLenMm);
+    const badgeW=hasPath?(preview?0.092:0.098):(preview?0.082:0.088);
+    const badgeH=hasPath?(preview?0.035:0.037):(preview?0.026:0.029);
+    badgeMesh.setQuad(badgeSlot,[(ax+bx)/2,(ay+by)/2,(az+bz)/2+0.020],badgeW,badgeH,true);
   }
   slotList.push({rodSlot,nodeASlot,nodeBSlot,badgeSlot});
 }
@@ -4972,40 +5116,45 @@ function drawLiveBadge(entry,mode,coupled=false){
   const fill=rec?'rgba(45,8,14,0.92)':(coupled?'rgba(8,30,22,0.92)':(fastTracked?'rgba(34,24,6,0.92)':(near?'rgba(8,28,36,0.92)':'rgba(6,11,20,0.86)')));
   const statusSymbol=rec
     ?(coupled?'● ✋':(fastTracked?'● ⚡':'●'))
-    :(coupled?(armedIdle?'○ ✋':'✋'):(near?'⏱':(fastTracked?(armedIdle?'○ ⚡':'⚡'):(armedIdle?'○':''))));
+    :(coupled?(armedIdle?'○ ✋':'✋'):(near?'◉':(fastTracked?(armedIdle?'○ ⚡':'⚡'):(armedIdle?'○':''))));
   const statusColor=rec?'#fca5a5':(armedIdle?'#f87171':(coupled?'#86efac':(fastTracked?'#fde047':(near?'#67e8f9':entry.theme.css))));
   drawTagMatrixFace(entry.faceSlot,`live:${key}`,`${entry.tagId}`,stroke,{fill,statusSymbol,statusColor});
 }
 
 function drawRecOrbPill(entry,recording,hot){
-  const key=`${entry.tagId}:${recording?1:0}:${hot?1:0}`;
+  const key=`${recording?1:0}:${hot?1:0}`;
   if(key===entry.recPillKey||entry.recPillSlot<0)return;
   entry.recPillKey=key;
   badgeAtlas.draw(entry.recPillSlot,`rec:${key}`,(ctx,w,h)=>{
-    ctx.scale(w/256,h/112);
-    ctx.fillStyle=recording?'rgba(55,10,16,0.95)':'rgba(10,18,32,0.92)';
-    ctx.beginPath();ctx.roundRect(6,6,244,100,28);ctx.fill();
-    ctx.strokeStyle=hot?'#fef08a':(recording?'#ef4444':'#38bdf8');
-    ctx.lineWidth=hot?6:4;ctx.stroke();
-    ctx.fillStyle=hot?'#ffffff':(recording?'#fca5a5':'#7dd3fc');
-    ctx.font='bold 30px system-ui,sans-serif';ctx.textAlign='center';
-    ctx.fillText(recording?`■ STOP #${entry.tagId}`:`● REC #${entry.tagId}`,128,67);ctx.textAlign='left';
+    ctx.scale(w/128,h/128);
+    ctx.fillStyle=recording?'rgba(58,12,18,0.94)':'rgba(10,18,30,0.88)';
+    ctx.beginPath();ctx.arc(64,64,56,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle=hot?'#fef08a':(recording?'#ef4444':'rgba(248,113,113,0.72)');
+    ctx.lineWidth=hot?7:(recording?5:4.5);ctx.stroke();
+    if(recording){
+      ctx.fillStyle=hot?'#ffffff':'#fca5a5';
+      ctx.beginPath();ctx.roundRect(42,42,44,44,9);ctx.fill();
+    }else{
+      ctx.strokeStyle=hot?'rgba(255,255,255,0.85)':'rgba(248,113,113,0.48)';
+      ctx.lineWidth=3.5;
+      ctx.beginPath();ctx.arc(64,64,34,0,Math.PI*2);ctx.stroke();
+      ctx.fillStyle=hot?'#ff5c5c':'#ef4444';
+      ctx.beginPath();ctx.arc(64,64,23,0,Math.PI*2);ctx.fill();
+    }
   });
 }
 
 function drawMarkOrbPill(entry,hot){
-  const key=`${entry.tagId}:${hot?1:0}`;
+  const key=`${hot?1:0}`;
   if(key===entry.markPillKey||entry.markPillSlot<0)return;
   entry.markPillKey=key;
   badgeAtlas.draw(entry.markPillSlot,`mark:${key}`,(ctx,w,h)=>{
-    ctx.scale(w/256,h/112);
-    ctx.fillStyle='rgba(8,26,38,0.92)';
-    ctx.beginPath();ctx.roundRect(6,6,244,100,28);ctx.fill();
-    ctx.strokeStyle=hot?'#fef08a':'#22d3ee';
-    ctx.lineWidth=hot?6:4;ctx.stroke();
-    ctx.fillStyle=hot?'#ffffff':'#67e8f9';
-    ctx.font='bold 29px system-ui,sans-serif';ctx.textAlign='center';
-    ctx.fillText(`⏱ MARK #${entry.tagId}`,128,67);ctx.textAlign='left';
+    ctx.scale(w/128,h/128);
+    ctx.fillStyle='rgba(8,22,34,0.88)';
+    ctx.beginPath();ctx.arc(64,64,56,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle=hot?'#fef08a':'rgba(34,211,238,0.72)';
+    ctx.lineWidth=hot?7:4.5;ctx.stroke();
+    drawPinIconPath(ctx,64,65,62,hot?'#ffffff':'#67e8f9','rgba(8,22,34,0.96)');
   });
 }
 
@@ -5131,6 +5280,8 @@ function setTrailColorMode(nextMode,{silent=false}={}){
   trailColorMode=resolved;
   if(trailColorModeEl)trailColorModeEl.value=resolved;
   for(const entry of movableTools.values())recolorMovableTrail(entry);
+  lastMeasureTrailFocusKey='';
+  if(!extraScanActive)syncMeasurementTrailFocus({force:true});
   lastModeColorKey='';
   turboBarSprite.visible=Boolean(modePillGroup.visible&&resolved==='speed');
   if(turboBarSprite.visible)drawTurboColorBar(PATHLINE_DEFAULTS.turboRefSpeedMps);
@@ -5154,6 +5305,269 @@ if(trailColorModeEl){
   };
 }
 
+const _dotGrayColor=new THREE.Color(0x8c96a6);
+const _dotDimTimeCopyColor=new THREE.Color(0x475569).lerp(new THREE.Color(0x67e8f9),0.35);
+const _dotStyleColor=new THREE.Color();
+const _dotWhiteColor=new THREE.Color(0xffffff);
+let lastMeasureTrailFocusKey='';
+
+function findWaypointLineVertexIndex(entry,wp,cursorRef){
+  const n=entry.lineCount|0;
+  if(!wp?.isTrailPoint||n<=0||!entry.lineSegmentIds||!entry.lineSeqs)return -1;
+  const targetSeg=wp.segmentIndex|0;
+  const targetSeq=wp.lineSeq;
+  if(targetSeq!=null&&Number.isFinite(targetSeq)){
+    let k=Math.max(0,Math.min(n-1,cursorRef.idx));
+    while(k+1<n&&entry.lineSeqs[k]<targetSeq)k++;
+    cursorRef.idx=k;
+    if(entry.lineSegmentIds[k]===targetSeg){
+      if(k>0&&entry.lineSegmentIds[k-1]===targetSeg&&Math.abs(entry.lineSeqs[k-1]-targetSeq)<Math.abs(entry.lineSeqs[k]-targetSeq)){
+        return k-1;
+      }
+      return k;
+    }
+    if(k>0&&entry.lineSegmentIds[k-1]===targetSeg)return k-1;
+  }
+  for(let i=0;i<n;i++){
+    if(entry.lineSegmentIds[i]===targetSeg)return i;
+  }
+  return -1;
+}
+
+function syncMeasurementTrailFocus({force=false}={}){
+  let focusKey;
+  const pinnedTrailWps=[];
+  const hoveredTrailWps=[];
+  const pinnedTimeCopyKeys=[];
+  const hoveredTimeCopyKeys=[];
+
+  if(extraScanActive){
+    focusKey='scan';
+  }else{
+    const pinnedStrandCounts=new Map();
+    for(const [k,pin] of pinnedPoints.entries()){
+      const wp=pin.wp;
+      if(wp?.isTrailPoint&&wp.segmentIndex>=1){
+        pinnedTrailWps.push(wp);
+        const sk=`${wp.tagId}:${wp.segmentIndex}`;
+        pinnedStrandCounts.set(sk,(pinnedStrandCounts.get(sk)||0)+1);
+      }else if(wp?.isTimeCopy){
+        pinnedTimeCopyKeys.push(k);
+      }
+    }
+    if(hoveredWaypoint){
+      if(hoveredWaypoint.isTrailPoint&&hoveredWaypoint.segmentIndex>=1){
+        hoveredTrailWps.push(hoveredWaypoint);
+      }else if(hoveredWaypoint.isTimeCopy){
+        hoveredTimeCopyKeys.push(waypointIdKey(hoveredWaypoint));
+      }
+    }
+    if(hoveredWaypoint2){
+      if(hoveredWaypoint2.isTrailPoint&&hoveredWaypoint2.segmentIndex>=1){
+        hoveredTrailWps.push(hoveredWaypoint2);
+      }else if(hoveredWaypoint2.isTimeCopy){
+        hoveredTimeCopyKeys.push(waypointIdKey(hoveredWaypoint2));
+      }
+    }
+
+    const dualSameStrand=
+      hoveredTrailWps.length>=2&&
+      hoveredTrailWps[0].tagId===hoveredTrailWps[1].tagId&&
+      hoveredTrailWps[0].segmentIndex===hoveredTrailWps[1].segmentIndex;
+
+    const pinParts=pinnedTrailWps.map(wp=>`${wp.tagId}:${wp.segmentIndex}@${wp.lineSeq??'x'}`);
+    const hoverParts=hoveredTrailWps.map(wp=>{
+      const sk=`${wp.tagId}:${wp.segmentIndex}`;
+      const needSeq=dualSameStrand||(pinnedStrandCounts.get(sk)||0)>=1;
+      return needSeq?`${sk}@${wp.lineSeq??'x'}`:sk;
+    });
+    const tcPart=(pinnedTrailWps.length>0||hoveredTrailWps.length>0)
+      ?`${pinnedTimeCopyKeys.join(',')}|${hoveredTimeCopyKeys.join(',')}`
+      :'';
+    focusKey=`measure|${trailColorMode}|${pinParts.join(',')}|${hoverParts.join(',')}|${tcPart}`;
+  }
+
+  if(!force&&focusKey===lastMeasureTrailFocusKey)return;
+  lastMeasureTrailFocusKey=focusKey;
+
+  const focus=buildTrailMeasureFocus({
+    active:!extraScanActive,
+    pinnedPoints:pinnedTrailWps,
+    hoveredPoints:hoveredTrailWps,
+  });
+
+  const preserveChroma=trailColorMode==='speed';
+  const cursorRef={idx:0};
+
+  for(const entry of movableTools.values()){
+    let summary=null;
+    if(entry.trailTube&&entry.lineCount>0){
+      summary=evaluateEntryTrailMeasureStyle({
+        tagId:entry.tagId,
+        lineCount:entry.lineCount,
+        lineSegmentIds:entry.lineSegmentIds,
+        lineSeqs:entry.lineSeqs,
+        baseColors:entry.lineColors,
+        focus,
+        baseRadiusM:PATHLINE_DEFAULTS.lineRadiusM,
+        preserveChroma,
+        outRoles:entry.lineRoles,
+        outRadii:entry.lineRadii,
+        outFades:entry.lineFades,
+        outColors:entry.lineRenderColors,
+      });
+
+      let targetMat=trailLineMat;
+      let targetOrder=2;
+      let sortByFade=false;
+      if(summary.hasFocus){
+        if(!summary.hasActiveVertex){
+          targetMat=trailLineDimMat;
+          targetOrder=1;
+        }else if(summary.hasDimVertex){
+          targetMat=trailLineDimMat;
+          targetOrder=3;
+          sortByFade=summary.hasMixedLayers;
+        }else{
+          targetMat=trailLineMat;
+          targetOrder=3;
+        }
+      }
+      entry.trailTube.mesh.material=targetMat;
+      entry.trailTube.mesh.renderOrder=targetOrder;
+      entry.trailTube.syncFromPositions(entry.linePositions,entry.lineCount,{
+        radii:entry.lineRadii,
+        colors:entry.lineRenderColors,
+        outsideFlags:entry.lineOutside,
+        fades:entry.lineFades,
+        breakFlags:entry.lineBreaks,
+        fromIndex:0,
+        sortByFade,
+      });
+    }
+
+    if(entry.dotsMesh&&entry.waypoints.length>0){
+      cursorRef.idx=0;
+      let hasHighlightedTimeCopy=false;
+      for(let i=0;i<entry.waypoints.length;i++){
+        const wp=entry.waypoints[i];
+        let dotR=0;
+        let dotCol=waypointDotColorFor(entry,wp);
+        if(wp.isSegmentStart){
+          dotR=0;
+        }else if(wp.isTimeCopy){
+          const tcFocused=!focus.hasFocus||pinnedPoints.has(waypointIdKey(wp))||hoveredWaypoint===wp||hoveredWaypoint2===wp;
+          if(focus.hasFocus&&tcFocused)hasHighlightedTimeCopy=true;
+          dotR=PATHLINE_DEFAULTS.timeCopyDotRadiusM*(tcFocused?1.0:0.85);
+          dotCol=tcFocused?entry.timeCopyDotColor:_dotDimTimeCopyColor;
+        }else if(!summary||!summary.hasFocus){
+          dotR=PATHLINE_DEFAULTS.waypointDotRadiusM;
+        }else{
+          const vIdx=findWaypointLineVertexIndex(entry,wp,cursorRef);
+          const role=vIdx>=0
+            ?entry.lineRoles[vIdx]
+            :(focus.strands.has(`${entry.tagId}:${wp.segmentIndex}`)?TRAIL_VERTEX_ROLE.HOVERED:TRAIL_VERTEX_ROLE.UNRELATED);
+          if(role===TRAIL_VERTEX_ROLE.UNRELATED){
+            dotR=PATHLINE_DEFAULTS.waypointDotRadiusM*0.70;
+            dotCol=_dotGrayColor;
+          }else if(role===TRAIL_VERTEX_ROLE.PINNED_SPAN){
+            dotR=PATHLINE_DEFAULTS.waypointDotRadiusM*1.24;
+            if(vIdx>=0&&entry.lineRenderColors){
+              _dotStyleColor.setRGB(entry.lineRenderColors[vIdx*3],entry.lineRenderColors[vIdx*3+1],entry.lineRenderColors[vIdx*3+2]).lerp(_dotWhiteColor,0.25);
+              dotCol=_dotStyleColor;
+            }
+          }else if(role===TRAIL_VERTEX_ROLE.PINNED_PREVIEW||role===TRAIL_VERTEX_ROLE.HOVERED){
+            dotR=PATHLINE_DEFAULTS.waypointDotRadiusM*1.12;
+            if(vIdx>=0&&entry.lineRenderColors){
+              _dotStyleColor.setRGB(entry.lineRenderColors[vIdx*3],entry.lineRenderColors[vIdx*3+1],entry.lineRenderColors[vIdx*3+2]).lerp(_dotWhiteColor,0.20);
+              dotCol=_dotStyleColor;
+            }
+          }else if(role===TRAIL_VERTEX_ROLE.PINNED_SINGLE){
+            dotR=PATHLINE_DEFAULTS.waypointDotRadiusM*0.96;
+            if(vIdx>=0&&entry.lineRenderColors){
+              _dotStyleColor.setRGB(entry.lineRenderColors[vIdx*3],entry.lineRenderColors[vIdx*3+1],entry.lineRenderColors[vIdx*3+2]);
+              dotCol=_dotStyleColor;
+            }
+          }else if(role===TRAIL_VERTEX_ROLE.PINNED_OUTER){
+            dotR=PATHLINE_DEFAULTS.waypointDotRadiusM*0.84;
+            if(vIdx>=0&&entry.lineRenderColors){
+              _dotStyleColor.setRGB(entry.lineRenderColors[vIdx*3],entry.lineRenderColors[vIdx*3+1],entry.lineRenderColors[vIdx*3+2]);
+              dotCol=_dotStyleColor;
+            }
+          }else{
+            dotR=PATHLINE_DEFAULTS.waypointDotRadiusM;
+          }
+        }
+        _tmpMat4.makeScale(dotR,dotR,dotR).setPosition(wp.centerL[0],wp.centerL[1],wp.centerL[2]);
+        entry.dotsMesh.setMatrixAt(i,_tmpMat4);
+        entry.dotsMesh.setColorAt(i,dotCol);
+      }
+      entry.dotsMesh.instanceMatrix.needsUpdate=true;
+      if(entry.dotsMesh.instanceColor)entry.dotsMesh.instanceColor.needsUpdate=true;
+
+      if(entry.dotMat){
+        if(!focus.hasFocus){
+          entry.dotMat.opacity=0.92;
+          entry.dotMat.depthWrite=true;
+          entry.dotsMesh.renderOrder=3;
+        }else if((summary?.hasActiveVertex??false)||hasHighlightedTimeCopy){
+          entry.dotMat.opacity=0.94;
+          entry.dotMat.depthWrite=true;
+          entry.dotsMesh.renderOrder=4;
+        }else{
+          entry.dotMat.opacity=0.24;
+          entry.dotMat.depthWrite=false;
+          entry.dotsMesh.renderOrder=1;
+        }
+      }
+    }
+
+    if(entry.trailGaps?.length&&entry.linePositions&&entry.lineCount>0){
+      const capR=PATHLINE_DEFAULTS.gapCapRadiusM;
+      const bridgeR=PATHLINE_DEFAULTS.gapBridgeRadiusM;
+      for(const g of entry.trailGaps){
+        if(g.startIndex<1||g.startIndex>=entry.lineCount)continue;
+        const p0=(g.startIndex-1)*3;
+        const p1=g.startIndex*3;
+        const ax=entry.linePositions[p0],ay=entry.linePositions[p0+1],az=entry.linePositions[p0+2];
+        const bx=entry.linePositions[p1],by=entry.linePositions[p1+1],bz=entry.linePositions[p1+2];
+        if(!summary||!summary.hasFocus){
+          if(g.bridgeSlot>=0){
+            trailGapBridgeBatch.setRod(g.bridgeSlot,ax,ay,az,bx,by,bz,bridgeR);
+            trailGapBridgeBatch.setColor(g.bridgeSlot,PATHLINE_DEFAULTS.gapBridgeColorHex);
+          }
+          if(g.endCapSlot>=0){
+            trailGapCapBatch.setPoint(g.endCapSlot,ax,ay,az,capR);
+            trailGapCapBatch.setColor(g.endCapSlot,PATHLINE_DEFAULTS.gapEndCapColorHex);
+          }
+          if(g.startCapSlot>=0){
+            trailGapCapBatch.setPoint(g.startCapSlot,bx,by,bz,capR);
+            trailGapCapBatch.setColor(g.startCapSlot,PATHLINE_DEFAULTS.gapStartCapColorHex);
+          }
+        }else{
+          const endRole=entry.lineRoles[g.startIndex-1];
+          const startRole=entry.lineRoles[g.startIndex];
+          const endActive=endRole!==TRAIL_VERTEX_ROLE.UNRELATED;
+          const startActive=startRole!==TRAIL_VERTEX_ROLE.UNRELATED;
+          const anyActive=endActive||startActive;
+          if(g.bridgeSlot>=0){
+            trailGapBridgeBatch.setRod(g.bridgeSlot,ax,ay,az,bx,by,bz,bridgeR*(anyActive?0.78:0.60));
+            trailGapBridgeBatch.setColor(g.bridgeSlot,anyActive?PATHLINE_DEFAULTS.gapBridgeColorHex:0x64748b);
+          }
+          if(g.endCapSlot>=0){
+            trailGapCapBatch.setPoint(g.endCapSlot,ax,ay,az,capR*(endActive?1.05:0.68));
+            trailGapCapBatch.setColor(g.endCapSlot,endActive?PATHLINE_DEFAULTS.gapEndCapColorHex:0x64748b);
+          }
+          if(g.startCapSlot>=0){
+            trailGapCapBatch.setPoint(g.startCapSlot,bx,by,bz,capR*(startActive?1.05:0.68));
+            trailGapCapBatch.setColor(g.startCapSlot,startActive?PATHLINE_DEFAULTS.gapStartCapColorHex:0x64748b);
+          }
+        }
+      }
+    }
+  }
+}
+
 function ensureMovableTrailVisuals(entry){
   const accentCol=new THREE.Color(entry.theme.hex);
   if(!entry.uniqueLinearRgb){
@@ -5164,13 +5578,22 @@ function ensureMovableTrailVisuals(entry){
     const linePositions=new Float32Array(MAX_LINE_PTS*3);
     const lineSpeeds=new Float32Array(MAX_LINE_PTS);
     const lineColors=new Float32Array(MAX_LINE_PTS*3);
+    const lineRenderColors=new Float32Array(MAX_LINE_PTS*3);
+    const lineRadii=new Float32Array(MAX_LINE_PTS);
+    lineRadii.fill(PATHLINE_DEFAULTS.lineRadiusM);
+    const lineFades=new Float32Array(MAX_LINE_PTS);
+    lineFades.fill(PATHLINE_DEFAULTS.lineOpacity);
+    const lineRoles=new Uint8Array(MAX_LINE_PTS);
     const lineOutside=new Uint8Array(MAX_LINE_PTS);
     const lineBreaks=new Uint8Array(MAX_LINE_PTS);
+    const lineSegmentIds=new Uint32Array(MAX_LINE_PTS);
+    const lineSeqs=new Uint32Array(MAX_LINE_PTS);
     const trailTube=createPathTubeMesh(MAX_LINE_PTS,trailLineMat,{
       radius:PATHLINE_DEFAULTS.lineRadiusM,
       sides:PATHLINE_DEFAULTS.lineSides,
       vertexColors:true,
       dashAttribute:true,
+      fadeAttribute:true,
       renderOrder:2,
       name:`trail-${entry.tagId}`,
     });
@@ -5180,8 +5603,14 @@ function ensureMovableTrailVisuals(entry){
     entry.linePositions=linePositions;
     entry.lineSpeeds=lineSpeeds;
     entry.lineColors=lineColors;
+    entry.lineRenderColors=lineRenderColors;
+    entry.lineRadii=lineRadii;
+    entry.lineFades=lineFades;
+    entry.lineRoles=lineRoles;
     entry.lineOutside=lineOutside;
     entry.lineBreaks=lineBreaks;
+    entry.lineSegmentIds=lineSegmentIds;
+    entry.lineSeqs=lineSeqs;
     entry.lastTrailFenceVer=perimeterFence?.version?.()??-1;
   }
   if(!entry.dotsMesh){
@@ -5326,7 +5755,7 @@ function createMovableTool(tagId,edgeMm){
     markOrbSlot,markPillSlot,markPillKey:'',
     visible:false,faceVisible:false,recOrbVisible:false,markOrbVisible:false,outsidePerimeter:false,lastAlertFenceVer:-1,
     frameColorHex:theme.hex,recOrbColorHex:0x0ea5e9,markOrbColorHex:0x22d3ee,recOrbScale:1,
-    trailTube:null,uniqueLinearRgb:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineColors:null,lineOutside:null,lineBreaks:null,trailGaps:[],trailSegmentCount:0,pendingTrailBreak:false,lastTrailFenceVer:-1,lineCount:0,
+    trailTube:null,uniqueLinearRgb:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineColors:null,lineRenderColors:null,lineRadii:null,lineFades:null,lineRoles:null,lineOutside:null,lineBreaks:null,lineSegmentIds:null,lineSeqs:null,lineSeqCounter:0,trailGaps:[],trailSegmentCount:0,pendingTrailBreak:false,lastTrailFenceVer:-1,lineCount:0,
     wakeBuffer:null,wakeTube:null,wakeColors:null,wakeLinearRgb:null,
     dotsMesh:null,dotMat:null,dotColor:null,timeCopyDotColor:null,
     waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,smoothedSpeedMps:0,hasEverAnnouncedLock:false,
@@ -5375,8 +5804,14 @@ function appendLinePoint(entry,pose,speedMps=0,{isBreak=false,atMs=null}={}){
     entry.linePositions.copyWithin(0,3,MAX_LINE_PTS*3);
     entry.lineSpeeds.copyWithin(0,1,MAX_LINE_PTS);
     entry.lineColors.copyWithin(0,3,MAX_LINE_PTS*3);
+    entry.lineRenderColors.copyWithin(0,3,MAX_LINE_PTS*3);
+    entry.lineRadii.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineFades.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineRoles.copyWithin(0,1,MAX_LINE_PTS);
     entry.lineOutside.copyWithin(0,1,MAX_LINE_PTS);
     entry.lineBreaks.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineSegmentIds.copyWithin(0,1,MAX_LINE_PTS);
+    entry.lineSeqs.copyWithin(0,1,MAX_LINE_PTS);
     entry.lineBreaks[0]=0;
     for(let gi=entry.trailGaps.length-1;gi>=0;gi--){
       const g=entry.trailGaps[gi];
@@ -5394,6 +5829,10 @@ function appendLinePoint(entry,pose,speedMps=0,{isBreak=false,atMs=null}={}){
   entry.lineBreaks[idx]=resolvedBreak?1:0;
   if(idx===0)entry.trailSegmentCount=1;
   else if(resolvedBreak)entry.trailSegmentCount=Math.max(1,entry.trailSegmentCount)+1;
+  entry.lineSegmentIds[idx]=entry.trailSegmentCount;
+  entry.lineSeqs[idx]=++entry.lineSeqCounter;
+  entry.lineRadii[idx]=PATHLINE_DEFAULTS.lineRadiusM;
+  entry.lineFades[idx]=PATHLINE_DEFAULTS.lineOpacity;
   const ptSpeed=resolvedBreak?0:speedMps;
   const i=idx*3;
   entry.rawLinePositions[i]=cx;entry.rawLinePositions[i+1]=cy;entry.rawLinePositions[i+2]=cz;
@@ -5423,9 +5862,15 @@ function appendLinePoint(entry,pose,speedMps=0,{isBreak=false,atMs=null}={}){
     prevOut=out;
   }
   entry.lastTrailFenceVer=perimeterFence?.version?.()??-1;
+  if(entry.trailTube.mesh.material!==trailLineMat){
+    entry.trailTube.mesh.material=trailLineMat;
+    entry.trailTube.mesh.renderOrder=2;
+  }
   entry.trailTube.syncFromPositions(entry.linePositions,entry.lineCount,{
+    radii:entry.lineRadii,
     colors:entry.lineColors,
     outsideFlags:entry.lineOutside,
+    fades:entry.lineFades,
     breakFlags:entry.lineBreaks,
     fromIndex:fullRebuild?0:Math.max(0,entry.lineCount-6),
   });
@@ -6486,12 +6931,16 @@ function stepLiveTagSmoothing(now,dtSec,xrTimeMs=null){
       }
     }
 
+    // Latency-offset fade: only optically-driven (moving, uncoupled) tags can lag; everything else stays opaque.
+    const trackFade=(!isCoupled&&entry.lockState==='moving'&&Number.isFinite(xrTimeMs))?tagPredictor.trackingFade(entry.tagId,xrTimeMs):1;
     setTagFramePose(frameBatch,entry.frameSlot,entry.displayMatrix,0,entry.edgeMm/20);
     frameBatch.setVisible(entry.frameSlot,true);
+    frameBatch.setFade(entry.frameSlot,trackFade);
     axesBatch.setPose(entry.axesSlot,entry.displayMatrix,0.055);
-    axesBatch.setVisible(entry.axesSlot,true);
+    axesBatch.setVisible(entry.axesSlot,trackFade>0.6);
     const faceEdge=Math.max(0.008,entry.edgeMm/1000-0.0006);
     tagFaceMesh.setOrientedQuad(entry.faceSlot,entry.displayMatrix,faceEdge,faceEdge,0,true);
+    tagFaceMesh.setQuadAlpha(entry.faceSlot,trackFade);
     syncMovablePerimeterAlert(entry,entry.displayMatrix,true,now);
     entry.lastAlertFenceVer=curFenceVer;
     updateMovableWake(entry,now,{
@@ -6592,9 +7041,16 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       minRecDist:minOrbDist,
       minMarkDist,
     });
+    const pillSize=TAG_ACTION_PILL_DEFAULTS.pillSizeM;
+    const hotDistM=TAG_ACTION_PILL_DEFAULTS.pillHotDistM;
+    const pokeDistM=TAG_ACTION_PILL_DEFAULTS.pillPokeDistM;
+    const releaseDistM=TAG_ACTION_PILL_DEFAULTS.pillReleaseDistM;
+    const recCloser=!showMark||minOrbDist<=minMarkDist;
+    const markCloser=!showOrb||minMarkDist<minOrbDist;
+
     entry.recOrbVisible=showOrb;
-    const orbHot=showOrb&&minOrbDist<0.042;
-    const orbScale=entry.recording?entry.recOrbScale:(orbHot?1.35:1.0);
+    const orbHot=showOrb&&recCloser&&minOrbDist<hotDistM;
+    const orbScale=entry.recording?entry.recOrbScale:(orbHot?1.22:0.92);
     const orbHex=orbHot?0xfef08a:(entry.recording?0xef4444:0x0ea5e9);
     if(showOrb){
       recOrbBatch.setPoint(entry.recOrbSlot,ox,oy,oz,orbScale);
@@ -6604,15 +7060,15 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       }
       recOrbBatch.setVisible(entry.recOrbSlot,true);
       drawRecOrbPill(entry,entry.recording,orbHot);
-      badgeMesh.setQuad(entry.recPillSlot,entry.recOrbPosL,0.072,0.032,true);
+      badgeMesh.setQuad(entry.recPillSlot,entry.recOrbPosL,pillSize,pillSize,true);
     }else{
       recOrbBatch.setVisible(entry.recOrbSlot,false);
       badgeMesh.setQuadVisible(entry.recPillSlot,false);
     }
 
     entry.markOrbVisible=showMark;
-    const markHot=showMark&&minMarkDist<0.042;
-    const markScale=markHot?1.35:1.0;
+    const markHot=showMark&&markCloser&&minMarkDist<hotDistM;
+    const markScale=markHot?1.22:0.92;
     const markHex=markHot?0xfef08a:0x22d3ee;
     if(showMark){
       recOrbBatch.setPoint(entry.markOrbSlot,mx,my,mz,markScale);
@@ -6622,14 +7078,14 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       }
       recOrbBatch.setVisible(entry.markOrbSlot,true);
       drawMarkOrbPill(entry,markHot);
-      badgeMesh.setQuad(entry.markPillSlot,entry.markOrbPosL,0.072,0.032,true);
+      badgeMesh.setQuad(entry.markPillSlot,entry.markOrbPosL,pillSize,pillSize,true);
     }else{
       recOrbBatch.setVisible(entry.markOrbSlot,false);
       badgeMesh.setQuadVisible(entry.markPillSlot,false);
     }
 
-    // 1. [● REC / ■ STOP] top pill poke (3.0 cm hit zone, 650 ms start / 350 ms stop, > 4.8 cm release).
-    if(showOrb&&minOrbDist<0.030){
+    // 1. Left icon-only Record / Stop button poke (2.6 cm hit zone, 650 ms start / 350 ms stop, > 4.2 cm release).
+    if(showOrb&&recCloser&&minOrbDist<pokeDistM){
       entry.markHoldSince=null;
       if(!entry.recHoldConsumed){
         if(entry.recHoldSince==null)entry.recHoldSince=now;
@@ -6653,11 +7109,11 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       continue;
     }else{
       entry.recHoldSince=null;
-      if(minOrbDist>0.048)entry.recHoldConsumed=false;
+      if(minOrbDist>releaseDistM)entry.recHoldConsumed=false;
     }
 
-    // 2. [⏱ MARK] bottom pill poke (3.0 cm hit zone, 400 ms hold, > 4.8 cm release — works in mid-air or on table without blocking side grips).
-    if(showMark&&minMarkDist<0.030){
+    // 2. Right icon-only Spatial Pin button poke (2.6 cm hit zone, 400 ms hold, > 4.2 cm release).
+    if(showMark&&markCloser&&minMarkDist<pokeDistM){
       if(!entry.markHoldConsumed){
         drawLiveBadge(entry,'near',entry.handCoupled);
         if(entry.markHoldSince==null)entry.markHoldSince=now;
@@ -6668,7 +7124,7 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
         const sc=0.032+prog*0.010;
         pinLoadSprite.scale.set(sc,sc,1);
         pinLoadMat.opacity=1;
-        drawPinLoader(prog,'#22d3ee','⏱',false);
+        drawPinLoader(prog,'#22d3ee','pin',false);
         liveTouchLoaderActive=true;
         if(prog>=1){
           entry.markHoldConsumed=true;
@@ -6681,7 +7137,7 @@ function updateLiveTagTouch(frameInputs,world,pose,now){
       }
     }else{
       entry.markHoldSince=null;
-      if(minMarkDist>0.048)entry.markHoldConsumed=false;
+      if(minMarkDist>releaseDistM)entry.markHoldConsumed=false;
       if(!isEntryRecording(entry))drawLiveBadge(entry,entry.lockState,entry.handCoupled);
     }
   }
@@ -6704,8 +7160,10 @@ function stampMovableWaypoint(tagId,edgeMm,lFromTag,atMs,{silent=false,skipLine=
   const clock=new Date().toTimeString().slice(0,8);
   const wp={
     tagId,edgeMm,index:entry.waypointCount,isTimeCopy,timeCopyIndex,
+    isTrailPoint:!isTimeCopy,
     isSegmentStart:Boolean(isSegmentStart),
-    segmentIndex:entry.trailSegmentCount||1,
+    segmentIndex:isTimeCopy?0:(entry.trailSegmentCount||1),
+    lineSeq:isTimeCopy?null:(entry.lineSeqCounter||null),
     speedMps:Number.isFinite(speedMps)?speedMps:null,
     matrix:lFromTag.slice(),centerL:[cx,cy,cz],
     xMm:cx*1000,yMm:cy*1000,zMm:cz*1000,tiltDeg,atMs,
@@ -6764,8 +7222,14 @@ function disposeMovableEntry(e){
     e.linePositions=null;
     e.lineSpeeds=null;
     e.lineColors=null;
+    e.lineRenderColors=null;
+    e.lineRadii=null;
+    e.lineFades=null;
+    e.lineRoles=null;
     e.lineOutside=null;
     e.lineBreaks=null;
+    e.lineSegmentIds=null;
+    e.lineSeqs=null;
   }
   if(e.wakeTube){
     extraRoot.remove(e.wakeTube.mesh);
@@ -6786,6 +7250,7 @@ function disposeMovableEntry(e){
 
 function clearAllUserItems(){
   const hadItems=userItemCount()>0||extraPending.size>0;
+  lastMeasureTrailFocusKey='';
   hideWaypointInspector();
   clearPins();
   tagHandCoupler.reset();
@@ -6812,6 +7277,7 @@ function clearAllUserItems(){
 }
 
 function clearExtras(){
+  lastMeasureTrailFocusKey='';
   hideWaypointInspector();
   clearPins();
   tagHandCoupler.reset();
@@ -7846,8 +8312,8 @@ function renderLeftHud(now,as,an,cs){
         ?'TL #353 found! Press TL on the table (or Trigger) to activate the 20 cm perimeter.'
         :(extraScanActive
           ?(fStatus==='active'
-            ?'Auto-Lock + Follow · Hold 0.55s = Time-Copy · [● REC] = path · slide 353–359 for fence.'
-            :'Auto-Lock + Follow · Hold 0.55s = Time-Copy · [● REC] = path · L-Fist = MEASURE.')
+            ?'Auto-Lock + Follow · ● = path · Pin = Time-Copy · slide 353–359 for fence.'
+            :'Auto-Lock + Follow · ● = path · Pin = Time-Copy · L-Fist = MEASURE.')
           :'Camera OFF (90 FPS). Hover + Pinch to pin/unpin · L-Fist / Grip = SCAN.');
       controls=now<reanchorConfirmUntil
         ?'PRESS TRIGGER AGAIN (1.5s) to re-anchor!'
@@ -8408,11 +8874,15 @@ async function toggleExtraScan(){
       e.recHoldSince=null;e.recHoldConsumed=false;
     }
     syncStaticTagBadges();
+    lastMeasureTrailFocusKey='';
+    syncMeasurementTrailFocus({force:true});
     playModeTick('measure');
     status('MEASURE mode · camera OFF (90 FPS)');
     showHudToast('■ MEASURE MODE · 90 FPS','#22c55e');
   }else{
     extraScanActive=true;obsBuffer.clear();tagHandCoupler.reset();tagPredictor.reset();focusScheduler.reset();recentFocusDetectMs=15;activeFocusTagIds.clear();handHistory.clear();
+    lastMeasureTrailFocusKey='';
+    syncMeasurementTrailFocus({force:true});
     for(const e of movableTools.values()){
       if(e.visible&&e.currentPose){
         e.lastOpticalAtMs=now;
@@ -8422,10 +8892,12 @@ async function toggleExtraScan(){
       }
     }
     playModeTick('scan');
-    status('SCAN mode ON · Auto-Lock + Follow, [⏱ MARK] = Time-Copy, [● REC] = path');
+    status('SCAN mode ON · Auto-Lock + Follow, Pin icon = Time-Copy, ● = path');
     showHudToast('● SCAN MODE · AUTO-LOCK','#22d3ee');
     if(!await capture.start()){
       extraScanActive=false;
+      lastMeasureTrailFocusKey='';
+      syncMeasurementTrailFocus({force:true});
       status('Failed to start camera for SCAN mode.');
       showHudToast('SCAN FAILED','#ef4444');
     }
@@ -9147,6 +9619,7 @@ try{
     hudRayDot.scale.setScalar(1);
     updateLiveTagTouch(frameInputs,renderWorld,pose,now);
     updateWaypointInspector(frameInputs,renderWorld,pose,now);
+    syncMeasurementTrailFocus();
     updateTlPerimeterOffer(frameInputs,renderWorld,anPhase,asPhase,now);
     updateModeAnchorPill(frameInputs,renderWorld,anPhase,asPhase,now);
     updateSpatialPortals(frameInputs,renderWorld,anPhase,asPhase,now,pose);
@@ -9494,26 +9967,17 @@ try{
           const dRightRing=intentional?jDist(jt,jr):Infinity;
           const dRightPinky=intentional?jDist(jt,jp):Infinity;
           let rightActive=null;
-          if(dRightMid<PINCH_DIST&&dRightMid<=dRightRing&&dRightMid<=dRightPinky){
+          if(dRightMid<PINCH_DIST&&dRightMid<=dRightPinky){
             rightRingPinchSince=null;rightPinkyPinchSince=null;rightActive='mid';
             if(rightMidPinchSince==null)rightMidPinchSince=now;
             const p=Math.min(1,(now-rightMidPinchSince)/HOLD_MS);
             showRingAt(jt,jm,0x38bdf8,p);
             if(p>=1){
               rightMidPinchSince=null;rightHandCooldownUntil=now+1000;
-              cycleAdaptiveQualityMode();
-            }
-          }else if(dRightRing<PINCH_DIST&&dRightRing<=dRightPinky){
-            rightMidPinchSince=null;rightPinkyPinchSince=null;rightActive='ring';
-            if(rightRingPinchSince==null)rightRingPinchSince=now;
-            const p=Math.min(1,(now-rightRingPinchSince)/HOLD_MS);
-            showRingAt(jt,jr,0x22d3ee,p);
-            if(p>=1){
-              rightRingPinchSince=null;rightHandCooldownUntil=now+1000;
-              toggleLongRangeMode();
+              cycleHandGlow();
             }
           }else if(dRightPinky<PINCH_DIST){
-            rightMidPinchSince=null;rightRingPinchSince=null;rightActive='pinky';
+            rightMidPinchSince=null;rightActive='pinky';
             if(rightPinkyPinchSince==null)rightPinkyPinchSince=now;
             const p=Math.min(1,(now-rightPinkyPinchSince)/HOLD_MS);
             showRingAt(jt,jp,0xf59e0b,p);
@@ -9525,14 +9989,10 @@ try{
             rightMidPinchSince=null;rightRingPinchSince=null;rightPinkyPinchSince=null;
           }
           if(rightMenuOpen){
-            const qText=`Q: ${adaptiveQuality.getMode().toUpperCase()}`;
-            const farOn=adaptiveQuality.getLongRange();
-            const rText=farOn?'RANGE: EXP 1.0':'RANGE: AUTO 1.5';
+            const qText=`GLOW: ${HAND_GLOW_LEVELS[handGlowLevel]}`;
             const pQual=placePill(fingerBadgeRightMid,jm,true,qText,'#38bdf8',rightActive==='mid'||wristPillPokeId==='r-qual');
-            const pRange=placePill(fingerBadgeRightRing,jr,true,rText,farOn?'#22d3ee':'#94a3b8',rightActive==='ring'||wristPillPokeId==='r-range');
             const pRecal=placePill(fingerBadgeRightPinky,jp,true,'↺ RECALIBRATE','#fbbf24',rightActive==='pinky'||wristPillPokeId==='r-recal');
-            if(pQual)openPills.push({id:'r-qual',probeId:'hand:left',pos:pQual,poker:leftIdxPos,color:0x38bdf8,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;cycleAdaptiveQualityMode();}});
-            if(pRange)openPills.push({id:'r-range',probeId:'hand:left',pos:pRange,poker:leftIdxPos,color:0x22d3ee,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;toggleLongRangeMode();}});
+            if(pQual)openPills.push({id:'r-qual',probeId:'hand:left',pos:pQual,poker:leftIdxPos,color:0x38bdf8,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+900;cycleHandGlow();}});
             if(pRecal)openPills.push({id:'r-recal',probeId:'hand:left',pos:pRecal,poker:leftIdxPos,color:0xf59e0b,action:()=>{rightMenuOpenUntil=0;rightHandCooldownUntil=now+1400;triggerRecalibrate();}});
           }
         }else{
@@ -9703,9 +10163,11 @@ try{
 
     hold=nextExitHold(hold,xrExitPressed(session.inputSources).held,now);
     if(hold.fire)end();
+    if(!root.visible)updateAlarmSiren(false);
     if(root.visible){
       if(frameBatch.activeCount()>0||alertGlowBatch.activeCount()>0||fenceGroup.visible)frameShimmerUniforms.uTime.value=now*0.001;
       frameBatch.commit();
+      updateAlarmSiren(frameBatch.alertCount()>0);
       alertGlowBatch.commit();
       overlayFrameBatch.commit();
       rodBatch.commit();

@@ -52,6 +52,7 @@ export interface PathTubeMesh {
       fades?: ArrayLike<number> | null;
       breakFlags?: ArrayLike<number> | null;
       fromIndex?: number;
+      sortByFade?: boolean;
     },
   ): number;
   syncColors(

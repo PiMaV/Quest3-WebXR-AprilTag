@@ -363,10 +363,17 @@ export function createOrientedAtlasMesh(
   geometry.setAttribute('uv', uvAttr);
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   geometry.setDrawRange(0, 0);
+  // Per-quad opacity via RGBA vertex colors (white * alpha) — no extra shader, no extra draw call.
+  const colors = new Float32Array(cap * 4 * 4).fill(1);
+  const colAttr = new THREE.BufferAttribute(colors, 4);
+  colAttr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute('color', colAttr);
+  const slotAlpha = new Float32Array(cap).fill(1);
 
   const material = new THREE.MeshBasicMaterial({
     map: atlas.texture,
     transparent: true,
+    vertexColors: true,
     depthTest,
     depthWrite,
     side: THREE.DoubleSide,
@@ -375,6 +382,14 @@ export function createOrientedAtlasMesh(
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   mesh.renderOrder = renderOrder;
+
+  function setQuadAlpha(slot, alpha) {
+    if (slot < 0 || slot >= cap) return;
+    const a = alpha <= 0 ? 0 : alpha >= 1 ? 1 : alpha;
+    if (Math.abs(slotAlpha[slot] - a) < 0.01) return;
+    slotAlpha[slot] = a;
+    dirty = true;
+  }
 
   const slotCorners = new Float32Array(cap * 12);
   const slotHasQuad = new Uint8Array(cap);
@@ -459,6 +474,9 @@ export function createOrientedAtlasMesh(
       const cOff = s * 12;
       const vOff = count * 12;
       positions.set(slotCorners.subarray(cOff, cOff + 12), vOff);
+      const cA = slotAlpha[s];
+      const cBase = count * 16;
+      colors[cBase + 3] = cA; colors[cBase + 7] = cA; colors[cBase + 11] = cA; colors[cBase + 15] = cA;
 
       const uOff = count * 8;
       uvs[uOff] = uv.u0; uvs[uOff + 1] = uv.vBot;
@@ -470,6 +488,7 @@ export function createOrientedAtlasMesh(
     geometry.setDrawRange(0, count * 6);
     posAttr.needsUpdate = true;
     uvAttr.needsUpdate = true;
+    colAttr.needsUpdate = true;
     lastCount = count;
     dirty = false;
     return count;
@@ -485,6 +504,7 @@ export function createOrientedAtlasMesh(
     capacity: cap,
     setOrientedQuad,
     setQuadVisible,
+    setQuadAlpha,
     clearSlot,
     clear,
     commit,

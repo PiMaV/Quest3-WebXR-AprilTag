@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.7.0] - 2026-11-28
+
+### Added
+- **Compact icon-only tag action buttons:** Record (`●`/`■`) and Pin icons replace the `[● REC]` / `[⏱ MARK]` pills below resting tags (`TAG_ACTION_PILL_DEFAULTS` in `src/tag-tap.mjs`, `src/ui-atlas.mjs`, `src/render-batch.mjs`).
+- **Tracking fade:** `offsetEstimate` / `trackingFade` in `src/tag-predictor.mjs` fade tags whose estimated draw offset grows (fast motion or stale optical data).
+- Extended trail smoothing in `src/path-smoother.mjs`, updated types and tests (`174` passing), plus `scripts/serve-wt.sh` (serve from a chosen git worktree).
+
+### Changed
+- UX and docs updates in `examples/quest.mjs` and `docs/controls.md`.
+
+---
+
 ## [1.6.0] - 2026-11-27
 
 ### Added

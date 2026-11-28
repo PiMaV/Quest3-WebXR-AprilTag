@@ -94,8 +94,8 @@ export function projectIndexSelectorPos(tipPos, refProximalPos, offsetM = INDEX_
 }
 
 /**
- * Defaults for minimalist live-tag action pill visibility ([● REC / ■ STOP] & [⏱ MARK]).
- * Pills stay hidden while moving and until a non-carrying finger approaches a resting tag.
+ * Defaults for compact icon-only live-tag action buttons (Record ●/■ & Pin).
+ * Buttons stay hidden while moving and until a non-carrying finger approaches a resting tag.
  * Hand-coupled tags allow bimanual activation once held steady within hand-tremor tolerance.
  */
 export const TAG_ACTION_PILL_DEFAULTS = {
@@ -111,8 +111,12 @@ export const TAG_ACTION_PILL_DEFAULTS = {
   zoneNearM: 0.14,
   pillNearM: 0.12,
   exitNearM: 0.20, // wider exit proximity hysteresis once pills are open
-  belowOffsetM: 0.056,
-  sideHalfSpanM: 0.043,
+  belowOffsetM: 0.052,
+  sideHalfSpanM: 0.030,
+  pillSizeM: 0.036,
+  pillHotDistM: 0.034,
+  pillPokeDistM: 0.026,
+  pillReleaseDistM: 0.042,
   minTableZ: 0.018,
 };
 
@@ -223,8 +227,8 @@ function normVec3(v, fallback) {
 }
 
 /**
- * Compute side-by-side bottom-of-tag 3D positions for [● REC / ■ STOP] and [⏱ MARK].
- * Placing pills below the tag (or toward the viewer in front of flat tabletop tags) keeps
+ * Compute side-by-side bottom-of-tag 3D positions for the icon-only Record (●/■) and Pin buttons.
+ * Placing buttons below the tag (or toward the viewer in front of flat tabletop tags) keeps
  * the approaching hand completely out of the camera-to-tag line of sight and works
  * symmetrically for both left- and right-handed users.
  */
@@ -243,7 +247,7 @@ export function computeTagActionPillLayout({
   const ty = tagMatrix[13];
   const tz = tagMatrix[14];
   const halfTag = (edgeMm / 1000) / 2;
-  const distBelow = Math.max(belowOffsetM, halfTag + 0.036);
+  const distBelow = Math.max(belowOffsetM, halfTag + 0.034);
 
   const up = viewerUpL ? normVec3(viewerUpL, [0, 0, 1]) : [0, 0, 1];
   const right = viewerRightL ? normVec3(viewerRightL, [1, 0, 0]) : [1, 0, 0];
@@ -314,9 +318,9 @@ export function computeTagActionPillLayout({
 }
 
 /**
- * Decide whether a movable tag's [● REC / ■ STOP] and [⏱ MARK] action pills should be visible.
+ * Decide whether a movable tag's icon-only Record (●/■) and Pin action buttons should be visible.
  * Distances must be measured from non-carrying probes only (so a hand carrying a tag never
- * opens pills for itself, while the opposite hand can open them once the tag is held steady).
+ * opens buttons for itself, while the opposite hand can open them once the tag is held steady).
  */
 export function evaluateTagActionPills({
   isResting = false,

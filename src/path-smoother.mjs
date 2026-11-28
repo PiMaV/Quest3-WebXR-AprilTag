@@ -708,3 +708,435 @@ export function createMotionWakeBuffer(options = {}) {
     hasPoints: () => activeLength > 0,
   };
 }
+
+export const TRAIL_VERTEX_ROLE = Object.freeze({
+  NORMAL: 0,
+  UNRELATED: 1,
+  PINNED_OUTER: 2,
+  PINNED_SINGLE: 3,
+  HOVERED: 4,
+  PINNED_PREVIEW: 5,
+  PINNED_SPAN: 6,
+});
+
+export const TRAIL_MEASURE_STYLE_DEFAULTS = Object.freeze({
+  normalRadiusScale: 1.0,
+  unrelatedRadiusScale: 0.77,
+  hoveredRadiusScale: 1.17,
+  pinnedSingleRadiusScale: 0.98,
+  pinnedOuterRadiusScale: 0.84,
+  pinnedPreviewRadiusScale: 1.38,
+  pinnedSpanRadiusScale: 1.64,
+  normalFade: 0.94,
+  unrelatedFade: 0.22,
+  hoveredFade: 0.98,
+  pinnedSingleFade: 0.72,
+  pinnedOuterFade: 0.48,
+  pinnedPreviewFade: 0.95,
+  pinnedSpanFade: 1.0,
+  unrelatedGrayLinearRgb: Object.freeze([0.28, 0.30, 0.34]),
+  pinnedSingleDesat: 0.16,
+  pinnedOuterDesat: 0.34,
+  hoveredLiftId: 0.12,
+  pinnedPreviewLiftId: 0.14,
+  pinnedSpanLiftId: 0.18,
+});
+
+function isValidTrailPointRef(pt) {
+  return Boolean(
+    pt &&
+    Number.isFinite(pt.tagId) &&
+    Number.isFinite(pt.segmentIndex) &&
+    pt.segmentIndex >= 1,
+  );
+}
+
+/**
+ * Group active MEASURE-mode pinned and hovered trail points by continuous strand
+ * (`${tagId}:${segmentIndex}`) so renderer code can distinguish unrelated runs/IDs,
+ * hovered strands, 1-pin active strands, and bold between-pins spans.
+ */
+export function buildTrailMeasureFocus({
+  active = false,
+  pinnedPoints = [],
+  hoveredPoints = [],
+} = {}) {
+  const strands = new Map();
+  const pinnedStrands = new Set();
+  const hoveredStrands = new Set();
+
+  if (!active) {
+    return { hasFocus: false, strands, pinnedStrands, hoveredStrands };
+  }
+
+  const ensureStrand = (tagId, segmentIndex) => {
+    const key = `${tagId}:${segmentIndex}`;
+    let strand = strands.get(key);
+    if (!strand) {
+      strand = {
+        key,
+        tagId,
+        segmentIndex,
+        pinSeqs: [],
+        hoverSeqs: [],
+        pinTotal: 0,
+        pinCount: 0,
+        isHovered: false,
+        state: 'hovered',
+        _pinSeqSet: new Set(),
+        _hoverSeqSet: new Set(),
+      };
+      strands.set(key, strand);
+    }
+    return strand;
+  };
+
+  if (pinnedPoints) {
+    for (const pt of pinnedPoints) {
+      if (!isValidTrailPointRef(pt)) continue;
+      const strand = ensureStrand(pt.tagId, pt.segmentIndex);
+      strand.pinTotal++;
+      if (Number.isFinite(pt.lineSeq)) {
+        strand._pinSeqSet.add(pt.lineSeq);
+      }
+      pinnedStrands.add(strand.key);
+    }
+  }
+
+  if (hoveredPoints) {
+    for (const pt of hoveredPoints) {
+      if (!isValidTrailPointRef(pt)) continue;
+      const strand = ensureStrand(pt.tagId, pt.segmentIndex);
+      strand.isHovered = true;
+      if (Number.isFinite(pt.lineSeq)) {
+        strand._hoverSeqSet.add(pt.lineSeq);
+      }
+      hoveredStrands.add(strand.key);
+    }
+  }
+
+  if (strands.size === 0) {
+    return { hasFocus: false, strands, pinnedStrands, hoveredStrands };
+  }
+
+  for (const strand of strands.values()) {
+    strand.pinSeqs = Array.from(strand._pinSeqSet).sort((a, b) => a - b);
+    strand.hoverSeqs = Array.from(strand._hoverSeqSet).sort((a, b) => a - b);
+    strand.pinCount = strand.pinTotal;
+    strand.state = strand.pinCount >= 2
+      ? 'pinned-span'
+      : (strand.pinCount === 1 ? 'pinned-single' : 'hovered');
+    delete strand._pinSeqSet;
+    delete strand._hoverSeqSet;
+  }
+
+  return { hasFocus: true, strands, pinnedStrands, hoveredStrands };
+}
+
+function resolveSegmentSeqToIndex(lineSeqs, segStart, segEnd, targetSeq) {
+  if (!lineSeqs || !Number.isFinite(targetSeq)) return segStart;
+  let bestIdx = segStart;
+  let bestDiff = Infinity;
+  for (let i = segStart; i <= segEnd; i++) {
+    const seq = lineSeqs[i];
+    if (!Number.isFinite(seq)) continue;
+    const diff = Math.abs(seq - targetSeq);
+    if (diff === 0) return i;
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+/**
+ * Evaluate per-vertex roles, tube radii, fades, and linear RGB colors for a single
+ * tag's recorded trail under the current MEASURE-mode focus state.
+ */
+export function evaluateEntryTrailMeasureStyle({
+  tagId,
+  lineCount = 0,
+  lineSegmentIds = null,
+  lineSeqs = null,
+  baseColors = null,
+  focus = null,
+  baseRadiusM = 0.0015,
+  preserveChroma = false,
+  outRoles = null,
+  outRadii = null,
+  outFades = null,
+  outColors = null,
+  style = null,
+} = {}) {
+  const n = Math.max(0, lineCount | 0);
+  const segmentStates = new Map();
+  const hasFocus = Boolean(focus?.hasFocus);
+  if (n === 0) {
+    return {
+      hasFocus,
+      hasActiveVertex: false,
+      hasDimVertex: false,
+      hasMixedLayers: false,
+      segmentStates,
+    };
+  }
+
+  const cfg = style ? { ...TRAIL_MEASURE_STYLE_DEFAULTS, ...style } : TRAIL_MEASURE_STYLE_DEFAULTS;
+  const baseR = Number.isFinite(baseRadiusM) && baseRadiusM > 1e-5 ? baseRadiusM : 0.0015;
+  const gray = cfg.unrelatedGrayLinearRgb || TRAIL_MEASURE_STYLE_DEFAULTS.unrelatedGrayLinearRgb;
+
+  let hasActiveVertex = false;
+  let hasDimVertex = false;
+  let hasLowFade = false;
+  let hasHighFade = false;
+  let hasUnrelated = false;
+  let hasNonUnrelated = false;
+
+  let segStart = 0;
+  while (segStart < n) {
+    const segId = lineSegmentIds ? (lineSegmentIds[segStart] || 1) : 1;
+    let segEnd = segStart;
+    while (segEnd + 1 < n && (lineSegmentIds ? (lineSegmentIds[segEnd + 1] || 1) : 1) === segId) {
+      segEnd++;
+    }
+
+    let strand = null;
+    if (hasFocus && focus.strands) {
+      strand = focus.strands.get(`${tagId}:${segId}`) || null;
+    }
+
+    let segState = 'normal';
+    let hasPinnedSpan = false;
+    let spanMin = -1;
+    let spanMax = -1;
+    let hasPreviewSpan = false;
+    let previewMin = -1;
+    let previewMax = -1;
+
+    if (!hasFocus) {
+      segState = 'normal';
+    } else if (!strand) {
+      segState = 'unrelated';
+    } else {
+      segState = strand.state;
+      const pinIndices = [];
+      for (let k = 0; k < strand.pinSeqs.length; k++) {
+        pinIndices.push(resolveSegmentSeqToIndex(lineSeqs, segStart, segEnd, strand.pinSeqs[k]));
+      }
+      pinIndices.sort((a, b) => a - b);
+
+      const hoverIndices = [];
+      for (let k = 0; k < strand.hoverSeqs.length; k++) {
+        hoverIndices.push(resolveSegmentSeqToIndex(lineSeqs, segStart, segEnd, strand.hoverSeqs[k]));
+      }
+      hoverIndices.sort((a, b) => a - b);
+
+      if (pinIndices.length >= 2) {
+        hasPinnedSpan = true;
+        spanMin = pinIndices[0];
+        spanMax = pinIndices[pinIndices.length - 1];
+      }
+
+      if (pinIndices.length >= 1 && hoverIndices.length >= 1) {
+        const candMin = Math.min(pinIndices[0], hoverIndices[0]);
+        const candMax = Math.max(pinIndices[pinIndices.length - 1], hoverIndices[hoverIndices.length - 1]);
+        if (candMax > candMin) {
+          hasPreviewSpan = true;
+          previewMin = candMin;
+          previewMax = candMax;
+        }
+      } else if (pinIndices.length === 0 && hoverIndices.length >= 2) {
+        const candMin = hoverIndices[0];
+        const candMax = hoverIndices[hoverIndices.length - 1];
+        if (candMax > candMin) {
+          hasPreviewSpan = true;
+          previewMin = candMin;
+          previewMax = candMax;
+        }
+      }
+    }
+
+    segmentStates.set(segId, segState);
+
+    for (let i = segStart; i <= segEnd; i++) {
+      let role;
+      if (!hasFocus) {
+        role = TRAIL_VERTEX_ROLE.NORMAL;
+      } else if (!strand) {
+        role = TRAIL_VERTEX_ROLE.UNRELATED;
+      } else if (hasPinnedSpan && i >= spanMin && i <= spanMax) {
+        role = TRAIL_VERTEX_ROLE.PINNED_SPAN;
+      } else if (hasPreviewSpan && i >= previewMin && i <= previewMax) {
+        role = TRAIL_VERTEX_ROLE.PINNED_PREVIEW;
+      } else if (hasPinnedSpan || hasPreviewSpan) {
+        role = TRAIL_VERTEX_ROLE.PINNED_OUTER;
+      } else if (strand.pinCount === 1) {
+        role = TRAIL_VERTEX_ROLE.PINNED_SINGLE;
+      } else {
+        role = TRAIL_VERTEX_ROLE.HOVERED;
+      }
+
+      const cOff = i * 3;
+      const br = baseColors && Number.isFinite(baseColors[cOff]) ? baseColors[cOff] : 1;
+      const bg = baseColors && Number.isFinite(baseColors[cOff + 1]) ? baseColors[cOff + 1] : 1;
+      const bb = baseColors && Number.isFinite(baseColors[cOff + 2]) ? baseColors[cOff + 2] : 1;
+
+      let rScale = cfg.normalRadiusScale;
+      let fade = cfg.normalFade;
+      let cr = br;
+      let cg = bg;
+      let cb = bb;
+
+      if (role === TRAIL_VERTEX_ROLE.UNRELATED) {
+        rScale = cfg.unrelatedRadiusScale;
+        fade = cfg.unrelatedFade;
+        cr = gray[0];
+        cg = gray[1];
+        cb = gray[2];
+      } else if (role === TRAIL_VERTEX_ROLE.PINNED_OUTER) {
+        rScale = cfg.pinnedOuterRadiusScale;
+        fade = cfg.pinnedOuterFade;
+        const t = cfg.pinnedOuterDesat;
+        cr = br + (gray[0] - br) * t;
+        cg = bg + (gray[1] - bg) * t;
+        cb = bb + (gray[2] - bb) * t;
+      } else if (role === TRAIL_VERTEX_ROLE.PINNED_SINGLE) {
+        rScale = cfg.pinnedSingleRadiusScale;
+        fade = cfg.pinnedSingleFade;
+        const t = cfg.pinnedSingleDesat;
+        cr = br + (gray[0] - br) * t;
+        cg = bg + (gray[1] - bg) * t;
+        cb = bb + (gray[2] - bb) * t;
+      } else if (role === TRAIL_VERTEX_ROLE.HOVERED) {
+        rScale = cfg.hoveredRadiusScale;
+        fade = cfg.hoveredFade;
+        if (!preserveChroma) {
+          const t = cfg.hoveredLiftId;
+          cr = br + (1 - br) * t;
+          cg = bg + (1 - bg) * t;
+          cb = bb + (1 - bb) * t;
+        }
+      } else if (role === TRAIL_VERTEX_ROLE.PINNED_PREVIEW) {
+        rScale = cfg.pinnedPreviewRadiusScale;
+        fade = cfg.pinnedPreviewFade;
+        if (!preserveChroma) {
+          const t = cfg.pinnedPreviewLiftId;
+          cr = br + (1 - br) * t;
+          cg = bg + (1 - bg) * t;
+          cb = bb + (1 - bb) * t;
+        }
+      } else if (role === TRAIL_VERTEX_ROLE.PINNED_SPAN) {
+        rScale = cfg.pinnedSpanRadiusScale;
+        fade = cfg.pinnedSpanFade;
+        if (!preserveChroma) {
+          const t = cfg.pinnedSpanLiftId;
+          cr = br + (1 - br) * t;
+          cg = bg + (1 - bg) * t;
+          cb = bb + (1 - bb) * t;
+        }
+      }
+
+      if (outRoles) outRoles[i] = role;
+      if (outRadii) outRadii[i] = baseR * rScale;
+      if (outFades) outFades[i] = fade;
+      if (outColors) {
+        outColors[cOff] = cr;
+        outColors[cOff + 1] = cg;
+        outColors[cOff + 2] = cb;
+      }
+
+      if (role === TRAIL_VERTEX_ROLE.UNRELATED) {
+        hasUnrelated = true;
+      } else {
+        hasActiveVertex = true;
+        hasNonUnrelated = true;
+      }
+      if (fade < 0.90) {
+        hasDimVertex = true;
+        hasLowFade = true;
+      } else {
+        hasHighFade = true;
+      }
+    }
+
+    segStart = segEnd + 1;
+  }
+
+  return {
+    hasFocus,
+    hasActiveVertex,
+    hasDimVertex,
+    hasMixedLayers: (hasLowFade && hasHighFade) || (hasUnrelated && hasNonUnrelated),
+    segmentStates,
+  };
+}
+
+/**
+ * Compute exact curved 3D path arc length (m) along a single continuous recorded
+ * trail segment between sequence numbers `seqA` and `seqB`. Returns `null` if the
+ * segment is unavailable, interrupted by a break, or partially evicted from the ring buffer.
+ */
+export function measureTrailArcLength({
+  linePositions = null,
+  lineCount = 0,
+  lineSegmentIds = null,
+  lineSeqs = null,
+  lineBreaks = null,
+  segmentIndex = 0,
+  seqA = null,
+  seqB = null,
+} = {}) {
+  const n = Math.max(0, lineCount | 0);
+  if (
+    !linePositions ||
+    !lineSegmentIds ||
+    !lineSeqs ||
+    n < 2 ||
+    !Number.isFinite(segmentIndex) ||
+    segmentIndex < 1 ||
+    !Number.isFinite(seqA) ||
+    !Number.isFinite(seqB)
+  ) {
+    return null;
+  }
+
+  let segStart = -1;
+  let segEnd = -1;
+  for (let i = 0; i < n; i++) {
+    if (lineSegmentIds[i] === segmentIndex) {
+      if (segStart < 0) segStart = i;
+      segEnd = i;
+    } else if (segStart >= 0) {
+      break;
+    }
+  }
+  if (segStart < 0 || segEnd < segStart) return null;
+
+  const startSeq = lineSeqs[segStart];
+  const endSeq = lineSeqs[segEnd];
+  if (!Number.isFinite(startSeq) || !Number.isFinite(endSeq)) return null;
+  const minSeq = Math.min(seqA, seqB);
+  const maxSeq = Math.max(seqA, seqB);
+  if (minSeq < startSeq || maxSeq > endSeq) return null;
+
+  const idxA = resolveSegmentSeqToIndex(lineSeqs, segStart, segEnd, seqA);
+  const idxB = resolveSegmentSeqToIndex(lineSeqs, segStart, segEnd, seqB);
+  const i0 = Math.min(idxA, idxB);
+  const i1 = Math.max(idxA, idxB);
+  if (i0 === i1) return 0;
+
+  let arcLengthM = 0;
+  for (let i = i0; i < i1; i++) {
+    if (lineBreaks && lineBreaks[i + 1]) return null;
+    const o0 = i * 3;
+    const o1 = o0 + 3;
+    const dx = linePositions[o1] - linePositions[o0];
+    const dy = linePositions[o1 + 1] - linePositions[o0 + 1];
+    const dz = linePositions[o1 + 2] - linePositions[o0 + 2];
+    const step = Math.hypot(dx, dy, dz);
+    if (!Number.isFinite(step)) return null;
+    arcLengthM += step;
+  }
+  return arcLengthM;
+}

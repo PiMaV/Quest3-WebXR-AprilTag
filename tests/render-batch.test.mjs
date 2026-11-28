@@ -670,3 +670,51 @@ test('createPathTubeMesh supports breakFlags: skips gap bridges, resets aDash ar
   tube.dispose();
   mat.dispose();
 });
+
+test('createPathTubeMesh sortByFade orders low -> mid -> high opacity segments, respects breaks, and restores contiguous order', () => {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true });
+  const tube = createPathTubeMesh(16, mat, {
+    sides: 4,
+    vertexColors: true,
+    fadeAttribute: true,
+    name: 'sorted-fade-tube',
+  });
+
+  // 8 points across 2 runs (break at index 4):
+  // Seg A (rings 0..1): high fade (1.0 -> bucket 2)
+  // Seg B (rings 1..2): mid fade (0.48 -> bucket 1)
+  // Seg C (rings 2..3): high fade (1.0 -> bucket 2)
+  // Break at 4 (3->4 skipped)
+  // Seg D (rings 4..5): low fade (0.22 -> bucket 0)
+  // Seg E (rings 5..6): low fade (0.22 -> bucket 0)
+  // Seg F (rings 6..7): mid fade (0.72 -> bucket 1)
+  const pts = new Float32Array(8 * 3);
+  const cols = new Float32Array(8 * 3).fill(1);
+  const fades = new Float32Array([1.0, 1.0, 0.48, 1.0, 0.22, 0.22, 0.72, 0.72]);
+  const breaks = new Uint8Array([0, 0, 0, 0, 1, 0, 0, 0]);
+  for (let i = 0; i < 8; i++) pts[i * 3] = i * 0.03;
+
+  const segs = tube.syncFromPositions(pts, 8, { colors: cols, fades, breakFlags: breaks, fromIndex: 0, sortByFade: true });
+  assert.equal(segs, 6);
+  const idxArr = tube.mesh.geometry.getIndex().array;
+  const trisPerSeg = 4 * 6;
+  const order = [];
+  for (let s = 0; s < segs; s++) {
+    order.push(Math.floor(idxArr[s * trisPerSeg] / 4));
+  }
+  // Segs 4 (4->5, min=0.22) and 5 (5->6, min=0.22) -> bucket 0
+  // Segs 1 (1->2, min=0.48), 2 (2->3, min=0.48), 6 (6->7, min=0.72) -> bucket 1
+  // Seg 0 (0->1, min=1.0) -> bucket 2
+  assert.deepEqual(order, [4, 5, 1, 2, 6, 0]);
+
+  // Restoring without breaks and sortByFade: false must rebuild contiguous indices 0..6
+  assert.equal(tube.syncFromPositions(pts, 8, { colors: cols, fades, fromIndex: 0, sortByFade: false }), 7);
+  const restored = [];
+  for (let s = 0; s < 7; s++) {
+    restored.push(Math.floor(idxArr[s * trisPerSeg] / 4));
+  }
+  assert.deepEqual(restored, [0, 1, 2, 3, 4, 5, 6]);
+
+  tube.dispose();
+  mat.dispose();
+});
