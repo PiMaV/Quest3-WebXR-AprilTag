@@ -1072,12 +1072,155 @@ export function evaluateEntryTrailMeasureStyle({
   };
 }
 
+function findSegmentBounds(lineSegmentIds, n, segmentIndex) {
+  let segStart = -1;
+  let segEnd = -1;
+  for (let i = 0; i < n; i++) {
+    if (lineSegmentIds[i] === segmentIndex) {
+      if (segStart < 0) segStart = i;
+      segEnd = i;
+    } else if (segStart >= 0) {
+      break;
+    }
+  }
+  return (segStart >= 0 && segEnd >= segStart) ? { segStart, segEnd } : null;
+}
+
+export const TRAIL_PASS_DEFAULTS = Object.freeze({
+  chordM: 0.045,         // 45 mm chord window on each side of a candidate apex
+  minArmM: 0.025,        // >= 25 mm real travel on both sides (ignores standstill jitter)
+  maxReversalDot: -0.70, // >= ~134.4 deg turn -> direction reversal apex
+  minSpacingM: 0.050,    // >= 50 mm arc spacing between distinct reversal apexes
+});
+
 /**
- * Compute exact curved 3D path arc length (m) along a single continuous recorded
- * trail segment between sequence numbers `seqA` and `seqB`. Returns `null` if the
- * segment is unavailable, interrupted by a break, or partially evicted from the ring buffer.
+ * Detect 180-deg direction reversals along a continuous recorded trail segment
+ * (e.g., opening and closing a door along an overlapping 3D path) and assign
+ * monotonic 1-based pass indices to each vertex.
  */
-export function measureTrailArcLength({
+export function analyzeTrailSegmentPasses({
+  linePositions = null,
+  lineCount = 0,
+  lineSegmentIds = null,
+  lineBreaks = null,
+  segmentIndex = 1,
+  options = null,
+} = {}) {
+  const n = Math.max(0, lineCount | 0);
+  if (!linePositions || !lineSegmentIds || n < 2 || !Number.isFinite(segmentIndex) || segmentIndex < 1) {
+    return null;
+  }
+  const bounds = findSegmentBounds(lineSegmentIds, n, segmentIndex);
+  if (!bounds) return null;
+  const { segStart, segEnd } = bounds;
+  const segLen = segEnd - segStart + 1;
+
+  const cumArc = new Float32Array(segLen);
+  for (let i = segStart + 1; i <= segEnd; i++) {
+    if (lineBreaks && lineBreaks[i]) return null;
+    const o0 = (i - 1) * 3;
+    const o1 = i * 3;
+    const step = Math.hypot(
+      linePositions[o1] - linePositions[o0],
+      linePositions[o1 + 1] - linePositions[o0 + 1],
+      linePositions[o1 + 2] - linePositions[o0 + 2],
+    );
+    if (!Number.isFinite(step)) return null;
+    cumArc[i - segStart] = cumArc[i - 1 - segStart] + step;
+  }
+
+  const cfg = options ? { ...TRAIL_PASS_DEFAULTS, ...options } : TRAIL_PASS_DEFAULTS;
+  const rawCands = [];
+  for (let i = segStart + 1; i <= segEnd - 1; i++) {
+    const arcI = cumArc[i - segStart];
+    let iBack = i - 1;
+    while (iBack > segStart && arcI - cumArc[iBack - segStart] < cfg.chordM) iBack--;
+    let iFwd = i + 1;
+    while (iFwd < segEnd && cumArc[iFwd - segStart] - arcI < cfg.chordM) iFwd++;
+
+    const pI = i * 3;
+    const pB = iBack * 3;
+    const pF = iFwd * 3;
+    const vInX = linePositions[pI] - linePositions[pB];
+    const vInY = linePositions[pI + 1] - linePositions[pB + 1];
+    const vInZ = linePositions[pI + 2] - linePositions[pB + 2];
+    const vOutX = linePositions[pF] - linePositions[pI];
+    const vOutY = linePositions[pF + 1] - linePositions[pI + 1];
+    const vOutZ = linePositions[pF + 2] - linePositions[pI + 2];
+    const lenIn = Math.hypot(vInX, vInY, vInZ);
+    const lenOut = Math.hypot(vOutX, vOutY, vOutZ);
+    if (lenIn >= cfg.minArmM && lenOut >= cfg.minArmM) {
+      const dot = (vInX * vOutX + vInY * vOutY + vInZ * vOutZ) / (lenIn * lenOut);
+      if (dot <= cfg.maxReversalDot) {
+        rawCands.push({ index: i, arcM: arcI, dot });
+      }
+    }
+  }
+
+  rawCands.sort((a, b) => (a.dot - b.dot) || (a.index - b.index));
+  const accepted = [];
+  for (let i = 0; i < rawCands.length; i++) {
+    const cand = rawCands[i];
+    let farEnough = true;
+    for (let j = 0; j < accepted.length; j++) {
+      if (Math.abs(cand.arcM - accepted[j].arcM) < cfg.minSpacingM) {
+        farEnough = false;
+        break;
+      }
+    }
+    if (farEnough) accepted.push(cand);
+  }
+  const reversalIndices = accepted.map((a) => a.index).sort((a, b) => a - b);
+
+  const vertexPassIndices = new Uint16Array(segLen);
+  let rPtr = 0;
+  let pass = 1;
+  for (let k = 0; k < segLen; k++) {
+    const idx = segStart + k;
+    while (rPtr < reversalIndices.length && reversalIndices[rPtr] < idx) {
+      pass++;
+      rPtr++;
+    }
+    vertexPassIndices[k] = pass;
+  }
+
+  return {
+    segmentIndex,
+    segStart,
+    segEnd,
+    reversalIndices,
+    passCount: reversalIndices.length + 1,
+    passIndexAt(lineIdx) {
+      if (!Number.isFinite(lineIdx) || lineIdx < segStart || lineIdx > segEnd) return 1;
+      return vertexPassIndices[lineIdx - segStart];
+    },
+    countReversalsBetween(idxA, idxB) {
+      if (!Number.isFinite(idxA) || !Number.isFinite(idxB) || reversalIndices.length === 0) return 0;
+      const lo = Math.min(idxA, idxB);
+      const hi = Math.max(idxA, idxB);
+      let count = 0;
+      for (let k = 0; k < reversalIndices.length; k++) {
+        const r = reversalIndices[k];
+        if (r > lo && r < hi) count++;
+      }
+      return count;
+    },
+    resolveSeqIndex(lineSeqs, targetSeq) {
+      if (!lineSeqs || !Number.isFinite(targetSeq)) return -1;
+      const s0 = lineSeqs[segStart];
+      const s1 = lineSeqs[segEnd];
+      if (!Number.isFinite(s0) || !Number.isFinite(s1) || targetSeq < s0 || targetSeq > s1) return -1;
+      return resolveSegmentSeqToIndex(lineSeqs, segStart, segEnd, targetSeq);
+    },
+  };
+}
+
+/**
+ * Compute exact curved 3D path arc length (m) and direction-reversal count along
+ * a single continuous recorded trail segment between `seqA` and `seqB`.
+ * Returns `null` if unavailable, interrupted by a break, or partially evicted.
+ */
+export function measureTrailSpan({
   linePositions = null,
   lineCount = 0,
   lineSegmentIds = null,
@@ -1086,6 +1229,7 @@ export function measureTrailArcLength({
   segmentIndex = 0,
   seqA = null,
   seqB = null,
+  passAnalysis = null,
 } = {}) {
   const n = Math.max(0, lineCount | 0);
   if (
@@ -1101,17 +1245,9 @@ export function measureTrailArcLength({
     return null;
   }
 
-  let segStart = -1;
-  let segEnd = -1;
-  for (let i = 0; i < n; i++) {
-    if (lineSegmentIds[i] === segmentIndex) {
-      if (segStart < 0) segStart = i;
-      segEnd = i;
-    } else if (segStart >= 0) {
-      break;
-    }
-  }
-  if (segStart < 0 || segEnd < segStart) return null;
+  const bounds = findSegmentBounds(lineSegmentIds, n, segmentIndex);
+  if (!bounds) return null;
+  const { segStart, segEnd } = bounds;
 
   const startSeq = lineSeqs[segStart];
   const endSeq = lineSeqs[segEnd];
@@ -1124,7 +1260,9 @@ export function measureTrailArcLength({
   const idxB = resolveSegmentSeqToIndex(lineSeqs, segStart, segEnd, seqB);
   const i0 = Math.min(idxA, idxB);
   const i1 = Math.max(idxA, idxB);
-  if (i0 === i1) return 0;
+  if (i0 === i1) {
+    return { arcLengthM: 0, startIdx: i0, endIdx: i1, reversalCount: 0, hasReversal: false };
+  }
 
   let arcLengthM = 0;
   for (let i = i0; i < i1; i++) {
@@ -1138,5 +1276,187 @@ export function measureTrailArcLength({
     if (!Number.isFinite(step)) return null;
     arcLengthM += step;
   }
-  return arcLengthM;
+
+  const analysis = (passAnalysis && passAnalysis.segmentIndex === segmentIndex)
+    ? passAnalysis
+    : analyzeTrailSegmentPasses({
+      linePositions,
+      lineCount: n,
+      lineSegmentIds,
+      lineBreaks,
+      segmentIndex,
+    });
+  const reversalCount = analysis ? analysis.countReversalsBetween(i0, i1) : 0;
+  return {
+    arcLengthM,
+    startIdx: i0,
+    endIdx: i1,
+    reversalCount,
+    hasReversal: reversalCount > 0,
+  };
+}
+
+/**
+ * Compute exact curved 3D path arc length (m) along a single continuous recorded
+ * trail segment between sequence numbers `seqA` and `seqB`. Returns `null` if the
+ * segment is unavailable, interrupted by a break, or partially evicted from the ring buffer.
+ */
+export function measureTrailArcLength(opts = {}) {
+  const span = measureTrailSpan(opts);
+  return span ? span.arcLengthM : null;
+}
+
+/**
+ * Select the best hover/pin target when overlapping trail passes (e.g., door open/close)
+ * lie within millimeters of the probe: prefers the active strand & monotonic pass (0 reversals)
+ * when pins exist, and keeps pass continuity while hovering without pins.
+ */
+export function pickPreferredMeasureCandidate(candidates, {
+  anchorTrailRefs = [],
+  prevHoveredRef = null,
+  maxReachM = Infinity,
+  pinOverlapWindowM = 0.024,
+  hoverOverlapWindowM = 0.014,
+  initialPassWindowM = 0.010,
+  sameSurfaceEpsM = 0.008,
+} = {}) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+  const valid = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    if (!c || !Number.isFinite(c.surfaceDist) || c.surfaceDist > maxReachM) continue;
+    valid.push(c);
+  }
+  if (valid.length === 0) return null;
+
+  const centerOf = (c) => (Number.isFinite(c.centerDist) ? c.centerDist : c.surfaceDist);
+  const isCloser3D = (a, b) => (
+    Math.abs(a.surfaceDist - b.surfaceDist) < sameSurfaceEpsM
+      ? centerOf(a) < centerOf(b)
+      : a.surfaceDist < b.surfaceDist
+  );
+
+  let nearest = valid[0];
+  let minSurfaceDist = valid[0].surfaceDist;
+  for (let i = 1; i < valid.length; i++) {
+    const c = valid[i];
+    if (c.surfaceDist < minSurfaceDist) minSurfaceDist = c.surfaceDist;
+    if (isCloser3D(c, nearest)) nearest = c;
+  }
+
+  const validAnchors = [];
+  if (anchorTrailRefs) {
+    for (const a of anchorTrailRefs) {
+      if (a && a.strandKey) validAnchors.push(a);
+    }
+  }
+
+  if (validAnchors.length > 0) {
+    const anchorByStrand = new Map();
+    for (let i = 0; i < validAnchors.length; i++) {
+      const a = validAnchors[i];
+      let list = anchorByStrand.get(a.strandKey);
+      if (!list) {
+        list = [];
+        anchorByStrand.set(a.strandKey, list);
+      }
+      list.push(a);
+    }
+
+    const sameStrand = [];
+    for (let i = 0; i < valid.length; i++) {
+      const c = valid[i];
+      if (c.surfaceDist <= minSurfaceDist + pinOverlapWindowM && c.strandKey && anchorByStrand.has(c.strandKey)) {
+        sameStrand.push(c);
+      }
+    }
+
+    if (sameStrand.length > 0) {
+      const scoreCandidate = (c) => {
+        const anchors = anchorByStrand.get(c.strandKey);
+        let minReversals = Infinity;
+        let minSeqDiff = Infinity;
+        for (let k = 0; k < anchors.length; k++) {
+          const a = anchors[k];
+          const rev = (
+            Number.isFinite(c.lineIdx) &&
+            Number.isFinite(a.lineIdx) &&
+            typeof a.countReversalsBetween === 'function'
+          ) ? a.countReversalsBetween(a.lineIdx, c.lineIdx) : 0;
+          const seqDiff = (Number.isFinite(c.lineSeq) && Number.isFinite(a.lineSeq))
+            ? Math.abs(c.lineSeq - a.lineSeq)
+            : Infinity;
+          if (rev < minReversals || (rev === minReversals && seqDiff < minSeqDiff)) {
+            minReversals = rev;
+            minSeqDiff = seqDiff;
+          }
+        }
+        return { minReversals, minSeqDiff };
+      };
+
+      let best = sameStrand[0];
+      let bestScore = scoreCandidate(best);
+      for (let i = 1; i < sameStrand.length; i++) {
+        const cand = sameStrand[i];
+        const candScore = scoreCandidate(cand);
+        if (candScore.minReversals !== bestScore.minReversals) {
+          if (candScore.minReversals < bestScore.minReversals) {
+            best = cand;
+            bestScore = candScore;
+          }
+          continue;
+        }
+        const closeBoth =
+          Math.abs(cand.surfaceDist - best.surfaceDist) < 0.003 &&
+          Math.abs(centerOf(cand) - centerOf(best)) < 0.003;
+        if (closeBoth) {
+          if (
+            candScore.minSeqDiff < bestScore.minSeqDiff ||
+            (candScore.minSeqDiff === bestScore.minSeqDiff && isCloser3D(cand, best))
+          ) {
+            best = cand;
+            bestScore = candScore;
+          }
+        } else if (isCloser3D(cand, best)) {
+          best = cand;
+          bestScore = candScore;
+        }
+      }
+      return best;
+    }
+    return nearest;
+  }
+
+  if (!nearest.strandKey) {
+    return nearest;
+  }
+
+  if (prevHoveredRef?.strandKey) {
+    let bestMatch = null;
+    for (let i = 0; i < valid.length; i++) {
+      const c = valid[i];
+      if (c.surfaceDist > minSurfaceDist + hoverOverlapWindowM) continue;
+      if (c.strandKey !== prevHoveredRef.strandKey) continue;
+      if (prevHoveredRef.passIndex != null && c.passIndex !== prevHoveredRef.passIndex) continue;
+      if (!bestMatch || isCloser3D(c, bestMatch)) bestMatch = c;
+    }
+    if (bestMatch) return bestMatch;
+  }
+
+  let bestInitial = null;
+  for (let i = 0; i < valid.length; i++) {
+    const c = valid[i];
+    if (c.surfaceDist > minSurfaceDist + initialPassWindowM) continue;
+    if (c.strandKey !== nearest.strandKey) continue;
+    if (!bestInitial) {
+      bestInitial = c;
+      continue;
+    }
+    const cp = Number.isFinite(c.passIndex) ? c.passIndex : Infinity;
+    const bp = Number.isFinite(bestInitial.passIndex) ? bestInitial.passIndex : Infinity;
+    if (cp < bp || (cp === bp && isCloser3D(c, bestInitial))) {
+      bestInitial = c;
+    }
+  }
+  return bestInitial || nearest;
 }

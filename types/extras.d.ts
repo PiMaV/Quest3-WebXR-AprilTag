@@ -586,6 +586,62 @@ export function evaluateEntryTrailMeasureStyle(opts?: {
   outColors?: { [index: number]: number } | null;
   style?: Partial<typeof TRAIL_MEASURE_STYLE_DEFAULTS> | null;
 }): TrailMeasureEntrySummary;
+export const TRAIL_PASS_DEFAULTS: Readonly<{
+  chordM: number;
+  minArmM: number;
+  maxReversalDot: number;
+  minSpacingM: number;
+}>;
+export interface TrailSegmentPassAnalysis {
+  segmentIndex: number;
+  segStart: number;
+  segEnd: number;
+  reversalIndices: number[];
+  passCount: number;
+  passIndexAt(lineIdx: number): number;
+  countReversalsBetween(idxA: number, idxB: number): number;
+  resolveSeqIndex(lineSeqs: ArrayLike<number> | null | undefined, targetSeq: number): number;
+}
+export interface TrailSpanMeasurement {
+  arcLengthM: number;
+  startIdx: number;
+  endIdx: number;
+  reversalCount: number;
+  hasReversal: boolean;
+}
+export interface MeasureCandidateInput {
+  surfaceDist: number;
+  centerDist?: number;
+  strandKey?: string | null;
+  lineIdx?: number | null;
+  lineSeq?: number | null;
+  passIndex?: number | null;
+}
+export interface MeasureAnchorTrailRef {
+  strandKey: string;
+  lineIdx?: number | null;
+  lineSeq?: number | null;
+  countReversalsBetween?: ((idxA: number, idxB: number) => number) | null;
+}
+export function analyzeTrailSegmentPasses(opts?: {
+  linePositions?: ArrayLike<number> | null;
+  lineCount?: number;
+  lineSegmentIds?: ArrayLike<number> | null;
+  lineBreaks?: ArrayLike<number> | null;
+  segmentIndex?: number;
+  options?: Partial<typeof TRAIL_PASS_DEFAULTS> | null;
+}): TrailSegmentPassAnalysis | null;
+export function measureTrailSpan(opts?: {
+  linePositions?: ArrayLike<number> | null;
+  lineCount?: number;
+  lineSegmentIds?: ArrayLike<number> | null;
+  lineSeqs?: ArrayLike<number> | null;
+  lineBreaks?: ArrayLike<number> | null;
+  segmentIndex?: number;
+  seqA?: number | null;
+  seqB?: number | null;
+  passAnalysis?: TrailSegmentPassAnalysis | null;
+}): TrailSpanMeasurement | null;
 export function measureTrailArcLength(opts?: {
   linePositions?: ArrayLike<number> | null;
   lineCount?: number;
@@ -595,7 +651,20 @@ export function measureTrailArcLength(opts?: {
   segmentIndex?: number;
   seqA?: number | null;
   seqB?: number | null;
+  passAnalysis?: TrailSegmentPassAnalysis | null;
 }): number | null;
+export function pickPreferredMeasureCandidate<T extends MeasureCandidateInput>(
+  candidates: T[],
+  opts?: {
+    anchorTrailRefs?: Iterable<MeasureAnchorTrailRef | null | undefined>;
+    prevHoveredRef?: { strandKey?: string | null; passIndex?: number | null } | null;
+    maxReachM?: number;
+    pinOverlapWindowM?: number;
+    hoverOverlapWindowM?: number;
+    initialPassWindowM?: number;
+    sameSurfaceEpsM?: number;
+  },
+): T | null;
 
 // src/tag-predictor.mjs
 export const TAG_PREDICTOR_DEFAULTS: Readonly<Record<string, number | boolean>>;

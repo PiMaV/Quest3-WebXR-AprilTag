@@ -10,7 +10,7 @@ import {
   projectPriorRois,fuseCommittedTrailSegment,TRAIL_GAP_DEFAULTS,shouldStartNewTrailSegment,smoothLineTail,
   TURBO_SPEED_DEFAULTS,turboColormap,speedToTurboColor,
   MOTION_WAKE_DEFAULTS,createMotionWakeBuffer,
-  TRAIL_VERTEX_ROLE,TRAIL_MEASURE_STYLE_DEFAULTS,buildTrailMeasureFocus,evaluateEntryTrailMeasureStyle,measureTrailArcLength,
+  TRAIL_VERTEX_ROLE,TRAIL_MEASURE_STYLE_DEFAULTS,buildTrailMeasureFocus,evaluateEntryTrailMeasureStyle,analyzeTrailSegmentPasses,measureTrailSpan,measureTrailArcLength,pickPreferredMeasureCandidate,
   createTagMotionPredictor,createFocusScheduler,APP_VERSION_LABEL,
 } from '../src/index.mjs';
 import {
@@ -4080,7 +4080,42 @@ function syncStaticTagBadges(){
   }
 }
 
-function drawWaypointCard(canvas,tex,wp,probeKind,floorHeightMm,{alreadyPinned=false}={}){
+function getEntryPassAnalysis(entry,segmentIndex){
+  if(!entry?.linePositions||entry.lineCount<2||!(segmentIndex>=1))return null;
+  if(entry.passAnalysisSeq!==entry.lineSeqCounter||!entry.passAnalysisMap){
+    entry.passAnalysisMap=new Map();
+    entry.passAnalysisSeq=entry.lineSeqCounter;
+  }
+  if(entry.passAnalysisMap.has(segmentIndex))return entry.passAnalysisMap.get(segmentIndex);
+  const analysis=analyzeTrailSegmentPasses({
+    linePositions:entry.linePositions,
+    lineCount:entry.lineCount,
+    lineSegmentIds:entry.lineSegmentIds,
+    lineBreaks:entry.lineBreaks,
+    segmentIndex,
+  });
+  entry.passAnalysisMap.set(segmentIndex,analysis);
+  return analysis;
+}
+
+function getWaypointPassMeta(wp){
+  if(!wp?.isTrailPoint||!(wp.segmentIndex>=1)||!Number.isFinite(wp.lineSeq))return null;
+  const entry=movableTools.get(wp.tagId);
+  const analysis=getEntryPassAnalysis(entry,wp.segmentIndex);
+  if(!analysis)return null;
+  const lineIdx=analysis.resolveSeqIndex(entry.lineSeqs,wp.lineSeq);
+  if(lineIdx<0)return null;
+  return {
+    strandKey:`${wp.tagId}:${wp.segmentIndex}`,
+    lineIdx,
+    lineSeq:wp.lineSeq,
+    passIndex:analysis.passIndexAt(lineIdx),
+    passCount:analysis.passCount,
+    analysis,
+  };
+}
+
+function drawWaypointCard(canvas,tex,wp,probeKind,floorHeightMm,{alreadyPinned=false,passInfo=null}={}){
   const ctx=canvas.getContext('2d');
   ctx.clearRect(0,0,420,188);
   ctx.fillStyle=alreadyPinned?'rgba(16,16,32,0.86)':'rgba(8,14,24,0.84)';
@@ -4105,6 +4140,14 @@ function drawWaypointCard(canvas,tex,wp,probeKind,floorHeightMm,{alreadyPinned=f
   ctx.fillText(`Z ${sz}${wp.zMm.toFixed(0)} mm`,16,102);
   ctx.fillStyle='#94a3b8';ctx.font='15px system-ui,sans-serif';
   ctx.fillText('above table',230,100);
+  if(passInfo&&passInfo.passCount>=2){
+    ctx.fillStyle='rgba(8,32,46,0.92)';
+    ctx.beginPath();ctx.roundRect(320,78,84,28,14);ctx.fill();
+    ctx.strokeStyle='#22d3ee';ctx.lineWidth=2;ctx.stroke();
+    ctx.fillStyle='#67e8f9';ctx.font='bold 13px ui-monospace,monospace';ctx.textAlign='center';
+    ctx.fillText(`PASS ${passInfo.passIndex}/${passInfo.passCount}`,362,97,74);
+    ctx.textAlign='left';
+  }
   ctx.fillStyle='#fb923c';ctx.font='bold 21px ui-monospace,monospace';
   ctx.fillText(floorHeightMm!=null?`Floor ${floorHeightMm.toFixed(0)} mm`:'Floor —',16,136);
   if(floorHeightMm!=null){
@@ -4154,7 +4197,7 @@ function drawPinPillAtlas(slot,wp,{closeHot=false}={}){
   });
 }
 
-function computeSameTrailPathLengthMm(wpA,wpB){
+function computeSameTrailSpanInfo(wpA,wpB){
   if(
     !wpA?.isTrailPoint||!wpB?.isTrailPoint||
     wpA.tagId!==wpB.tagId||
@@ -4165,7 +4208,8 @@ function computeSameTrailPathLengthMm(wpA,wpB){
   }
   const entry=movableTools.get(wpA.tagId);
   if(!entry?.linePositions||entry.lineCount<2)return null;
-  const arcM=measureTrailArcLength({
+  const passAnalysis=getEntryPassAnalysis(entry,wpA.segmentIndex);
+  const span=measureTrailSpan({
     linePositions:entry.linePositions,
     lineCount:entry.lineCount,
     lineSegmentIds:entry.lineSegmentIds,
@@ -4174,11 +4218,12 @@ function computeSameTrailPathLengthMm(wpA,wpB){
     segmentIndex:wpA.segmentIndex,
     seqA:wpA.lineSeq,
     seqB:wpB.lineSeq,
+    passAnalysis,
   });
-  return Number.isFinite(arcM)?arcM*1000:null;
+  return span?{pathLenMm:span.arcLengthM*1000,reversalCount:span.reversalCount,hasReversal:span.hasReversal}:null;
 }
 
-function drawDistanceBadgeAtlas(slot,distMm,dzMm,dtSec,preview=false,pathLenMm=null){
+function drawDistanceBadgeAtlas(slot,distMm,dzMm,dtSec,preview=false,pathLenMm=null,reversalCount=0){
   if(slot<0)return;
   const dzSign=dzMm>=0?'+':'';
   const sub=dtSec!=null?`ΔZ ${dzSign}${dzMm.toFixed(0)} mm · Δt ${dtSec.toFixed(1)}s`:`ΔZ ${dzSign}${dzMm.toFixed(0)} mm`;
@@ -4186,7 +4231,8 @@ function drawDistanceBadgeAtlas(slot,distMm,dzMm,dtSec,preview=false,pathLenMm=n
     const resolvedPathMm=Math.max(distMm,pathLenMm);
     const directText=`${distMm.toFixed(0)} mm`;
     const pathText=`${resolvedPathMm.toFixed(0)} mm`;
-    const key=`dist2:${directText}:${pathText}:${sub}:${preview?1:0}`;
+    const revCount=reversalCount>0?(reversalCount|0):0;
+    const key=`dist2:${directText}:${pathText}:${sub}:${preview?1:0}:${revCount}`;
     badgeAtlas.draw(slot,key,(ctx,w,h)=>{
       ctx.scale(w/256,h/96);
       ctx.fillStyle=preview?'rgba(24,14,42,0.78)':'rgba(14,10,30,0.90)';
@@ -4202,14 +4248,25 @@ function drawDistanceBadgeAtlas(slot,distMm,dzMm,dtSec,preview=false,pathLenMm=n
       ctx.fillStyle='#d8b4fe';ctx.font='bold 12px system-ui,sans-serif';ctx.textAlign='right';
       ctx.fillText('LINE',242,26);
 
-      ctx.strokeStyle='#22d3ee';ctx.lineWidth=2.5;ctx.lineCap='round';
-      ctx.beginPath();ctx.moveTo(16,52);ctx.bezierCurveTo(23,39,35,57,42,44);ctx.stroke();
-      ctx.fillStyle='#22d3ee';
-      ctx.beginPath();ctx.arc(16,52,3,0,Math.PI*2);ctx.arc(42,44,3,0,Math.PI*2);ctx.fill();
-      ctx.fillStyle='#67e8f9';ctx.font='bold 23px ui-monospace,monospace';ctx.textAlign='left';
-      ctx.fillText(pathText,50,56);
-      ctx.fillStyle='#67e8f9';ctx.font='bold 12px system-ui,sans-serif';ctx.textAlign='right';
-      ctx.fillText('PATH',242,53);
+      if(revCount>0){
+        ctx.strokeStyle='#fbbf24';ctx.lineWidth=2.5;ctx.lineCap='round';
+        ctx.beginPath();ctx.moveTo(16,43);ctx.lineTo(35,43);ctx.arc(35,48,5,-Math.PI/2,Math.PI/2,false);ctx.lineTo(16,53);ctx.stroke();
+        ctx.fillStyle='#fbbf24';
+        ctx.beginPath();ctx.arc(16,43,2.8,0,Math.PI*2);ctx.arc(16,53,2.8,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#fde047';ctx.font='bold 23px ui-monospace,monospace';ctx.textAlign='left';
+        ctx.fillText(pathText,50,56);
+        ctx.fillStyle='#fbbf24';ctx.font='bold 12px system-ui,sans-serif';ctx.textAlign='right';
+        ctx.fillText(revCount>1?`↩${revCount} PATH`:'↩ PATH',242,53);
+      }else{
+        ctx.strokeStyle='#22d3ee';ctx.lineWidth=2.5;ctx.lineCap='round';
+        ctx.beginPath();ctx.moveTo(16,52);ctx.bezierCurveTo(23,39,35,57,42,44);ctx.stroke();
+        ctx.fillStyle='#22d3ee';
+        ctx.beginPath();ctx.arc(16,52,3,0,Math.PI*2);ctx.arc(42,44,3,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#67e8f9';ctx.font='bold 23px ui-monospace,monospace';ctx.textAlign='left';
+        ctx.fillText(pathText,50,56);
+        ctx.fillStyle='#67e8f9';ctx.font='bold 12px system-ui,sans-serif';ctx.textAlign='right';
+        ctx.fillText('PATH',242,53);
+      }
 
       ctx.strokeStyle='rgba(148,163,184,0.25)';ctx.lineWidth=1;
       ctx.beginPath();ctx.moveTo(14,64);ctx.lineTo(242,64);ctx.stroke();
@@ -4249,7 +4306,9 @@ function addRailSegment(slotList,wpA,wpB,preview=false,includeEndpoints=false){
   const distMm=Math.hypot(bx-ax,by-ay,bz-az)*1000;
   const dzMm=(bz-az)*1000;
   const dtSec=(wpA.atMs!=null&&wpB.atMs!=null)?Math.abs(wpB.atMs-wpA.atMs)/1000:null;
-  const pathLenMm=computeSameTrailPathLengthMm(wpA,wpB);
+  const spanInfo=computeSameTrailSpanInfo(wpA,wpB);
+  const pathLenMm=spanInfo?spanInfo.pathLenMm:null;
+  const reversalCount=spanInfo?spanInfo.reversalCount:0;
   const rodSlot=rodBatch.alloc();
   if(rodSlot>=0){
     rodBatch.setRod(rodSlot,ax,ay,az,bx,by,bz,preview?0.0011:0.0014);
@@ -4264,7 +4323,7 @@ function addRailSegment(slotList,wpA,wpB,preview=false,includeEndpoints=false){
   }
   const badgeSlot=badgeAtlas.acquire();
   if(badgeSlot>=0){
-    drawDistanceBadgeAtlas(badgeSlot,distMm,dzMm,dtSec,preview,pathLenMm);
+    drawDistanceBadgeAtlas(badgeSlot,distMm,dzMm,dtSec,preview,pathLenMm,reversalCount);
     const hasPath=Number.isFinite(pathLenMm);
     const badgeW=hasPath?(preview?0.092:0.098):(preview?0.082:0.088);
     const badgeH=hasPath?(preview?0.035:0.037):(preview?0.026:0.029);
@@ -5057,44 +5116,85 @@ function updateWaypointInspector(frameInputs,world,pose,now){
 
   // Always evaluate point/tag candidates FIRST so pinned [×] close orbs never hijack closer targets.
   const enterDist=0.048,exitDist=0.060;
-  let best=null,bestDist=Infinity,bestCenterDist=Infinity,bestProbe=null;
+  const threshold=pinHoldSince!=null?0.11:(inspectVisible?exitDist:enterDist);
+  let best=null,bestDist=Infinity,bestCenterDist=Infinity,bestProbe=null,bestPassMeta=null;
   let bestDistForCloseProbe=Infinity;
   const closeProbeId=nearCloseProbe?.probeId??null;
-  const tryCandidate=(wp,pr,maxDist)=>{
+  const candidates=[];
+  const pinnedAnchorRefs=[];
+  const collectCandidate=(wp,pr,maxDist)=>{
     const dx=pr.pos[0]-wp.centerL[0],dy=pr.pos[1]-wp.centerL[1],dz=pr.pos[2]-wp.centerL[2];
     const cutoff=0.16+wp.edgeMm*0.00072;
     if(dx*dx+dy*dy+dz*dz>cutoff*cutoff)return;
     const m=tagSurfaceMetrics(wp.matrix,wp.edgeMm,pr.pos);
     recordProbeProximity(pr.probeId,m.surfaceDist);
     if(closeProbeId&&pr.probeId===closeProbeId&&m.surfaceDist<bestDistForCloseProbe)bestDistForCloseProbe=m.surfaceDist;
-    if(m.surfaceDist>=maxDist)return;
-    const better=(Math.abs(m.surfaceDist-bestDist)<0.008)?(m.centerDist<bestCenterDist):(m.surfaceDist<bestDist);
-    if(better){bestDist=m.surfaceDist;bestCenterDist=m.centerDist;best=wp;bestProbe=pr;}
+    if(m.surfaceDist>=maxDist||m.surfaceDist>threshold)return;
+    const pm=wp.isTrailPoint?getWaypointPassMeta(wp):null;
+    candidates.push({
+      wp,
+      probe:pr,
+      surfaceDist:m.surfaceDist,
+      centerDist:m.centerDist,
+      strandKey:pm?pm.strandKey:null,
+      lineIdx:pm?pm.lineIdx:null,
+      lineSeq:pm?pm.lineSeq:null,
+      passIndex:pm?pm.passIndex:null,
+      passMeta:pm,
+    });
   };
 
   if(pinHoldWp&&pinHoldSince!=null){
     for(const pr of probes){
       if(!isPinchHandEligible({kind:pr.kind,handedness:pr.handedness,pinHoldHand,leftPalmFacingViewer,leftMenuOpen:leftMenuOpenNow}))continue;
-      tryCandidate(pinHoldWp,pr,0.11);
+      collectCandidate(pinHoldWp,pr,0.11);
     }
   }
-  if(!best){
+  if(candidates.length===0){
     for(const entry of movableTools.values()){
       if(entry.currentPose){
-        for(const pr of probes)tryCandidate(entry.currentPose,pr,Infinity);
+        for(const pr of probes)collectCandidate(entry.currentPose,pr,Infinity);
       }
       for(const wp of entry.waypoints){
-        for(const pr of probes)tryCandidate(wp,pr,Infinity);
+        for(const pr of probes)collectCandidate(wp,pr,Infinity);
       }
     }
     for(const extra of placedExtras.values()){
       if(!extra.wp)continue;
-      for(const pr of probes)tryCandidate(extra.wp,pr,Infinity);
+      for(const pr of probes)collectCandidate(extra.wp,pr,Infinity);
     }
     for(const vis of perimeterTagVisuals.values()){
       if(!vis.visible||!vis.wp)continue;
       if(perimeterFence?.isOffered()&&!perimeterOfferSuppressed&&vis.id===perimeterFence.triggerTagId)continue;
-      for(const pr of probes)tryCandidate(vis.wp,pr,Infinity);
+      for(const pr of probes)collectCandidate(vis.wp,pr,Infinity);
+    }
+  }
+  if(candidates.length>0){
+    if(pinnedPoints.size>0){
+      for(const pin of pinnedPoints.values()){
+        const pm=getWaypointPassMeta(pin.wp);
+        if(pm){
+          pinnedAnchorRefs.push({
+            strandKey:pm.strandKey,
+            lineIdx:pm.lineIdx,
+            lineSeq:pm.lineSeq,
+            countReversalsBetween:(a,b)=>pm.analysis.countReversalsBetween(a,b),
+          });
+        }
+      }
+    }
+    const prevHoveredMeta=hoveredWaypoint?getWaypointPassMeta(hoveredWaypoint):null;
+    const picked=pickPreferredMeasureCandidate(candidates,{
+      anchorTrailRefs:pinnedAnchorRefs,
+      prevHoveredRef:prevHoveredMeta,
+      maxReachM:threshold,
+    });
+    if(picked){
+      best=picked.wp;
+      bestDist=picked.surfaceDist;
+      bestCenterDist=picked.centerDist;
+      bestProbe=picked.probe;
+      bestPassMeta=picked.passMeta;
     }
   }
 
@@ -5136,7 +5236,6 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     return;
   }
 
-  const threshold=pinHoldSince!=null?0.11:(inspectVisible?exitDist:enterDist);
   const hasTagHover=Boolean(best&&bestDist<=threshold);
   const closeBlocksActiveHover=Boolean(hoveredClosePinKey&&(!hasTagHover||bestProbe?.probeId===nearCloseProbe?.probeId));
 
@@ -5274,7 +5373,8 @@ function updateWaypointInspector(frameInputs,world,pose,now){
   inspectLeaderMat.opacity+=((pinching?0.24:0.72)-inspectLeaderMat.opacity)*fadeAlpha;
 
   const floorBucket=floorHeightMm!=null?Math.round(floorHeightMm/2):'na';
-  const key=`${wpKey}:${bestProbe.kind}:${floorBucket}:${alreadyPinned?1:0}`;
+  const passBucket=bestPassMeta?`${bestPassMeta.passIndex}/${bestPassMeta.passCount}`:'na';
+  const key=`${wpKey}:${bestProbe.kind}:${floorBucket}:${alreadyPinned?1:0}:${passBucket}`;
   if(key!==hoveredWaypointKey){
     hoveredWaypointKey=key;
     highlightFrame.geometry=getThickTagFrameGeo(best.edgeMm);
@@ -5295,42 +5395,77 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     // Green Y straight down to X-arm: (cx, cy) -> (cx, 0).
     setRodSegment(yAxisRod,cx,cy,0.0018,cx,0,0.0018,0.0018);
     yHitRing.position.set(cx,0,0.0018);
-    drawWaypointCard(inspectCanvas,inspectTex,best,bestProbe.kind,floorHeightMm,{alreadyPinned});
+    drawWaypointCard(inspectCanvas,inspectTex,best,bestProbe.kind,floorHeightMm,{alreadyPinned,passInfo:bestPassMeta});
   }
 
   // --- Dual-Hand Hover: if the other hand/controller simultaneously hovers a second tag, show its own Floating Infobar + live Δmm distance rail ---
   const otherProbes=probes.filter(pr=>pr.probeId!==bestProbe.probeId);
-  let best2=null,best2Dist=Infinity,best2CenterDist=Infinity,best2Probe=null;
+  const thresh2=inspect2Visible?exitDist:enterDist;
+  let best2=null,best2Dist=Infinity,best2CenterDist=Infinity,best2Probe=null,best2PassMeta=null;
   if(otherProbes.length){
-    const tryCandidate2=(wp,pr)=>{
+    const candidates2=[];
+    const collectCandidate2=(wp,pr)=>{
       if(wp===best)return;
       const dx=pr.pos[0]-wp.centerL[0],dy=pr.pos[1]-wp.centerL[1],dz=pr.pos[2]-wp.centerL[2];
       const cutoff=0.16+wp.edgeMm*0.00072;
       if(dx*dx+dy*dy+dz*dz>cutoff*cutoff)return;
       const m=tagSurfaceMetrics(wp.matrix,wp.edgeMm,pr.pos);
       recordProbeProximity(pr.probeId,m.surfaceDist);
-      const better=(Math.abs(m.surfaceDist-best2Dist)<0.008)?(m.centerDist<best2CenterDist):(m.surfaceDist<best2Dist);
-      if(better){best2Dist=m.surfaceDist;best2CenterDist=m.centerDist;best2=wp;best2Probe=pr;}
+      if(m.surfaceDist>thresh2)return;
+      const pm=wp.isTrailPoint?getWaypointPassMeta(wp):null;
+      candidates2.push({
+        wp,
+        probe:pr,
+        surfaceDist:m.surfaceDist,
+        centerDist:m.centerDist,
+        strandKey:pm?pm.strandKey:null,
+        lineIdx:pm?pm.lineIdx:null,
+        lineSeq:pm?pm.lineSeq:null,
+        passIndex:pm?pm.passIndex:null,
+        passMeta:pm,
+      });
     };
     for(const entry of movableTools.values()){
       if(entry.currentPose){
-        for(const pr of otherProbes)tryCandidate2(entry.currentPose,pr);
+        for(const pr of otherProbes)collectCandidate2(entry.currentPose,pr);
       }
       for(const wp of entry.waypoints){
-        for(const pr of otherProbes)tryCandidate2(wp,pr);
+        for(const pr of otherProbes)collectCandidate2(wp,pr);
       }
     }
     for(const extra of placedExtras.values()){
       if(!extra.wp)continue;
-      for(const pr of otherProbes)tryCandidate2(extra.wp,pr);
+      for(const pr of otherProbes)collectCandidate2(extra.wp,pr);
     }
     for(const vis of perimeterTagVisuals.values()){
       if(!vis.visible||!vis.wp)continue;
       if(perimeterFence?.isOffered()&&!perimeterOfferSuppressed&&vis.id===perimeterFence.triggerTagId)continue;
-      for(const pr of otherProbes)tryCandidate2(vis.wp,pr);
+      for(const pr of otherProbes)collectCandidate2(vis.wp,pr);
+    }
+    if(candidates2.length>0){
+      const dualAnchors=pinnedAnchorRefs.length>0
+        ?pinnedAnchorRefs
+        :(bestPassMeta?[{
+          strandKey:bestPassMeta.strandKey,
+          lineIdx:bestPassMeta.lineIdx,
+          lineSeq:bestPassMeta.lineSeq,
+          countReversalsBetween:(a,b)=>bestPassMeta.analysis.countReversalsBetween(a,b),
+        }]:[]);
+      const prevHovered2Meta=hoveredWaypoint2?getWaypointPassMeta(hoveredWaypoint2):null;
+      const picked2=pickPreferredMeasureCandidate(candidates2,{
+        anchorTrailRefs:dualAnchors,
+        prevHoveredRef:prevHovered2Meta,
+        maxReachM:thresh2,
+      });
+      if(picked2){
+        best2=picked2.wp;
+        best2Dist=picked2.surfaceDist;
+        best2CenterDist=picked2.centerDist;
+        best2Probe=picked2.probe;
+        best2PassMeta=picked2.passMeta;
+      }
     }
   }
-  const thresh2=inspect2Visible?exitDist:enterDist;
   if(!best2||best2Dist>thresh2){
     if(inspect2Visible){clearHover2();syncStaticTagBadges();}
   }else{
@@ -5371,7 +5506,8 @@ function updateWaypointInspector(frameInputs,world,pose,now){
     setRodSegment(inspect2LeaderRod,cx2,cy2,cz2,l2Ax,l2Ay,l2Az,0.00075);
 
     const floor2Bucket=floorHeight2Mm!=null?Math.round(floorHeight2Mm/2):'na';
-    const key2=`${wp2Key}:${best2Probe.kind}:${floor2Bucket}:${alreadyPinned2?1:0}`;
+    const pass2Bucket=best2PassMeta?`${best2PassMeta.passIndex}/${best2PassMeta.passCount}`:'na';
+    const key2=`${wp2Key}:${best2Probe.kind}:${floor2Bucket}:${alreadyPinned2?1:0}:${pass2Bucket}`;
     if(key2!==hoveredWaypoint2Key){
       hoveredWaypoint2Key=key2;
       highlightFrame2.geometry=getThickTagFrameGeo(best2.edgeMm);
@@ -5387,7 +5523,7 @@ function updateWaypointInspector(frameInputs,world,pose,now){
       dropRing2.position.set(cx2,cy2,0.0018);
       setRodSegment(xAxisRod2,cx2,cy2,0.0018,0,cy2,0.0018,0.0018);
       setRodSegment(yAxisRod2,cx2,cy2,0.0018,cx2,0,0.0018,0.0018);
-      drawWaypointCard(inspect2Canvas,inspect2Tex,best2,best2Probe.kind,floorHeight2Mm,{alreadyPinned:alreadyPinned2});
+      drawWaypointCard(inspect2Canvas,inspect2Tex,best2,best2Probe.kind,floorHeight2Mm,{alreadyPinned:alreadyPinned2,passInfo:best2PassMeta});
     }
 
     // Live 3D distance rail (Δmm / ΔZ) directly between the two simultaneously hovered tags.
@@ -6123,7 +6259,7 @@ function createMovableTool(tagId,edgeMm){
     markOrbSlot,markPillSlot,markPillKey:'',
     visible:false,faceVisible:false,recOrbVisible:false,markOrbVisible:false,outsidePerimeter:false,lastAlertFenceVer:-1,
     frameColorHex:theme.hex,recOrbColorHex:0x0ea5e9,markOrbColorHex:0x22d3ee,recOrbScale:1,
-    trailTube:null,uniqueLinearRgb:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineColors:null,lineRenderColors:null,lineRadii:null,lineFades:null,lineRoles:null,lineOutside:null,lineBreaks:null,lineSegmentIds:null,lineSeqs:null,lineSeqCounter:0,trailGaps:[],trailSegmentCount:0,pendingTrailBreak:false,lastTrailFenceVer:-1,lineCount:0,
+    trailTube:null,uniqueLinearRgb:null,rawLinePositions:null,linePositions:null,lineSpeeds:null,lineColors:null,lineRenderColors:null,lineRadii:null,lineFades:null,lineRoles:null,lineOutside:null,lineBreaks:null,lineSegmentIds:null,lineSeqs:null,lineSeqCounter:0,passAnalysisSeq:-1,passAnalysisMap:null,trailGaps:[],trailSegmentCount:0,pendingTrailBreak:false,lastTrailFenceVer:-1,lineCount:0,
     wakeBuffer:null,wakeTube:null,wakeColors:null,wakeLinearRgb:null,
     dotsMesh:null,dotMat:null,dotColor:null,timeCopyDotColor:null,
     waypoints:[],waypointCount:0,timeCopyCount:0,firstAtMs:null,smoothedSpeedMps:0,hasEverAnnouncedLock:false,
@@ -7617,6 +7753,9 @@ function disposeMovableEntry(e){
     e.lineSegmentIds=null;
     e.lineSeqs=null;
   }
+  e.passAnalysisMap?.clear?.();
+  e.passAnalysisMap=null;
+  e.passAnalysisSeq=-1;
   if(e.wakeTube){
     extraRoot.remove(e.wakeTube.mesh);
     e.wakeTube.dispose();

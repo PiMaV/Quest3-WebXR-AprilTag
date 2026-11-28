@@ -20,7 +20,11 @@ import {
   TRAIL_MEASURE_STYLE_DEFAULTS,
   buildTrailMeasureFocus,
   evaluateEntryTrailMeasureStyle,
+  TRAIL_PASS_DEFAULTS,
+  analyzeTrailSegmentPasses,
+  measureTrailSpan,
   measureTrailArcLength,
+  pickPreferredMeasureCandidate,
 } from '../src/path-smoother.mjs';
 import {isRigidPose} from '../src/anchor.mjs';
 import {vectorRigid} from '../src/runtime.mjs';
@@ -594,4 +598,165 @@ test('measureTrailArcLength computes exact curved path length along a continuous
   const badBreaks=new Uint8Array([0,0,1,0,0,1,0,0,0]);
   assert.equal(measureTrailArcLength({linePositions:pos,lineCount:n,lineSegmentIds:segIds,lineSeqs:seqs,lineBreaks:badBreaks,segmentIndex:1,seqA:10,seqB:14}),null);
   assert.equal(measureTrailArcLength({linePositions:pos,lineCount:1,lineSegmentIds:segIds,lineSeqs:seqs,segmentIndex:1,seqA:10,seqB:10}),null);
+});
+
+test('analyzeTrailSegmentPasses and measureTrailSpan detect door open/close reversals without false positives on smooth arcs or jitter',()=>{
+  const buildArcCoords=(anglesRad,radiusM=0.50)=>{
+    const pts=[];
+    for(const a of anglesRad)pts.push([radiusM*Math.cos(a),radiusM*Math.sin(a),0.10]);
+    return pts;
+  };
+  const pack=(pts)=>{
+    const n=pts.length;
+    const pos=new Float32Array(n*3);
+    const segIds=new Uint32Array(n).fill(1);
+    const seqs=new Uint32Array(n);
+    for(let i=0;i<n;i++){
+      pos.set(pts[i],i*3);
+      seqs[i]=i+1;
+    }
+    return {n,pos,segIds,seqs};
+  };
+
+  // 1. Smooth 90-deg circular arc (R=0.40 m) and 180-deg semicircle (R=0.15 m) -> 0 reversals
+  const arc90Angles=Array.from({length:19},(_,i)=>i*(Math.PI/2)/18);
+  const arc90=pack(buildArcCoords(arc90Angles,0.40));
+  const a90=analyzeTrailSegmentPasses({linePositions:arc90.pos,lineCount:arc90.n,lineSegmentIds:arc90.segIds,segmentIndex:1});
+  assert.equal(a90.passCount,1);
+  assert.deepEqual(a90.reversalIndices,[]);
+
+  const semi180Angles=Array.from({length:25},(_,i)=>i*Math.PI/24);
+  const semi180=pack(buildArcCoords(semi180Angles,0.15));
+  const a180=analyzeTrailSegmentPasses({linePositions:semi180.pos,lineCount:semi180.n,lineSegmentIds:semi180.segIds,segmentIndex:1});
+  assert.equal(a180.passCount,1);
+  assert.deepEqual(a180.reversalIndices,[]);
+
+  // 2. Door opening 0 -> 90 deg and closing 90 -> 0 deg on R=0.50 m -> exactly 1 reversal right at apex
+  const openSteps=18;
+  const doorAngles=[];
+  for(let i=0;i<=openSteps;i++)doorAngles.push(i*(Math.PI/2)/openSteps); // indices 0..18 (apex at 18)
+  for(let i=openSteps-1;i>=0;i--)doorAngles.push(i*(Math.PI/2)/openSteps); // indices 19..36
+  const door=pack(buildArcCoords(doorAngles,0.50));
+  const doorPass=analyzeTrailSegmentPasses({linePositions:door.pos,lineCount:door.n,lineSegmentIds:door.segIds,segmentIndex:1});
+  assert.equal(doorPass.passCount,2);
+  assert.deepEqual(doorPass.reversalIndices,[openSteps]);
+  assert.equal(doorPass.passIndexAt(0),1);
+  assert.equal(doorPass.passIndexAt(openSteps),1);
+  assert.equal(doorPass.passIndexAt(openSteps+1),2);
+  assert.equal(doorPass.passIndexAt(door.n-1),2);
+  assert.equal(doorPass.countReversalsBetween(2,openSteps),0);
+  assert.equal(doorPass.countReversalsBetween(openSteps,door.n-2),0);
+  assert.equal(doorPass.countReversalsBetween(openSteps+1,door.n-2),0);
+  assert.equal(doorPass.countReversalsBetween(6,30),1);
+
+  // measureTrailSpan reports 0 reversals on Pass 1 and 1 reversal across the apex
+  const spanPass1=measureTrailSpan({
+    linePositions:door.pos,lineCount:door.n,lineSegmentIds:door.segIds,lineSeqs:door.seqs,
+    segmentIndex:1,seqA:1,seqB:openSteps+1,passAnalysis:doorPass,
+  });
+  assert.equal(spanPass1.reversalCount,0);
+  assert.equal(spanPass1.hasReversal,false);
+  assert.ok(Math.abs(spanPass1.arcLengthM-(Math.PI*0.5*0.50))<0.01);
+
+  const spanCross=measureTrailSpan({
+    linePositions:door.pos,lineCount:door.n,lineSegmentIds:door.segIds,lineSeqs:door.seqs,
+    segmentIndex:1,seqA:7,seqB:31,passAnalysis:doorPass,
+  });
+  assert.equal(spanCross.reversalCount,1);
+  assert.equal(spanCross.hasReversal,true);
+  assert.ok(spanCross.arcLengthM>0.90,'crossing apex accumulates opening + return arc length');
+
+  // 3. Multi-cycle door open-close-open -> 3 passes (2 reversals)
+  const cycAngles=[...doorAngles,...doorAngles.slice(1,openSteps+1)];
+  const cyc=pack(buildArcCoords(cycAngles,0.50));
+  const cycPass=analyzeTrailSegmentPasses({linePositions:cyc.pos,lineCount:cyc.n,lineSegmentIds:cyc.segIds,segmentIndex:1});
+  assert.equal(cycPass.passCount,3);
+  assert.equal(cycPass.reversalIndices.length,2);
+
+  // 4. Standstill micro-jitter (< 10 mm) produces 0 false reversals
+  const jitterPts=[];
+  for(let i=0;i<14;i++){
+    jitterPts.push([0.10+(i%2===0?0.004:-0.004),0.20+(i%3===0?0.003:-0.003),0.05]);
+  }
+  const jitter=pack(jitterPts);
+  const jPass=analyzeTrailSegmentPasses({linePositions:jitter.pos,lineCount:jitter.n,lineSegmentIds:jitter.segIds,segmentIndex:1});
+  assert.equal(jPass.passCount,1);
+  assert.deepEqual(jPass.reversalIndices,[]);
+});
+
+test('pickPreferredMeasureCandidate stays on same door pass when pinned, preserves hover continuity, and respects closer separate tags',()=>{
+  const openSteps=18;
+  const doorAngles=[];
+  for(let i=0;i<=openSteps;i++)doorAngles.push(i*(Math.PI/2)/openSteps);
+  for(let i=openSteps-1;i>=0;i--)doorAngles.push(i*(Math.PI/2)/openSteps);
+  const pos=new Float32Array(doorAngles.length*3);
+  const segIds=new Uint32Array(doorAngles.length).fill(1);
+  const seqs=new Uint32Array(doorAngles.length);
+  for(let i=0;i<doorAngles.length;i++){
+    pos.set([0.50*Math.cos(doorAngles[i]),0.50*Math.sin(doorAngles[i]),0.10],i*3);
+    seqs[i]=i+1;
+  }
+  const doorPass=analyzeTrailSegmentPasses({linePositions:pos,lineCount:doorAngles.length,lineSegmentIds:segIds,segmentIndex:1});
+  const pin1Idx=4;
+  const anchor={
+    strandKey:'301:1',
+    lineIdx:pin1Idx,
+    lineSeq:seqs[pin1Idx],
+    countReversalsBetween:(a,b)=>doorPass.countReversalsBetween(a,b),
+  };
+
+  // 1. With Pin 1 on Pass 1 (idx 4): hovering near 60 deg where Pass 2 (idx 24) is 3 mm away,
+  //    Pass 1 (idx 12) is 8 mm away, and another Pass 1 (idx 10) is 22 mm away -> must pick idx 12 (Pass 1, closest!).
+  const candPass2Near={id:'p2-60',surfaceDist:0.003,centerDist:0.003,strandKey:'301:1',lineIdx:24,lineSeq:seqs[24],passIndex:2};
+  const candPass1Near={id:'p1-60',surfaceDist:0.008,centerDist:0.008,strandKey:'301:1',lineIdx:12,lineSeq:seqs[12],passIndex:1};
+  const candPass1Far={id:'p1-50',surfaceDist:0.022,centerDist:0.022,strandKey:'301:1',lineIdx:10,lineSeq:seqs[10],passIndex:1};
+  const picked1=pickPreferredMeasureCandidate([candPass2Near,candPass1Near,candPass1Far],{
+    anchorTrailRefs:[anchor],
+    maxReachM:0.048,
+  });
+  assert.equal(picked1.id,'p1-60');
+
+  // 2. Separate static/unrelated tag > 24 mm closer than any pinned-strand point wins cleanly.
+  const separateTag={id:'static-350',surfaceDist:0.004,centerDist:0.004,strandKey:null,lineIdx:null,lineSeq:null,passIndex:null};
+  const farDoor={id:'p1-far',surfaceDist:0.035,centerDist:0.035,strandKey:'301:1',lineIdx:12,lineSeq:seqs[12],passIndex:1};
+  const pickedSep=pickPreferredMeasureCandidate([farDoor,separateTag],{
+    anchorTrailRefs:[anchor],
+    maxReachM:0.048,
+  });
+  assert.equal(pickedSep.id,'static-350');
+
+  // 3. Overlapping separate runs (segment 1 vs segment 2): pinned segment 1 wins within 24 mm.
+  const run2={id:'run2',surfaceDist:0.004,centerDist:0.004,strandKey:'301:2',lineIdx:4,lineSeq:40,passIndex:1};
+  const run1={id:'run1',surfaceDist:0.015,centerDist:0.015,strandKey:'301:1',lineIdx:12,lineSeq:13,passIndex:1};
+  const pickedRun=pickPreferredMeasureCandidate([run2,run1],{
+    anchorTrailRefs:[anchor],
+    maxReachM:0.048,
+  });
+  assert.equal(pickedRun.id,'run1');
+
+  // 4. With 0 pins: maintains prevHoveredRef pass within 14 mm (no flicker between Pass 2 and Pass 1).
+  const keepPass2=pickPreferredMeasureCandidate([candPass1Near,candPass2Near],{
+    anchorTrailRefs:[],
+    prevHoveredRef:{strandKey:'301:1',passIndex:2},
+    maxReachM:0.048,
+  });
+  assert.equal(keepPass2.id,'p2-60');
+
+  // 5. With 0 pins and no prior hover: fresh overlap picks Pass 1 deterministically within 10 mm.
+  const freshOverlap=pickPreferredMeasureCandidate([candPass2Near,candPass1Near],{
+    anchorTrailRefs:[],
+    prevHoveredRef:null,
+    maxReachM:0.048,
+  });
+  assert.equal(freshOverlap.id,'p1-60');
+
+  // 6. With 0 pins and closer static tag / Time-Copy: trail point farther away must never hijack it.
+  const closeStatic={id:'tc-1',surfaceDist:0.004,centerDist:0.004,strandKey:null,lineIdx:null,lineSeq:null,passIndex:null};
+  const trail10={id:'p1',surfaceDist:0.012,centerDist:0.012,strandKey:'301:1',lineIdx:12,lineSeq:13,passIndex:1};
+  const pickedStatic=pickPreferredMeasureCandidate([trail10,closeStatic],{
+    anchorTrailRefs:[],
+    prevHoveredRef:{strandKey:'301:1',passIndex:1},
+    maxReachM:0.048,
+  });
+  assert.equal(pickedStatic.id,'tc-1');
 });

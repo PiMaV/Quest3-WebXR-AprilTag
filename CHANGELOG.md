@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.9.0] - 2026-11-28
+
+### Added
+- **Reversal & pass analysis for overlapping trajectories:** Added `TRAIL_PASS_DEFAULTS`, `analyzeTrailSegmentPasses`, `measureTrailSpan`, and `pickPreferredMeasureCandidate` in `src/path-smoother.mjs` (re-exported via `src/index.mjs`, typed in `types/extras.d.ts` / `types/index.d.ts`, and covered by new tests in `tests/path-smoother.test.mjs`) to detect 180° direction reversals along continuous segments without false positives on smooth circular arcs or micro-jitter.
+
+### Changed
+- **Smart same-strand & same-pass selection in `MEASURE` mode:** Primary pinching/hovering and dual-hand hover in `examples/quest.mjs` now stay on the active pass (0 reversals) when selecting points along overlapping back-and-forth trajectories (e.g., opening and closing a door), preserve pass continuity during unpinned hovering, show a compact `PASS x/y` pill on multi-pass hover cards, and highlight any distance badge span crossing a reversal with an amber hairpin icon and `↩ PATH` label (`docs/controls.md`).
+
+---
+
 ## [1.8.0] - 2026-11-28
 
 ### Added
